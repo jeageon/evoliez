@@ -94,6 +94,24 @@ class RerankerStage(Stage):
         imodel = ctx.get("interaction_model")
         from evoliez.stages.s09_nonmd_validation import _mutant_complex
 
+        # optional server-grade EvoLigand-GNN (torch + checkpoint required)
+        gnn_scorer = None
+        gcfg = ctx.config.gnn
+        if gcfg.enabled:
+            from pathlib import Path
+
+            from evoliez.ml.gnn_scorer import EvoLigandGNNScorer
+
+            gnn_scorer = EvoLigandGNNScorer.load(
+                Path(ctx.config.project.output_dir) / gcfg.checkpoint
+            )
+            if gnn_scorer is None:
+                self.log.info(
+                    "gnn.enabled but no usable checkpoint/torch; "
+                    "falling back to heuristic family model"
+                )
+        econ = ctx.get("ensemble_contacts", [])
+
         for cand in candidates:
             feat = self._features(cand, res_by_pos, pf_by_pos, nearest, atom_by_id)
 
@@ -119,6 +137,14 @@ class RerankerStage(Stage):
             for dk in ("d_ligand_iptm", "d_complex_ipde", "d_key_distance",
                        "d_pocket_plddt"):
                 feat[dk] = delta.get(dk, 0.0)
+
+            if gnn_scorer is not None:
+                gscore = gnn_scorer.score_complex(
+                    _approx_mutant_complex(cx, cand), feats, econ,
+                    catalytic_positions=catalytic,
+                )
+                cand.scores["gnn_score"] = gscore
+                feat["gnn_score"] = gscore
 
             cand.details["features"] = feat
             cand.scores["family_interaction_score"] = fam

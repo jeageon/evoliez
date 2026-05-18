@@ -73,6 +73,39 @@ def show(config: Path = typer.Option(..., "-c", "--config")) -> None:
     typer.echo(json.dumps(cfg.model_dump(mode="json"), indent=2, default=str))
 
 
+@app.command(name="train-gnn")
+def train_gnn(
+    config: Path = typer.Option(..., "-c", "--config"),
+    dataset: Optional[str] = typer.Option(
+        None, "--dataset", help="graph dataset dir (default: <run>/datasets/graph_pt)"
+    ),
+    epochs: Optional[int] = typer.Option(None, "--epochs"),
+) -> None:
+    """Train the server-grade EvoLigand-GNN on the exported graph dataset.
+
+    Run the pipeline first so the dataset exists. torch is required (GPU
+    server); on the laptop this prints a clear message and exits.
+    """
+    setup_logging()
+    cfg = load_config(config)
+    from evoliez.io.paths import ProjectPaths
+    from evoliez.ml.train_gnn import train
+
+    paths = ProjectPaths(Path(cfg.project.output_dir).resolve())
+    ds = Path(dataset) if dataset else paths.graph_dataset
+    ckpt = paths.root / cfg.gnn.checkpoint
+    try:
+        out = train(
+            ds, ckpt, epochs=epochs or cfg.gnn.epochs,
+            hidden=cfg.gnn.hidden_dim, layers=cfg.gnn.layers,
+            lr=cfg.gnn.lr, amp=cfg.gnn.amp, seed=cfg.seed,
+        )
+        typer.echo(f"trained EvoLigand-GNN -> {out}")
+    except RuntimeError as exc:
+        typer.echo(f"skipped: {exc}")
+        raise typer.Exit(code=0)
+
+
 @app.command()
 def version() -> None:
     typer.echo(__version__)

@@ -56,6 +56,18 @@ class ProjectPaths:
         return self.root / "md"
 
     @property
+    def ml_datasets(self) -> Path:
+        return self.root / "ml_datasets"
+
+    @property
+    def graph_dataset(self) -> Path:
+        return self.root / "datasets" / "graph_pt"
+
+    @property
+    def checkpoints(self) -> Path:
+        return self.root / "checkpoints"
+
+    @property
     def reports(self) -> Path:
         return self.root / "reports"
 
@@ -95,6 +107,9 @@ class ProjectPaths:
             self.mutations,
             self.validation,
             self.md,
+            self.ml_datasets,
+            self.graph_dataset,
+            self.checkpoints,
             self.reports,
             self.figures,
             self.logs,

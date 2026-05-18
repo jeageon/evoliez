@@ -76,6 +76,11 @@ def test_full_mock_pipeline(tmp_path):
     with (dsd / "edge_level.csv").open() as fh:
         cols = next(_csv.reader(fh))
     assert "contact_frequency" in cols  # priority-1 feature present
+    # server-grade relative-vector graph dataset exported for GNN training
+    gdir = paths.root / "datasets" / "graph_pt"
+    assert (gdir / "index.txt").exists()
+    assert ctx.meta("graph_dataset_samples") >= 1
+
     roles = _json.loads((dsd / "roles.json").read_text())
     # the ONLY supervised-label column is the experimental one
     for tbl, colroles in roles["column_roles"].items():

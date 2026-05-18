@@ -91,11 +91,43 @@ class FinalRankingStage(Stage):
             "mutation_level": mutation_rows(ranked),
             "variant_level": variant_rows(ranked),
         }
-        ds_written = write_datasets(ctx.paths.root / "ml_datasets", ds)
+        ds_written = write_datasets(ctx.paths.ml_datasets, ds)
         ctx.persist_meta(
             "ml_datasets",
             {k: len(v) for k, v in ds.items()},
         )
+
+        # Relative-vector graph dataset for EvoLigand-GNN (server training).
+        if ctx.config.gnn.build_dataset:
+            from evoliez.ml.graph_dataset import (
+                build_graph_sample,
+                save_graph_dataset,
+            )
+            from evoliez.stages.s08_reranker import _approx_mutant_complex
+
+            wt = ctx.require("wt_complex")
+            pfeats = ctx.require("position_features")
+            econ = ctx.get("ensemble_contacts", [])
+            cat = ctx.get("catalytic_positions", [])
+            gcfg = ctx.config.gnn
+            samples = []
+            wt_s = build_graph_sample(
+                wt, pfeats, econ, radius_lr=gcfg.radius_lr,
+                radius_rr=gcfg.radius_rr, catalytic_positions=cat,
+            )
+            if wt_s is not None:
+                samples.append(wt_s)
+            for c in ranked[:30]:
+                gs = build_graph_sample(
+                    _approx_mutant_complex(wt, c), pfeats, econ,
+                    radius_lr=gcfg.radius_lr, radius_rr=gcfg.radius_rr,
+                    catalytic_positions=cat,
+                )
+                if gs is not None:
+                    samples.append(gs)
+            if samples:
+                save_graph_dataset(samples, ctx.paths.graph_dataset)
+                ctx.persist_meta("graph_dataset_samples", len(samples))
 
         ctx.put("ranked_candidates", ranked)
         ctx.persist_meta("n_ranked", len(ranked))

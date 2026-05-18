@@ -1,0 +1,39 @@
+# EvoLiEZ server workflow (Snakemake). Splits the pipeline into checkpointed
+# stages and trains the EvoLigand-GNN. Independent GPU jobs run in parallel;
+# do NOT model-parallel one model across the 4 A6000s.
+#
+#   cd /mnt/data2/<you>/EvoLiEZ
+#   snakemake -s workflow/Snakefile --config cfg=configs/server_fdh_nadp.yaml \
+#             --cores 32 --resources gpu=4 -p
+#
+# Each rule pins one GPU via CUDA_VISIBLE_DEVICES (scripts/run_pipeline.sh
+# logic / utils.gpu picks a free one).
+
+CFG = config.get("cfg", "configs/server_fdh_nadp.yaml")
+import yaml, pathlib
+RUN = pathlib.Path(yaml.safe_load(open(CFG))["project"]["output_dir"])
+
+rule all:
+    input: RUN / "reports" / "final_report.md",
+           RUN / "checkpoints" / "evoligand_gnn.pt"
+
+rule data_pipeline:
+    # homolog -> MSA -> Boltz ensemble -> graph -> interaction model ->
+    # mutation gen -> rerank -> validation -> MD -> ranking + datasets
+    output: RUN / "reports" / "final_report.md",
+            RUN / "datasets" / "graph_pt" / "index.txt"
+    resources: gpu=1
+    shell: "evoliez run -c {CFG}"
+
+rule train_gnn:
+    input: RUN / "datasets" / "graph_pt" / "index.txt"
+    output: RUN / "checkpoints" / "evoligand_gnn.pt"
+    resources: gpu=1
+    shell: "evoliez train-gnn -c {CFG}"
+
+rule rerank_with_gnn:
+    # optional: re-run scoring once the GNN exists (gnn.enabled + weight)
+    input: RUN / "checkpoints" / "evoligand_gnn.pt"
+    output: touch(RUN / ".gnn_reranked")
+    resources: gpu=1
+    shell: "evoliez run -c {CFG} --from s08_reranker --resume"

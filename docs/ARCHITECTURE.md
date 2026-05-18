@@ -69,6 +69,17 @@ labels**. The only supervised label is experimental. This is enforced by
 `ml/labels.py` and documented in [`ML_DATA_POLICY.md`](ML_DATA_POLICY.md).
 Multi-level datasets are exported to `<run>/ml_datasets/` (spec §7).
 
+## Server-grade EvoLigand-GNN (optional)
+
+`ml/egnn.py` is an E(3)-invariant heterogeneous EGNN over ligand-atom +
+residue nodes with relative-vector edges (`ml/graph_dataset.py` builds the
+dataset, exported to `<run>/datasets/graph_pt/`). Train with `evoliez
+train-gnn` (single GPU or `torchrun` DDP); `ml/gnn_scorer.py` adds an optional
+`gnn_score` to ranking. torch is server-only — no torch / no checkpoint falls
+back to the heuristic family model (`gnn` weight 0 by default). Multi-GPU =
+independent job per card (`utils.gpu.GpuPool`, `workflow/Snakefile`). See
+[`SERVER_GRADE.md`](SERVER_GRADE.md).
+
 ## Phase coverage (spec §21)
 
 - Phase 0 scaffold/schema/config/example/report ✓

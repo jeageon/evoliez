@@ -75,6 +75,24 @@ bash scripts/run_pipeline.sh my_config.yaml --resume
    handful of candidates.
 4. Full real run.
 
+## Server-grade GNN + Snakemake
+
+`configs/server_fdh_nadp.yaml` enables the EvoLigand-GNN and `/mnt/data2`
+storage. After the pipeline builds the graph dataset:
+
+```bash
+evoliez train-gnn -c configs/server_fdh_nadp.yaml          # 1 GPU
+# DDP across 4 A6000:
+torchrun --nproc_per_node=4 -m evoliez.ml.train_gnn ...    # gnn.ddp: true
+evoliez run -c configs/server_fdh_nadp.yaml --from s08_reranker --resume
+# or end-to-end:
+snakemake -s workflow/Snakefile --config cfg=configs/server_fdh_nadp.yaml \
+          --cores 32 --resources gpu=4
+```
+
+Install the GNN deps in the server env: `pip install -e ".[gnn]"`.
+Full design: [`SERVER_GRADE.md`](SERVER_GRADE.md).
+
 ## Outputs
 
 Everything under `project.output_dir`:

@@ -171,6 +171,40 @@ class InteractionModelConfig(_Base):
     model: str = "xgboost"  # xgboost | logistic | heuristic (auto-fallback)
 
 
+class GNNConfig(_Base):
+    """Server-grade EvoLigand-GNN (E(3)-invariant relative-vector model).
+
+    Optional: torch is server-only. When disabled / no checkpoint / no torch,
+    ranking falls back to the heuristic family interaction model. Train with
+    ``evoliez train-gnn`` after ``evoliez build-graph-dataset``.
+    """
+
+    enabled: bool = False
+    build_dataset: bool = True  # export graph dataset during the pipeline
+    checkpoint: str = "checkpoints/evoligand_gnn.pt"
+    hidden_dim: int = 128
+    layers: int = 4
+    rbf: int = 16
+    radius_lr: float = 6.0  # ligand-atom -> residue edge radius (Å)
+    radius_rr: float = 8.0  # residue-residue spatial edge radius (Å)
+    lr: float = 1.0e-3
+    epochs: int = 20
+    amp: bool = True
+    ddp: bool = False  # set when launched via torchrun on multi-GPU
+
+
+class DataScaleConfig(_Base):
+    """Server-grade data-generation funnel (spec §6, §12)."""
+
+    target_diffusion_samples: int = 30
+    homolog_diffusion_samples: int = 10
+    mutant_diffusion_samples: int = 10
+    top_for_redocking: int = 500
+    top_for_stability: int = 100
+    top_for_md: int = 30
+    final_library: int = 96
+
+
 class OutputConfig(_Base):
     final_library_size: int = 96
     top_single_mutants: int = 50
@@ -189,6 +223,7 @@ class ScoreWeights(_Base):
     stability: float = 0.75
     md_lite: float = 1.0
     family_interaction: float = 1.0  # learned family-geometry consistency
+    gnn: float = 0.0  # EvoLigand-GNN score (0 unless a model is trained)
     # penalties
     conservation_penalty: float = 1.0
     catalytic_geometry_penalty: float = 1.5
@@ -215,6 +250,8 @@ class Config(_Base):
     interaction_model: InteractionModelConfig = Field(
         default_factory=InteractionModelConfig
     )
+    gnn: GNNConfig = Field(default_factory=GNNConfig)
+    data_scale: DataScaleConfig = Field(default_factory=DataScaleConfig)
     mutation_generation: MutationGenConfig = Field(default_factory=MutationGenConfig)
     reranking: RerankConfig = Field(default_factory=RerankConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
