@@ -36,6 +36,8 @@ def train(
     lr: float = 1e-3,
     amp: bool = True,
     seed: int = 1234,
+    coord_noise_min: float = 0.1,
+    coord_noise_alpha: float = 1.5,
 ) -> Path:
     if not egnn.is_available():
         raise RuntimeError(
@@ -76,6 +78,14 @@ def train(
         tot = 0.0
         for i in loader:
             b = {k: v.to(device) for k, v in to_torch(samples[i]).items()}
+            # coordinate-noise augmentation (user §2C): low-pLDDT coords are
+            # less trustworthy -> larger jitter so the model does not overfit
+            # uncertain positions.
+            if "plddt_norm" in b:
+                sigma = coord_noise_min + coord_noise_alpha * (
+                    1.0 - b["plddt_norm"].clamp(0.0, 1.0)
+                )
+                b["pos"] = b["pos"] + torch.randn_like(b["pos"]) * sigma.unsqueeze(-1)
             if "contact_mask" in b and b["contact_mask"].numel():
                 m = b["contact_mask"].bool()
                 b["contact_label"] = b["contact_label"][m]

@@ -18,6 +18,25 @@ def _norm_plddt(v: float) -> float:
     return v / 100.0 if v > 1.5 else v
 
 
+def edge_confidence(
+    contact_freq: float,
+    norm_plddt_i: float,
+    ligand_iptm: float,
+    complex_ipde: float,
+) -> float:
+    """Simplified per-edge confidence (user §2B):
+    contact_frequency x normalized_pLDDT_i x ligand_iptm x exp(-ipDE/10)."""
+    import math
+
+    return round(
+        max(0.0, contact_freq)
+        * max(0.0, _norm_plddt(norm_plddt_i))
+        * max(0.0, ligand_iptm)
+        * math.exp(-max(0.0, complex_ipde) / 10.0),
+        5,
+    )
+
+
 def confidence_weighted_contact(
     contact_prob: float, ligand_iptm: float, local_plddt: float, pde: float
 ) -> float:

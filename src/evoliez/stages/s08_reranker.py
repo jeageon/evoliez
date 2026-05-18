@@ -64,6 +64,7 @@ _FEATURE_KEYS = [
     "dist_to_ligand",
     "family_interaction_score",
     "d_ligand_iptm",
+    "d_complex_iplddt",
     "d_complex_ipde",
     "d_key_distance",
     "d_pocket_plddt",
@@ -134,8 +135,8 @@ class RerankerStage(Stage):
                 catalytic_positions=catalytic,
             )
             cand.details["delta"] = delta
-            for dk in ("d_ligand_iptm", "d_complex_ipde", "d_key_distance",
-                       "d_pocket_plddt"):
+            for dk in ("d_ligand_iptm", "d_complex_iplddt", "d_complex_ipde",
+                       "d_key_distance", "d_pocket_plddt"):
                 feat[dk] = delta.get(dk, 0.0)
 
             if gnn_scorer is not None:

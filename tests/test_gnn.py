@@ -51,6 +51,12 @@ def test_build_graph_sample_shapes():
     # node count = ligand atoms + nearby residues
     assert s["node_feat"].shape[0] == len(s["node_type"])
     assert set(np.unique(s["node_type"]).tolist()).issubset({0, 1})
+    # confidence-aware additions
+    for k in ("edge_conf", "plddt_norm", "relia_label", "risk_label"):
+        assert k in s
+    assert s["edge_conf"].shape[0] == s["edge_index"].shape[1]
+    assert s["plddt_norm"].shape[0] == s["node_feat"].shape[0]
+    assert (s["edge_conf"] >= 0.0).all()
 
 
 def test_graph_dataset_roundtrip(tmp_path):

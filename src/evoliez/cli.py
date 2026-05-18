@@ -99,6 +99,8 @@ def train_gnn(
             ds, ckpt, epochs=epochs or cfg.gnn.epochs,
             hidden=cfg.gnn.hidden_dim, layers=cfg.gnn.layers,
             lr=cfg.gnn.lr, amp=cfg.gnn.amp, seed=cfg.seed,
+            coord_noise_min=cfg.gnn.coord_noise_min,
+            coord_noise_alpha=cfg.gnn.coord_noise_alpha,
         )
         typer.echo(f"trained EvoLigand-GNN -> {out}")
     except RuntimeError as exc:

@@ -56,6 +56,29 @@ the server-side enhancement.
 4. WT–mutant delta features
 5. catalytic-geometry preservation
 
+## Confidence-aware usage (pLDDT / PAE / PDE / disorder)
+
+pLDDT is per-residue *coordinate confidence*, not a flexibility label
+("low pLDDT = risky to use as a fixed coordinate", which may be a flexible
+loop OR poor prediction). These are features / edge weights only:
+
+- `features/confidence.py` — residue pLDDT bins, window means/min, gradient,
+  low-pLDDT segment length, fraction-low-nearby.
+- `adapters/disorder.py` — IUPred2A/MobiDB-lite (real) or sequence proxy:
+  separates "low pLDDT because IDR" from "low pLDDT because poorly predicted".
+- `features/boltz_features.edge_confidence` — `contact_freq × norm_pLDDT_i ×
+  ligand_iptm × exp(-ipDE/10)`; used as a **message-passing edge weight** in
+  the confidence-aware EGNN (low-confidence relative vectors down-weighted).
+- Coordinate-noise augmentation: σ = `coord_noise_min + α·(1 − pLDDT)` during
+  GNN training so the model never overfits uncertain coordinates.
+- Low-pLDDT policy: residues are dropped only if **also** >10 Å from the
+  ligand and non-catalytic; active-site / pocket low-pLDDT loops are kept,
+  flagged uncertain, and down-weighted (functional flexible loops survive).
+- Self-supervised tasks F (coordinate reliability) and G (flexible-pocket
+  risk) use pLDDT/disorder-derived **pseudo-labels** — still not experimental.
+- Ranking deltas after mutant re-eval: `d_complex_iplddt`, `d_complex_ipde`,
+  `d_pocket_plddt` flag structurally risky candidates.
+
 ## Never use as a label
 
 `confidence_score`, `ligand_iptm`, `affinity_pred_value`, a single Boltz pose

@@ -53,9 +53,14 @@ class EvoLigandGNNScorer:
     ) -> float:
         import torch
 
+        from evoliez.features.confidence import residue_confidence
+
         s = build_graph_sample(
             cx, position_features, ensemble_contacts,
             catalytic_positions=catalytic_positions,
+            residue_confidence=residue_confidence(cx.structure),
+            ligand_iptm=float(cx.metrics.get("ligand_iptm", 1.0)),
+            complex_ipde=float(cx.metrics.get("complex_ipde", 2.0)),
         )
         if s is None:
             return 0.5

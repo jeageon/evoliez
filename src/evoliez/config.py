@@ -191,6 +191,13 @@ class GNNConfig(_Base):
     epochs: int = 20
     amp: bool = True
     ddp: bool = False  # set when launched via torchrun on multi-GPU
+    # confidence-aware knobs (user guidance): pLDDT/PAE/disorder as features +
+    # edge weights + coordinate-noise augmentation, never flexibility labels.
+    use_disorder: bool = True
+    low_plddt_cutoff: float = 50.0       # below -> very-low confidence
+    drop_far_low_plddt: bool = True      # drop only if also >10 Å from ligand
+    coord_noise_min: float = 0.1         # Å jitter for high-pLDDT residues
+    coord_noise_alpha: float = 1.5       # extra Å jitter scaled by (1 - pLDDT)
 
 
 class DataScaleConfig(_Base):

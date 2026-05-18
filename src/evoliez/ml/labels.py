@@ -27,6 +27,9 @@ BOLTZ_DERIVED_PREFIXES = (
     "complex_iplddt", "complex_pde", "complex_ipde", "affinity_pred",
     "affinity_probability", "pae", "pde", "plddt", "contact_frequency",
     "ensemble_disagreement", "d_",  # delta features
+    # confidence-aware features (user guidance): never flexibility labels
+    "iupred", "mobidb", "disorder", "low_complexity", "edge_conf",
+    "relia", "risk", "coordinate_reliability",
 )
 
 # Role each kind of column may play.

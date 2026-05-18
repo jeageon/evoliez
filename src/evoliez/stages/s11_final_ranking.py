@@ -99,6 +99,8 @@ class FinalRankingStage(Stage):
 
         # Relative-vector graph dataset for EvoLigand-GNN (server training).
         if ctx.config.gnn.build_dataset:
+            from evoliez.adapters.disorder import predict_disorder
+            from evoliez.features.confidence import residue_confidence
             from evoliez.ml.graph_dataset import (
                 build_graph_sample,
                 save_graph_dataset,
@@ -110,19 +112,35 @@ class FinalRankingStage(Stage):
             econ = ctx.get("ensemble_contacts", [])
             cat = ctx.get("catalytic_positions", [])
             gcfg = ctx.config.gnn
-            samples = []
-            wt_s = build_graph_sample(
-                wt, pfeats, econ, radius_lr=gcfg.radius_lr,
-                radius_rr=gcfg.radius_rr, catalytic_positions=cat,
+            rconf = residue_confidence(wt.structure)
+            dis = (
+                predict_disorder(
+                    wt.structure.sequence, ctx.paths.root / "datasets",
+                    backend=ctx.config.backend_for("s06b_interaction"),
+                    dry_run=ctx.dry_run,
+                )
+                if gcfg.use_disorder
+                else None
             )
+            li = float(wt.metrics.get("ligand_iptm", 1.0))
+            ip = float(wt.metrics.get("complex_ipde", 2.0))
+
+            def _g(cx_):
+                return build_graph_sample(
+                    cx_, pfeats, econ, radius_lr=gcfg.radius_lr,
+                    radius_rr=gcfg.radius_rr, catalytic_positions=cat,
+                    residue_confidence=rconf, disorder=dis,
+                    ligand_iptm=li, complex_ipde=ip,
+                    low_plddt_cutoff=gcfg.low_plddt_cutoff,
+                    drop_far_low_plddt=gcfg.drop_far_low_plddt,
+                )
+
+            samples = []
+            wt_s = _g(wt)
             if wt_s is not None:
                 samples.append(wt_s)
             for c in ranked[:30]:
-                gs = build_graph_sample(
-                    _approx_mutant_complex(wt, c), pfeats, econ,
-                    radius_lr=gcfg.radius_lr, radius_rr=gcfg.radius_rr,
-                    catalytic_positions=cat,
-                )
+                gs = _g(_approx_mutant_complex(wt, c))
                 if gs is not None:
                     samples.append(gs)
             if samples:

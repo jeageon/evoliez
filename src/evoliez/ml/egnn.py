@@ -58,12 +58,15 @@ if _HAVE_TORCH:
                 nn.Linear(hidden, hidden),
             )
 
-        def forward(self, h, pos, edge_index, edge_attr):
+        def forward(self, h, pos, edge_index, edge_attr, edge_w=None):
             src, dst = edge_index[0], edge_index[1]
             d2 = ((pos[src] - pos[dst]) ** 2).sum(-1, keepdim=True)
             m = self.edge_mlp(
                 torch.cat([h[src], h[dst], d2, edge_attr], dim=-1)
             )
+            if edge_w is not None:
+                # confidence-aware: low-pLDDT / high-PDE edges contribute less
+                m = m * edge_w.unsqueeze(-1)
             agg = torch.zeros_like(h)
             agg.index_add_(0, dst, m)
             return h + self.node_mlp(torch.cat([h, agg], dim=-1))
@@ -89,6 +92,8 @@ if _HAVE_TORCH:
             self.itype_head = nn.Linear(2 * hidden, N_ITYPES)
             self.perm_head = nn.Linear(hidden, 1)
             self.native_head = nn.Linear(hidden, N_AA)
+            self.relia_head = nn.Linear(hidden, 1)   # Task F: coord reliability
+            self.risk_head = nn.Linear(hidden, 1)    # Task G: flexible-pocket risk
             self.score_head = nn.Sequential(
                 nn.Linear(hidden, hidden), nn.SiLU(), nn.Linear(hidden, 1)
             )
@@ -103,19 +108,22 @@ if _HAVE_TORCH:
             ea = self.edge_enc(
                 torch.cat([batch["edge_attr"], rbf(d, self.rbf_n)], dim=-1)
             )
+            ew = batch.get("edge_conf")
             for blk in self.blocks:
-                h = blk(h, pos, ei, ea)
+                h = blk(h, pos, ei, ea, ew)
 
             lr = batch["lr_edge_index"]  # ligand-atom -> residue edges
             ee = torch.cat([h[lr[0]], h[lr[1]]], dim=-1)
             res_mask = batch["node_type"] == 1
-            # graph-level pooled embedding over residues near the ligand
-            pooled = h[res_mask].mean(dim=0, keepdim=True)
+            hr = h[res_mask]
+            pooled = hr.mean(dim=0, keepdim=True)
             return {
                 "contact_logit": self.contact_head(ee).squeeze(-1),
                 "itype_logit": self.itype_head(ee),
-                "perm": self.perm_head(h[res_mask]).squeeze(-1),
-                "native_logit": self.native_head(h[res_mask]),
+                "perm": self.perm_head(hr).squeeze(-1),
+                "native_logit": self.native_head(hr),
+                "relia_logit": self.relia_head(hr).squeeze(-1),
+                "risk": torch.sigmoid(self.risk_head(hr).squeeze(-1)),
                 "graph_score": self.score_head(pooled).squeeze(-1),
             }
 
@@ -136,4 +144,10 @@ if _HAVE_TORCH:
             loss = loss + F.cross_entropy(
                 out["native_logit"], batch["native_label"].long()
             )
+        if "relia_label" in batch and batch["relia_label"].numel():
+            loss = loss + F.binary_cross_entropy_with_logits(
+                out["relia_logit"], batch["relia_label"].float()
+            )
+        if "risk_label" in batch and batch["risk_label"].numel():
+            loss = loss + F.mse_loss(out["risk"], batch["risk_label"].float())
         return loss
