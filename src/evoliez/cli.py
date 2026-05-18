@@ -114,9 +114,14 @@ def bench(
     benchmark: Path = typer.Option(..., "--benchmark",
                                    help="CSV: mutation,label[,activity]"),
     k: int = typer.Option(20, "--topk"),
+    ablation: bool = typer.Option(
+        False, "--ablation",
+        help="also re-run with each accuracy layer disabled (slower)"
+    ),
 ) -> None:
     """Run the pipeline then score it against a known-mutation benchmark
-    (recovery / deleterious avoidance / Spearman / AUROC) - user §9."""
+    (recovery / deleterious avoidance / Spearman / AUROC / calibration),
+    optionally with an ablation study - user §9 / expert review #4."""
     import json as _json
 
     setup_logging()
@@ -127,14 +132,27 @@ def bench(
     )
     ctx.setup()
     Pipeline().run(ctx)
-    from evoliez.ml.benchmark import load_benchmark, run_benchmark
+    from evoliez.ml.benchmark import (
+        load_benchmark,
+        run_ablation,
+        run_benchmark,
+    )
 
+    bench_rows = load_benchmark(benchmark)
     ranked = ctx.get("ranked_candidates", [])
-    result = run_benchmark(ranked, load_benchmark(benchmark), k=k)
+    result = run_benchmark(
+        ranked, bench_rows, k=k,
+        catalytic_positions=ctx.get("catalytic_positions", []),
+        known_site=ctx.get("known_binding_site", []),
+    )
+    if ablation:
+        result["ablation_study"] = run_ablation(
+            str(config), bench_rows, k=k
+        )
     (ctx.paths.reports / "benchmark.json").write_text(
         _json.dumps(result, indent=2)
     )
-    typer.echo(_json.dumps(result, indent=2))
+    typer.echo(_json.dumps(result, indent=2, default=str))
 
 
 @app.command()

@@ -94,9 +94,41 @@ def test_benchmark_metrics():
         {"mutation": "A85K", "label": "beneficial", "activity": 2.0},
         {"mutation": "H155A", "label": "deleterious", "activity": 0.05},
     ]
-    r = run_benchmark(ranked, bench, k=1)
+    r = run_benchmark(ranked, bench, k=1, catalytic_positions=[155],
+                      known_site=[85])
     assert r["beneficial_recall_at_k"] == 1.0
     assert r["auroc_beneficial"] == 1.0
+    # catalytic single-mutant H155A should be protected (ranked bottom half)
+    assert r["catalytic_protection_rate"] == 1.0
+    assert r["binding_site_enrichment"] == 1.0  # top-1 targets site res 85
+    assert 0.0 <= r["calibration"]["ece"] <= 1.0
+
+
+def test_run_ablation_reports_layer_deltas(tmp_path):
+    from evoliez.ml.benchmark import run_ablation
+
+    cfg = tmp_path / "small.yaml"
+    cfg.write_text(
+        "project: {name: abl, output_dir: %s/run}\n"
+        "input:\n"
+        "  target_id: fdh\n"
+        "  target_fasta: %s\n"
+        "  ligand: {id: L, type: smiles, value: 'CC(=O)O'}\n"
+        "mutation_generation: {methods: [chemistry_rules], "
+        "max_candidates: 25, design_radius_angstrom: 9.0}\n"
+        "reranking: {top_for_redocking: 8, top_for_md: 3}\n"
+        "validation: {md: {top_candidates: 3}}\n"
+        "gnn: {build_dataset: false}\n"
+        "backend: mock\n"
+        % (tmp_path, ROOT / "examples" / "fdh" / "target.fasta")
+    )
+    bench = [{"mutation": "A85K", "label": "beneficial", "activity": 2.0},
+             {"mutation": "F84L", "label": "neutral", "activity": 1.0}]
+    res = run_ablation(str(cfg), bench, k=5, toggles=("md",),
+                       base_output=str(tmp_path / "abl"))
+    tags = [r["ablation"] for r in res["ablation"]]
+    assert tags == ["full_model", "no_md"]
+    assert "delta_auroc_beneficial" in res["ablation"][1]
 
 
 def test_calibration_and_ece():
