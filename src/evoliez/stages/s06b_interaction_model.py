@@ -116,13 +116,23 @@ class InteractionModelStage(Stage):
             sum(1 for e in econ if e.contact_frequency >= 0.5),
         )
 
-        sel = select_poses(
-            records,
+        sel_kw = dict(
             select_z=cfg.pose_select_mad_z,
             outlier_z=cfg.pose_outlier_mad_z,
             min_decoys_per_group=cfg.min_decoys_per_homolog,
             seed=ctx.config.seed,
+            keep_alternative_band=cfg.keep_alternative_band,
+            alternative_weight=cfg.alternative_weight,
+            hard_decoys_per_group=cfg.hard_decoys_per_homolog,
         )
+        sel = select_poses(records, **sel_kw)
+
+        # subfamily-holdout validation: train without one homolog group,
+        # check the model still ranks its held-out consensus poses above
+        # decoys (guards against memorising / consensus circularity).
+        holdout_auroc = self._subfamily_holdout(records, sel_kw, cfg)
+        if holdout_auroc is not None:
+            self.log.info("subfamily-holdout AUROC = %.3f", holdout_auroc)
 
         model = InteractionModel(
             cutoff=cfg.contact_cutoff, k_nearest=cfg.k_nearest_residues
@@ -138,22 +148,51 @@ class InteractionModelStage(Stage):
                 "poses_total": n_poses_total,
                 "train_rows": int(sel.X.shape[0]),
                 "n_consensus": sel.n_positive,
+                "n_alternative": sel.n_alternative,
                 "n_outlier": sel.n_outlier,
                 "n_decoy": sel.n_decoy,
+                "n_hard_decoy": sel.n_hard_decoy,
+                "subfamily_holdout_auroc": holdout_auroc,
                 "model_kind": model.kind,
                 "fp_dim": fingerprint_dim(cfg.k_nearest_residues),
             },
         )
         self.log.info(
-            "trained %s on %d rows (consensus=%d, outlier=%d, decoy=%d)",
-            model.kind, sel.X.shape[0], sel.n_positive,
-            sel.n_outlier, sel.n_decoy,
+            "trained %s on %d rows (consensus=%d, alt=%d, outlier=%d, "
+            "decoy=%d, hard=%d)",
+            model.kind, sel.X.shape[0], sel.n_positive, sel.n_alternative,
+            sel.n_outlier, sel.n_decoy, sel.n_hard_decoy,
         )
         if sel.consensus.size:
             self.log.info(
                 "family consensus interaction: %s",
                 describe(sel.consensus, cfg.k_nearest_residues),
             )
+
+    def _subfamily_holdout(self, records, sel_kw, cfg):
+        """Hold out one homolog group; train on the rest; AUROC of the
+        held-out consensus poses vs that group's decoys."""
+        if not cfg.subfamily_holdout:
+            return None
+        groups = sorted({r.group_id for r in records})
+        if len(groups) < 3:
+            return None
+        held = groups[-1]
+        train_recs = [r for r in records if r.group_id != held]
+        held_recs = [r for r in records if r.group_id == held]
+        if not train_recs or not held_recs:
+            return None
+        sel = select_poses(train_recs, **sel_kw)
+        m = InteractionModel(
+            cutoff=cfg.contact_cutoff, k_nearest=cfg.k_nearest_residues
+        ).fit(sel)
+        held_sel = select_poses(held_recs, **{**sel_kw, "seed": sel_kw["seed"] + 1})
+        if held_sel.X.shape[0] == 0 or len(set(held_sel.y.tolist())) < 2:
+            return None
+        from evoliez.ml.benchmark import _auroc
+
+        scores = [m.score_vector(x) for x in held_sel.X]
+        return _auroc(scores, [int(v) for v in held_sel.y.tolist()])
 
     def load(self, ctx: RunContext) -> bool:
         p = ctx.paths.interaction_graphs / "interaction_model.json"

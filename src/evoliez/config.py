@@ -172,6 +172,13 @@ class InteractionModelConfig(_Base):
     pose_select_mad_z: float = 2.5  # keep poses within this robust z of consensus
     pose_outlier_mad_z: float = 4.0  # beyond this -> negative example
     min_decoys_per_homolog: int = 4  # synthetic negatives if poses too consistent
+    # soft / multi-class labelling (expert review #3): mid-band poses are
+    # "alternative/uncertain", NOT auto-negatives; add hard wrong-pose decoys;
+    # report a subfamily-holdout AUROC.
+    keep_alternative_band: bool = True
+    alternative_weight: float = 0.3
+    hard_decoys_per_homolog: int = 2
+    subfamily_holdout: bool = True
     # model
     model: str = "xgboost"  # xgboost | logistic | heuristic (auto-fallback)
 

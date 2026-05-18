@@ -64,6 +64,8 @@ def test_full_mock_pipeline(tmp_path):
     assert (paths.interaction_graphs / "interaction_model.json").exists()
     imeta = ctx.meta("interaction_model")
     assert imeta and imeta["train_rows"] > 0 and imeta["n_consensus"] > 0
+    assert "n_alternative" in imeta and "n_hard_decoy" in imeta
+    assert "subfamily_holdout_auroc" in imeta
     assert ctx.get("interaction_model") is not None
 
     # multi-level ML datasets + data-role policy (Boltz != label)
