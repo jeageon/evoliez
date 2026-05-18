@@ -1,0 +1,102 @@
+# EvoLiEZ default configuration (spec section 19).
+# Every key here is the schema default; copy + edit for a real project.
+# `evoliez show -c configs/default.yaml` prints the fully-resolved settings.
+
+project:
+  name: evoliez_project
+  objective: binding_enhancement          # binding_enhancement | cofactor_switching | thermostability ...
+  output_dir: runs/evoliez_project
+
+input:
+  target_id: target
+  target_fasta: null                       # path to FASTA ...
+  # ... or inline sequence (exactly one source required). Placeholder below so
+  # this template is itself a valid config (`evoliez show -c configs/default.yaml`).
+  target_sequence: "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKR"
+  ligand:
+    id: ligand_X
+    type: smiles                           # smiles | sdf | mol2 | pdb | inchi | ccd
+    value: "CC(=O)O"
+  catalytic_residues: []                   # e.g. ["H155", "R285"] (never mutated by default)
+  fixed_residues: []
+  known_binding_site: []
+  cofactor: null
+  target_ph: 7.4
+  organism: null
+  ec_number: null
+  experimental_dataset: null               # CSV: mutation,activity (enables supervised reranker)
+
+homologs:
+  method: mmseqs2                          # mmseqs2 | jackhmmer | blastp
+  database: null                           # REQUIRED for backend=real (UniRef/BFD on /mnt/data2)
+  max_sequences: 5000
+  identity_min: 0.20
+  identity_max: 0.95
+  coverage_min: 0.70
+  evalue_max: 1.0e-5
+  cluster_identity: 0.90
+  use_foldseek: false
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+  compute_covariation: false
+  remote_server: false                     # fetch MSA from a hosted service (no local DB)
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 20
+  use_templates: true
+  pocket_constraints: true
+  predict_affinity: true
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler]  # add "ligandmpnn" on the GPU server
+  max_candidates: 2000
+  design_radius_angstrom: 8.0
+  fix_catalytic_residues: true
+  fix_highly_conserved_residues: true
+  conservation_fix_threshold: 0.9
+  ligandmpnn_samples: 32
+  ligandmpnn_temperature: 0.1
+
+reranking:
+  model: xgboost                           # xgboost | mlp | rules (heuristic if no labels)
+  use_experimental_labels: false
+  top_for_redocking: 200
+  top_for_md: 30
+
+validation:
+  redocking:
+    methods: [vina]                        # vina | gnina | diffdock
+    poses_per_candidate: 10
+    pose_rmsd_cluster: 2.0
+  stability:
+    method: foldx                          # foldx | rosetta | ml
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    engine: openmm
+    protocol_level: 1                      # 0 minimise | 1 MD-lite | 2 short | 3 advanced
+    solvent: implicit                      # implicit | explicit
+    temperature_K: 300.0
+    timestep_fs: 2.0
+    minimize_steps: 5000
+    equilibration_ps: 100.0
+    restrained_md_ps: 500.0
+    production_ns: 1.0
+    replicas: 1
+    top_candidates: 30
+
+output:
+  final_library_size: 96
+  top_single_mutants: 50
+  report_format: [markdown, csv]           # add "pymol_session"
+
+# scoring: see ScoreWeights in config.py for all tunable weights (spec 16)
+
+backend: mock                              # mock (laptop/CI) | real (GPU server)
+backends: {}                               # per-stage override, e.g. {s04_complex: real}
+seed: 1234

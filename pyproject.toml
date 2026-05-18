@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evoliez"
+version = "0.1.0"
+description = "EvoLigand-Enzyme Engineer: ligand-aware, enzyme-family-specific protein engineering pipeline with MD validation"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "EvoLiEZ" }]
+keywords = ["enzyme-engineering", "protein-ligand", "molecular-dynamics", "boltz", "ligandmpnn"]
+
+# Core dependencies kept light so the mock pipeline runs on a laptop with no GPU/conda.
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=1.5",
+    "pyyaml>=6.0",
+    "pydantic>=2.4",
+    "SQLAlchemy>=2.0",
+    "networkx>=3.0",
+    "typer>=0.9",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+# Real scientific stack (installable via pip on most platforms; conda preferred on the server).
+science = [
+    "rdkit>=2023.3.1",
+    "biopython>=1.81",
+    "scikit-learn>=1.2",
+    "xgboost>=1.7",
+]
+# Molecular dynamics (OpenMM is conda-first; pip wheels exist for some platforms).
+md = [
+    "openmm>=8.0",
+    "mdanalysis>=2.4",
+    "mdtraj>=1.9",
+    "openff-toolkit>=0.14",
+]
+# GPU / deep-learning tools that only run on the CUDA server.
+gpu = [
+    "torch>=2.0",
+]
+# Optional graph-neural-network reranker backend.
+gnn = [
+    "torch>=2.0",
+    "torch-geometric>=2.3",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+all = ["evoliez[science,md,dev]"]
+
+[project.scripts]
+evoliez = "evoliez.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+evoliez = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

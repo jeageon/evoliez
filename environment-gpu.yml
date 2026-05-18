@@ -1,0 +1,57 @@
+# SERVER environment (admin1-SYS-740GP-TNRT: 4x RTX A6000, CUDA 12.4).
+#
+# IMPORTANT: root "/" is ~99% full. Create the env on /mnt/data2, NOT on the
+# default ~/anaconda3/envs path:
+#
+#   conda env create -f environment-gpu.yml -p /mnt/data2/envs/evoliez
+#   conda activate /mnt/data2/envs/evoliez
+#
+# Boltz-2, LigandMPNN, DiffDock, GNINA and their weights are installed/fetched
+# separately (see docs/DATA_AND_WEIGHTS.md and scripts/fetch_weights.sh).
+#
+name: evoliez
+channels:
+  - conda-forge
+  - bioconda
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.10
+  - pip
+  # core
+  - numpy
+  - pandas
+  - pyyaml
+  - pydantic>=2.4
+  - sqlalchemy>=2.0
+  - networkx
+  - typer
+  - rich
+  # science
+  - rdkit
+  - biopython
+  - scikit-learn
+  - xgboost
+  # md (CUDA-enabled OpenMM)
+  - openmm
+  - cudatoolkit=12.*
+  - mdanalysis
+  - mdtraj
+  - openff-toolkit
+  - openmmforcefields
+  - ambertools
+  # homology / MSA
+  - mafft
+  - hmmer
+  - mmseqs2
+  - foldseek
+  - blast
+  # docking
+  - vina
+  - openbabel
+  # deep learning (pin CUDA build at install time to match driver 550 / CUDA 12.4)
+  - pytorch
+  - pytorch-cuda=12.1
+  - pip:
+      - -e .
+      # boltz / ligandmpnn / diffdock installed from source on the server; see runbook

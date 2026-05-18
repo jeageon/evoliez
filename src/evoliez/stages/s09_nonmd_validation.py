@@ -1,0 +1,132 @@
+"""Stage 09 - non-MD structural validation (spec section 14).
+
+Cheaper filters before MD: stability (FoldX/Rosetta/mock), catalytic-geometry
+proxy, and per-mutant redocking consistency vs the WT reference pose.
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import List
+
+from evoliez.adapters import foldx, rosetta
+from evoliez.context import RunContext
+from evoliez.features.geometry import catalytic_distances, rmsd
+from evoliez.stages.base import Stage
+from evoliez.stages.s05_docking import redock_with
+from evoliez.types import Candidate, Complex
+
+
+def _mutant_complex(wt: Complex, cand: Candidate) -> Complex:
+    """Approximate mutant complex: WT geometry with substituted residue
+    identities (coords unchanged). Cheap proxy for pre-MD filtering; MD then
+    relaxes it. Real backend can re-predict per mutant if configured."""
+    mc = copy.deepcopy(wt)
+    by_pos = {r.index: r for r in mc.structure.residues}
+    seq = list(mc.structure.sequence)
+    for m in cand.mutations:
+        r = by_pos.get(m.position)
+        if r is not None:
+            r.aa = m.mut
+            if 0 < m.position <= len(seq):
+                seq[m.position - 1] = m.mut
+    mc.structure.sequence = "".join(seq)
+    return mc
+
+
+def _instability(cand: Candidate) -> float:
+    """0..1 disruption proxy driving mock redock/MD behaviour."""
+    ddg = cand.scores.get("ddg_fold", 0.0)
+    clash = cand.scores.get("clash_score", 0.0)
+    cons = cand.details.get("features", {}).get("conservation", 0.5)
+    val = 0.12 * max(0.0, ddg) + 0.25 * clash + 0.4 * cons
+    return float(max(0.0, min(1.0, val)))
+
+
+class NonMDValidationStage(Stage):
+    name = "s09_nonmd"
+
+    def run(self, ctx: RunContext) -> None:
+        wt = ctx.require("wt_complex")
+        candidates: List[Candidate] = ctx.require("redock_candidates")
+        catalytic = ctx.require("catalytic_positions")
+        ref_atoms = ctx.require("reference_atoms")
+        scfg = ctx.config.validation.stability
+        dcfg = ctx.config.validation.redocking
+        backend = ctx.config.backend_for(self.name)
+
+        wt_cat = catalytic_distances(wt.structure, ref_atoms, catalytic)
+        kept: List[Candidate] = []
+        for cand in candidates:
+            mc = _mutant_complex(wt, cand)
+
+            if scfg.method == "rosetta":
+                stab = rosetta.estimate_stability(
+                    cand.candidate_id, mc.structure, cand.mutations,
+                    ctx.paths.validation / "rosetta", backend=backend,
+                    dry_run=ctx.dry_run,
+                )
+            else:
+                stab = foldx.estimate_stability(
+                    cand.candidate_id, mc.structure, cand.mutations, scfg,
+                    ctx.paths.validation / "foldx", backend=backend,
+                    dry_run=ctx.dry_run,
+                )
+            cand.scores["ddg_fold"] = stab.get("ddg_fold", 0.0)
+            cand.scores["clash_score"] = stab.get("clash_score", 0.0)
+
+            inst = _instability(cand)
+            pose = redock_with(
+                dcfg.methods[0], ctx, cand.candidate_id, mc.structure,
+                ref_atoms, dcfg, ctx.paths.validation / "redock", inst,
+                wt.ligand.smiles,
+            )
+            cand.scores["docking_score"] = pose.score
+            consistency = max(
+                0.0, 1.0 - (pose.rmsd_to_reference or 0.0) / 4.0
+            )
+            cand.scores["redocking_consistency"] = round(consistency, 4)
+            cand.scores["docking_uncertainty"] = round(1.0 - consistency, 4)
+            ligand_escape = (pose.rmsd_to_reference or 0.0) > 4.5
+
+            mut_cat = catalytic_distances(mc.structure, ref_atoms, catalytic)
+            geom_pen = 0.0
+            for k, v in mut_cat.items():
+                geom_pen += abs(v - wt_cat.get(k, v)) / 4.0
+            cand.scores["catalytic_geometry_penalty"] = round(geom_pen, 4)
+            cand.scores["key_contact_preservation"] = round(consistency, 4)
+            cand.scores["complex_confidence"] = wt.confidence
+            cand.scores["instability"] = round(inst, 4)
+
+            # filters (spec 14.3)
+            reasons = []
+            if cand.scores["ddg_fold"] > scfg.max_ddg_allowed:
+                reasons.append(f"ddG {cand.scores['ddg_fold']:.2f} > "
+                               f"{scfg.max_ddg_allowed}")
+            if ligand_escape:
+                reasons.append("ligand displaced on redocking")
+            if reasons:
+                cand.details["nonmd_rejected"] = "; ".join(reasons)
+            else:
+                kept.append(cand)
+
+        # advance the best survivors to MD
+        kept.sort(
+            key=lambda c: (
+                c.scores.get("ml_score", 0.0)
+                + c.scores.get("redocking_consistency", 0.0)
+                - 0.2 * max(0.0, c.scores.get("ddg_fold", 0.0))
+            ),
+            reverse=True,
+        )
+        md_top = kept[: ctx.config.validation.md.top_candidates]
+        ctx.put("candidates", candidates)
+        ctx.put("validated_candidates", kept)
+        ctx.put("md_candidates", md_top)
+        ctx.persist_meta("n_after_nonmd", len(kept))
+        ctx.persist_meta("n_for_md", len(md_top))
+        self.log.info(
+            "non-MD validation: %d/%d passed; %d advance to MD",
+            len(kept), len(candidates), len(md_top),
+        )
+        _ = rmsd  # geometry helper kept importable for real-backend extensions

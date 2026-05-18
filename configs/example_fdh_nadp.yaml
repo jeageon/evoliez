@@ -1,0 +1,74 @@
+# Example: NAD-dependent formate dehydrogenase, cofactor-switching objective
+# (NAD -> NADP). Runs end-to-end with the mock backend on any machine:
+#
+#   evoliez run -c configs/example_fdh_nadp.yaml
+#
+# On the GPU server, set `backend: real` (and configure homologs.database)
+# to use Boltz-2 / LigandMPNN / OpenMM-CUDA for real.
+
+project:
+  name: fdh_nadp_engineering
+  objective: cofactor_switching
+  output_dir: runs/demo_fdh_nadp
+
+input:
+  target_id: fdh
+  target_fasta: examples/fdh/target.fasta
+  ligand:
+    id: NADP_cofactor
+    type: smiles
+    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
+  catalytic_residues: ["H155", "R285"]
+  fixed_residues: ["G10", "G12", "H155", "R285"]
+  cofactor: NADP
+  target_ph: 7.5
+  organism: "Cupriavidus necator"
+  ec_number: "1.2.1.2"
+
+homologs:
+  method: mmseqs2
+  max_sequences: 4000
+  identity_min: 0.20
+  identity_max: 0.95
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 20
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, ligandmpnn]
+  max_candidates: 1500
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 150
+  top_for_md: 20
+
+validation:
+  redocking:
+    methods: [vina]
+  stability:
+    method: foldx
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    protocol_level: 1
+    solvent: implicit
+    production_ns: 1.0
+    top_candidates: 20
+
+output:
+  final_library_size: 96
+  top_single_mutants: 30
+  report_format: [markdown, csv, pymol_session]
+
+backend: mock
+seed: 1234

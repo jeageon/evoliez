@@ -1,0 +1,31 @@
+# CPU / development environment (Mac or any laptop, no GPU).
+# Runs the full pipeline with mock backends for the GPU tools.
+#
+#   conda env create -f environment.yml
+#   conda activate evoliez-dev
+#
+name: evoliez-dev
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pandas
+  - pyyaml
+  - pydantic>=2.4
+  - sqlalchemy>=2.0
+  - networkx
+  - typer
+  - rich
+  - rdkit
+  - biopython
+  - scikit-learn
+  - xgboost
+  - openmm           # CPU platform is fine for minimization / MD-lite smoke tests
+  - mdanalysis
+  - mdtraj
+  - pytest
+  - pip:
+      - -e .

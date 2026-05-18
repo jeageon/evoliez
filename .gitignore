@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Pipeline run outputs (never commit large artifacts)
+runs/
+*.dcd
+*.xtc
+*.trr
+*.h5
+
+# Model weights / databases (fetched on the server, never committed)
+weights/
+databases/
+*.pt
+*.ckpt
+*.pth
+*.npz
+
+# Local config overrides
+*.local.yaml
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
