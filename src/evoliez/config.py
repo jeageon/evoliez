@@ -92,6 +92,7 @@ class ComplexPredictionConfig(_Base):
     use_templates: bool = True
     pocket_constraints: bool = True
     predict_affinity: bool = True
+    diffusion_samples: int = 5  # Boltz poses per prediction (ensemble features)
 
 
 class DockingConfig(_Base):

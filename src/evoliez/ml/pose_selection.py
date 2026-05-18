@@ -30,6 +30,9 @@ class PoseRecord:
 class SelectionResult:
     X: np.ndarray  # (n, fingerprint + 3 extra features)
     y: np.ndarray  # 1 = family-consensus pose, 0 = outlier/decoy
+    # Per-row training weight = Boltz pose reliability (spec: use Boltz score
+    # as a SAMPLE WEIGHT, never as a label).
+    weights: np.ndarray = field(default_factory=lambda: np.zeros(0))
     n_positive: int = 0
     n_outlier: int = 0
     n_decoy: int = 0
@@ -66,12 +69,19 @@ def select_poses(
     dists = np.linalg.norm(fps - consensus, axis=1)
     z = _robust_z(dists)
 
-    Xp, Xn = [], []
+    # positive sample weight = Boltz pose reliability (normalised pred_score)
+    preds = np.array([r.pred_score for r in records], dtype=float)
+    lo, hi = float(preds.min()), float(preds.max())
+    rng_span = (hi - lo) or 1.0
+
+    Xp, Xn, Wp, Wn = [], [], [], []
     for rec, zi in zip(records, z):
         if zi <= select_z:
             Xp.append(_augment(rec))
+            Wp.append(0.2 + 0.8 * (rec.pred_score - lo) / rng_span)
         elif zi >= outlier_z:
             Xn.append(_augment(rec))
+            Wn.append(1.0)
         # in-between: ambiguous, dropped to keep classes clean
 
     n_outlier = len(Xn)
@@ -94,11 +104,13 @@ def select_poses(
                 msa_membership=0.0, identity_to_target=0.0, pred_score=-1.0,
             )
             Xn.append(_augment(rec))
+            Wn.append(1.0)
             n_decoy += 1
 
     X = np.vstack(Xp + Xn) if (Xp or Xn) else np.zeros((0, fp_dim + 3))
     y = np.concatenate([np.ones(len(Xp)), np.zeros(len(Xn))]).astype(int)
+    w = np.concatenate([np.array(Wp), np.array(Wn)]) if (Xp or Xn) else np.zeros(0)
     return SelectionResult(
-        X=X, y=y, n_positive=len(Xp), n_outlier=n_outlier,
+        X=X, y=y, weights=w, n_positive=len(Xp), n_outlier=n_outlier,
         n_decoy=n_decoy, consensus=consensus,
     )

@@ -63,6 +63,17 @@ class ProteinStructure:
 
 
 @dataclass
+class BoltzSample:
+    """One diffusion sample from Boltz. Structure backbone is shared at the
+    Complex level; the ligand pose and confidence vary per sample."""
+
+    idx: int
+    ligand_atoms: List["LigandAtom"] = field(default_factory=list)
+    metrics: Dict[str, float] = field(default_factory=dict)
+    residue_plddt: List[float] = field(default_factory=list)
+
+
+@dataclass
 class Complex:
     structure: ProteinStructure
     ligand: Ligand
@@ -70,6 +81,12 @@ class Complex:
     confidence: float = 0.0
     affinity_score: Optional[float] = None
     path: Optional[str] = None
+    # Rich Boltz confidence/affinity metrics (spec: features, NOT labels):
+    # confidence_score, ptm, iptm, ligand_iptm, complex_plddt, complex_iplddt,
+    # complex_pde, complex_ipde, affinity_pred_value, affinity_probability_binary,
+    # affinity_pred_value1/2, ensemble_disagreement.
+    metrics: Dict[str, float] = field(default_factory=dict)
+    samples: List[BoltzSample] = field(default_factory=list)
 
 
 @dataclass

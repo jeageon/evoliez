@@ -40,6 +40,7 @@ complex_prediction:
   primary_method: boltz2
   use_msa_server: true
   representative_homologs: 20
+  diffusion_samples: 6
 
 interaction_model:
   enabled: true

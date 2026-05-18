@@ -63,7 +63,8 @@ class InteractionModel:
             n_estimators=150, max_depth=3, learning_rate=0.08,
             subsample=0.9, eval_metric="logloss",
         )
-        m.fit(sel.X, sel.y)
+        sw = sel.weights if sel.weights.size == sel.X.shape[0] else None
+        m.fit(sel.X, sel.y, sample_weight=sw)
         self._est, self.kind = m, "xgboost"
         log.info("interaction model: xgboost (%d rows)", sel.X.shape[0])
         return True
@@ -78,7 +79,8 @@ class InteractionModel:
         m = make_pipeline(
             StandardScaler(), LogisticRegression(max_iter=500)
         )
-        m.fit(sel.X, sel.y)
+        sw = sel.weights if sel.weights.size == sel.X.shape[0] else None
+        m.fit(sel.X, sel.y, logisticregression__sample_weight=sw)
         self._est, self.kind = m, "logistic"
         log.info("interaction model: logistic (%d rows)", sel.X.shape[0])
         return True

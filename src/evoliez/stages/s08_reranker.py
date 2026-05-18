@@ -8,13 +8,52 @@ trains XGBoost (falls back to the heuristic if xgboost is unavailable).
 
 from __future__ import annotations
 
+import copy
 import csv
 from typing import Dict, List
 
 from evoliez.context import RunContext
+from evoliez.features.delta import boltz_delta_features
+from evoliez.ml.labels import assert_supervised_label_allowed
 from evoliez.stages.base import Stage
 from evoliez.stages.s07_mutation_gen import _RULE_POOL, _ligand_role
 from evoliez.types import Candidate
+
+_BOLTZ_SCALED = (
+    "confidence_score", "ptm", "iptm", "ligand_iptm",
+    "complex_plddt", "complex_iplddt",
+)
+
+
+def _approx_mutant_complex(cx, cand):
+    """Proxy mutant complex for WT-delta features WITHOUT a per-candidate
+    Boltz run: WT geometry/metrics degraded by mutation disruptiveness
+    (conservation x #mutations). A real per-mutant Boltz re-eval is the
+    server-side enhancement; deltas remain FEATURES, never labels."""
+    mc = copy.deepcopy(cx)
+    by = {r.index: r for r in mc.structure.residues}
+    seq = list(mc.structure.sequence)
+    for m in cand.mutations:
+        r = by.get(m.position)
+        if r is not None:
+            r.aa = m.mut
+            if 0 < m.position <= len(seq):
+                seq[m.position - 1] = m.mut
+    mc.structure.sequence = "".join(seq)
+    f = cand.details.get("features", {})
+    inst = min(1.0, 0.5 * f.get("conservation", 0.5)
+               + 0.15 * (len(cand.mutations) - 1))
+    for k in _BOLTZ_SCALED:
+        if k in mc.metrics:
+            mc.metrics[k] = round(mc.metrics[k] * (1.0 - 0.30 * inst), 4)
+    for k in ("complex_pde", "complex_ipde"):
+        if k in mc.metrics:
+            mc.metrics[k] = round(mc.metrics[k] * (1.0 + 0.40 * inst), 4)
+    if "affinity_pred_value" in mc.metrics:
+        mc.metrics["affinity_pred_value"] = round(
+            mc.metrics["affinity_pred_value"] + 0.6 * inst, 4
+        )
+    return mc
 
 _FEATURE_KEYS = [
     "msa_permissiveness",
@@ -24,6 +63,10 @@ _FEATURE_KEYS = [
     "buried_fraction",
     "dist_to_ligand",
     "family_interaction_score",
+    "d_ligand_iptm",
+    "d_complex_ipde",
+    "d_key_distance",
+    "d_pocket_plddt",
 ]
 
 
@@ -35,6 +78,7 @@ class RerankerStage(Stage):
         feats = ctx.require("position_features")
         contacts = ctx.require("contacts")
         candidates: List[Candidate] = ctx.require("candidates")
+        catalytic = ctx.get("catalytic_positions", [])
         rcfg = ctx.config.reranking
 
         res_by_pos = {r.index: r for r in cx.structure.residues}
@@ -65,6 +109,16 @@ class RerankerStage(Stage):
             else:
                 fam = 0.5  # neutral when the interaction model is disabled
             feat["family_interaction_score"] = fam
+
+            # WT - mutant Boltz delta features (proxy; FEATURES, not labels)
+            delta = boltz_delta_features(
+                _approx_mutant_complex(cx, cand), cx,
+                catalytic_positions=catalytic,
+            )
+            cand.details["delta"] = delta
+            for dk in ("d_ligand_iptm", "d_complex_ipde", "d_key_distance",
+                       "d_pocket_plddt"):
+                feat[dk] = delta.get(dk, 0.0)
 
             cand.details["features"] = feat
             cand.scores["family_interaction_score"] = fam
@@ -166,9 +220,19 @@ class RerankerStage(Stage):
         labels: Dict[str, float] = {}
         try:
             with open(path, newline="") as fh:
-                for row in csv.DictReader(fh):
+                reader = csv.DictReader(fh)
+                label_col = next(
+                    (c for c in (reader.fieldnames or [])
+                     if c.lower() in ("activity", "relative_activity",
+                                      "kcat", "km", "kcat_km",
+                                      "thermostability")),
+                    "activity",
+                )
+                # policy: a Boltz-derived column can never be the label
+                assert_supervised_label_allowed(label_col)
+                for row in reader:
                     mut = row.get("mutation") or row.get("mutations")
-                    val = row.get("activity") or row.get("relative_activity")
+                    val = row.get(label_col)
                     if mut and val:
                         labels[mut.strip()] = float(val)
         except Exception as exc:

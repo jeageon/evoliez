@@ -71,6 +71,32 @@ class FinalRankingStage(Stage):
                         setattr(row, k, v)
 
         written = write_reports(ctx.config, ctx.paths, ranked, breakdowns)
+
+        # Multi-level ML datasets (spec section 7). Boltz-derived columns are
+        # tagged feature/weight/weak-label/filter in roles.json; the only
+        # supervised-label column is experiment-sourced (ml/labels policy).
+        from evoliez.ml.datasets import (
+            mutation_rows,
+            residue_rows,
+            variant_rows,
+            write_datasets,
+        )
+
+        ds = {
+            "pose_level": ctx.get("pose_dataset", []),
+            "edge_level": ctx.get("edge_dataset", []),
+            "residue_level": residue_rows(
+                ctx.require("wt_complex"), ctx.require("position_features")
+            ),
+            "mutation_level": mutation_rows(ranked),
+            "variant_level": variant_rows(ranked),
+        }
+        ds_written = write_datasets(ctx.paths.root / "ml_datasets", ds)
+        ctx.persist_meta(
+            "ml_datasets",
+            {k: len(v) for k, v in ds.items()},
+        )
+
         ctx.put("ranked_candidates", ranked)
         ctx.persist_meta("n_ranked", len(ranked))
         ctx.persist_meta(
@@ -83,8 +109,10 @@ class FinalRankingStage(Stage):
             else None,
         )
         self.log.info(
-            "final ranking complete: %d candidates; reports: %s",
+            "final ranking complete: %d candidates; reports: %s; "
+            "ml_datasets: %s",
             len(ranked), [str(p) for p in written],
+            [p.name for p in ds_written],
         )
         if ranked:
             self.log.info(

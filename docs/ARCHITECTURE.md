@@ -59,6 +59,16 @@ Self-supervised, no experimental labels (spec §9.2 + §13.3):
    term (`ScoreWeights.family_interaction`); the dominant learned signal when
    no experimental labels exist.
 
+## Boltz outputs as features (data policy)
+
+Boltz is run as a **diffusion-sample ensemble** (`complex_prediction.
+diffusion_samples`). Its confidence/affinity metrics, per-token pLDDT/PAE/PDE,
+ensemble contact frequency and WT–mutant deltas are used strictly as
+**features / sample weights / weak labels / filters — never supervised
+labels**. The only supervised label is experimental. This is enforced by
+`ml/labels.py` and documented in [`ML_DATA_POLICY.md`](ML_DATA_POLICY.md).
+Multi-level datasets are exported to `<run>/ml_datasets/` (spec §7).
+
 ## Phase coverage (spec §21)
 
 - Phase 0 scaffold/schema/config/example/report ✓

@@ -51,6 +51,7 @@ complex_prediction:
   use_templates: true
   pocket_constraints: true
   predict_affinity: true
+  diffusion_samples: 5                     # Boltz pose ensemble (features, NOT labels)
 
 interaction_model:                         # self-supervised family geometry model (spec 9.2 + 13.3)
   enabled: true

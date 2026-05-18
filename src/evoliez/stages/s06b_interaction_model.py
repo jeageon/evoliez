@@ -1,10 +1,11 @@
 """Stage 06b - family interaction-geometry model (spec 9.2 + 13.3).
 
-For clustered representative homologs: predict structure, dock the ligand as a
-pose ensemble, extract per-ligand-atom interaction-distance fingerprints,
-statistically select family-consensus poses (augmented training data), and
-train a self-supervised consensus/outlier classifier. Runs before mutation
-reranking; its score feeds candidate ranking.
+For clustered representative homologs: predict the Boltz **diffusion-sample
+ensemble**, extract per-ligand-atom interaction-distance fingerprints, use
+ensemble **contact frequency** + Boltz pose reliability (as a SAMPLE WEIGHT,
+never a label), statistically select family-consensus poses (augmented
+training data), and train a self-supervised consensus/outlier classifier.
+Exports the pose- and edge-level ML datasets.
 """
 
 from __future__ import annotations
@@ -12,13 +13,14 @@ from __future__ import annotations
 from typing import Dict, List
 
 from evoliez.adapters.boltz import predict_complex
-from evoliez.adapters.docking import dock_ensemble
 from evoliez.context import RunContext
+from evoliez.features.boltz_features import ensemble_contacts, pose_consensus
 from evoliez.features.interaction_descriptor import (
     complex_fingerprint,
     describe,
     fingerprint_dim,
 )
+from evoliez.ml.datasets import edge_rows, pose_rows
 from evoliez.ml.interaction_model import InteractionModel
 from evoliez.ml.pose_selection import PoseRecord, select_poses
 from evoliez.stages.base import Stage
@@ -57,34 +59,30 @@ class InteractionModelStage(Stage):
         ligand = ctx.require("ligand")
         wt = ctx.require("wt_complex")
         backend = ctx.config.backend_for(self.name)
-        dcfg = ctx.config.validation.redocking
-        ref_atoms = wt.ligand.atoms
 
+        # Boltz diffusion-sample ensemble sized by poses_per_homolog.
+        cp_cfg = ctx.config.complex_prediction.model_copy(
+            update={"diffusion_samples": cfg.poses_per_homolog}
+        )
         reps = _pick_representatives(homologs, cfg.representative_homologs)
         self.log.info(
-            "representatives=%d (of %d homologs), poses/homolog=%d",
+            "representatives=%d (of %d homologs), Boltz samples/homolog=%d",
             len(reps), len(homologs), cfg.poses_per_homolog,
         )
 
         records: List[PoseRecord] = []
+        pose_table: List[dict] = []
         n_poses_total = 0
         for i, h in enumerate(reps):
             cx = predict_complex(
-                f"hom_{i:03d}", h.sequence, ligand,
-                ctx.config.complex_prediction,
+                f"hom_{i:03d}", h.sequence, ligand, cp_cfg,
                 ctx.paths.structures / "representatives",
                 backend=backend, dry_run=ctx.dry_run,
             )
-            poses = dock_ensemble(
-                cfg.docking_method, f"hom_{i:03d}", cx.structure,
-                cx.ligand.atoms or ref_atoms, dcfg,
-                ctx.paths.docking / "homolog_ensemble",
-                n_poses=cfg.poses_per_homolog, smiles=ligand.smiles,
-                backend=backend, dry_run=ctx.dry_run,
-            )
-            for pose in poses:
+            samples = cx.samples or []
+            for s in samples:
                 fp = complex_fingerprint(
-                    cx.structure, pose.ligand_atoms,
+                    cx.structure, s.ligand_atoms,
                     cutoff=cfg.contact_cutoff, k_nearest=cfg.k_nearest_residues,
                 )
                 records.append(
@@ -93,10 +91,30 @@ class InteractionModelStage(Stage):
                         fingerprint=fp,
                         msa_membership=1.0,
                         identity_to_target=float(h.identity),
-                        pred_score=round(-pose.score + cx.confidence, 4),
+                        # Boltz pose reliability -> SAMPLE WEIGHT (not a label)
+                        pred_score=round(
+                            s.metrics.get("confidence_score", cx.confidence), 4
+                        ),
                     )
                 )
                 n_poses_total += 1
+            pose_table.extend(pose_rows(f"hom_{i:03d}", cx))
+
+        # Ensemble contact frequency (priority #1) + confidence-weighted edges,
+        # from the WT Boltz ensemble -> edge-level dataset.
+        econ = ensemble_contacts(
+            wt.structure, wt.samples,
+            cutoff=cfg.contact_cutoff,
+            ligand_iptm=float(wt.metrics.get("ligand_iptm", 1.0)),
+        )
+        ctx.put("ensemble_contacts", econ)
+        ctx.put("pose_dataset", pose_table)
+        ctx.put("edge_dataset", edge_rows(econ))
+        self.log.info(
+            "WT pose consensus: %s | %d ensemble contacts (freq>=0.5: %d)",
+            pose_consensus(wt.samples), len(econ),
+            sum(1 for e in econ if e.contact_frequency >= 0.5),
+        )
 
         sel = select_poses(
             records,

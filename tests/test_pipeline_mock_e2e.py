@@ -66,6 +66,25 @@ def test_full_mock_pipeline(tmp_path):
     assert imeta and imeta["train_rows"] > 0 and imeta["n_consensus"] > 0
     assert ctx.get("interaction_model") is not None
 
+    # multi-level ML datasets + data-role policy (Boltz != label)
+    dsd = paths.root / "ml_datasets"
+    for name in ("pose_level", "edge_level", "residue_level",
+                 "mutation_level", "variant_level"):
+        assert (dsd / f"{name}.csv").exists(), f"missing dataset {name}"
+    import csv as _csv
+    import json as _json
+    with (dsd / "edge_level.csv").open() as fh:
+        cols = next(_csv.reader(fh))
+    assert "contact_frequency" in cols  # priority-1 feature present
+    roles = _json.loads((dsd / "roles.json").read_text())
+    # the ONLY supervised-label column is the experimental one
+    for tbl, colroles in roles["column_roles"].items():
+        for col, role in colroles.items():
+            if "supervised_label" in role:
+                assert col == "experimental_label", (
+                    f"{tbl}.{col} must not be a supervised label"
+                )
+
     ranked = ctx.get("ranked_candidates")
     assert ranked and len(ranked) >= 1
     # scores are monotonically non-increasing (sorted)
