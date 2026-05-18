@@ -80,6 +80,15 @@ back to the heuristic family model (`gnn` weight 0 by default). Multi-GPU =
 independent job per card (`utils.gpu.GpuPool`, `workflow/Snakefile`). See
 [`SERVER_GRADE.md`](SERVER_GRADE.md).
 
+## Accuracy & paper-readiness layers
+
+Mechanism annotation (M-CSA/heuristic), ligand-atom importance, standardized
+interaction fingerprint (PLIP), negative design, subfamily-aware MSA,
+benchmark suite (`evoliez bench`), calibration + active-learning diverse
+library, and provenance. All under `advanced:` (default on), all
+feature/penalty only — never labels. See
+[`MECHANISM_AND_BENCHMARK.md`](MECHANISM_AND_BENCHMARK.md).
+
 ## Phase coverage (spec §21)
 
 - Phase 0 scaffold/schema/config/example/report ✓

@@ -45,8 +45,21 @@ class FinalRankingStage(Stage):
             breakdowns[c.candidate_id] = bd
 
         ranked = sorted(validated, key=lambda c: -c.scores["final_score"])
+        n = len(ranked)
+        adv = ctx.config.advanced
+        if adv.calibration:
+            from evoliez.ml.calibration import (
+                candidate_uncertainty,
+                recommendation,
+            )
         for i, c in enumerate(ranked, 1):
             c.details["rank"] = i
+            if adv.calibration:
+                u = candidate_uncertainty(c)
+                c.scores["uncertainty"] = u
+                c.details["recommendation"] = recommendation(
+                    c.scores["final_score"], u, i, n
+                )
 
         assert ctx.store is not None
         with ctx.store.session() as s:
@@ -146,6 +159,56 @@ class FinalRankingStage(Stage):
             if samples:
                 save_graph_dataset(samples, ctx.paths.graph_dataset)
                 ctx.persist_meta("graph_dataset_samples", len(samples))
+
+        # active-learning diverse focused library (user §11/§15) - replaces
+        # the raw top-N so the experimental plate spans positions /
+        # chemistries / ligand-atom targets / subfamilies.
+        if adv.active_learning and ranked:
+            import csv as _csv
+
+            from evoliez.ml.active_learning import select_focused_library
+
+            lib = select_focused_library(
+                ranked, ctx.config.output.final_library_size,
+                beta=adv.al_beta, gamma=adv.al_gamma,
+            )
+            p = ctx.paths.reports / "focused_library.csv"
+            with p.open("w", newline="") as fh:
+                w = _csv.writer(fh)
+                w.writerow(["well", "candidate_id", "mutations",
+                            "final_score", "acquisition_score",
+                            "uncertainty", "recommendation"])
+                for i, c in enumerate(lib):
+                    well = f"{chr(65 + i // 12)}{i % 12 + 1}"
+                    w.writerow([
+                        well, c.candidate_id, c.mutation_str,
+                        c.scores.get("final_score"),
+                        c.scores.get("acquisition_score"),
+                        c.scores.get("uncertainty"),
+                        c.details.get("recommendation", "uncertain candidate"),
+                    ])
+            ctx.put("focused_library", lib)
+            ctx.persist_meta("focused_library_size", len(lib))
+
+        # provenance / reproducibility (user §16)
+        if adv.provenance:
+            from evoliez.io.provenance import (
+                build_provenance,
+                write_provenance,
+            )
+
+            prov = build_provenance(
+                sequence=ctx.require("target_sequence"),
+                ligand_smiles=ctx.require("ligand").smiles,
+                config_dict=ctx.config.model_dump(mode="json"),
+                seed=ctx.config.seed,
+                backend=ctx.config.backend.value,
+                gnn_ckpt=(str(ctx.paths.root / ctx.config.gnn.checkpoint)
+                          if ctx.config.gnn.enabled else None),
+            )
+            write_provenance(ctx.paths.reports / "provenance.json", prov)
+            for c in ranked:
+                c.details["provenance_id"] = prov["config_sha1"]
 
         ctx.put("ranked_candidates", ranked)
         ctx.persist_meta("n_ranked", len(ranked))

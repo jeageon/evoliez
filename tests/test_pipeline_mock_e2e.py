@@ -81,6 +81,14 @@ def test_full_mock_pipeline(tmp_path):
     assert (gdir / "index.txt").exists()
     assert ctx.meta("graph_dataset_samples") >= 1
 
+    # accuracy / paper-readiness layers
+    assert (paths.reports / "provenance.json").exists()
+    import csv as _csvp
+    with (paths.reports / "focused_library.csv").open() as fh:
+        libcols = next(_csvp.reader(fh))
+    assert "recommendation" in libcols and "acquisition_score" in libcols
+    assert ctx.meta("mechanism") and ctx.meta("mechanism")["reactive_ligand_atoms"]
+
     roles = _json.loads((dsd / "roles.json").read_text())
     # the ONLY supervised-label column is the experimental one
     for tbl, colroles in roles["column_roles"].items():
@@ -103,6 +111,13 @@ def test_full_mock_pipeline(tmp_path):
             assert k in c.scores
         assert 0.0 <= c.scores["family_interaction_score"] <= 1.0
         assert "family_interaction" in c.details["score_breakdown"]["contributions"]
+        # accuracy / paper-readiness layers
+        assert "recommendation" in c.details
+        assert "provenance_id" in c.details
+        assert "neg_catalytic_mut" in c.scores
+        bd = c.details["score_breakdown"]
+        assert "neg_catalytic_mut" in bd["penalties"]
+        assert "catalytic_geometry_preservation" in bd["contributions"]
 
     # spec 17.1 DB populated
     store = Store(paths.db_path)

@@ -171,6 +171,23 @@ class InteractionModelConfig(_Base):
     model: str = "xgboost"  # xgboost | logistic | heuristic (auto-fallback)
 
 
+class AdvancedConfig(_Base):
+    """Accuracy / paper-readiness layers (user guidance). All default on;
+    each degrades gracefully and never produces a supervised label."""
+
+    mechanism: bool = True
+    mechanism_annotation_file: Optional[str] = None  # M-CSA-style JSON
+    ligand_importance: bool = True
+    interaction_fingerprint: bool = True
+    negative_design: bool = True
+    subfamily_msa: bool = True
+    calibration: bool = True
+    active_learning: bool = True
+    provenance: bool = True
+    al_beta: float = 0.3   # uncertainty (explore) weight
+    al_gamma: float = 0.2  # diversity weight
+
+
 class GNNConfig(_Base):
     """Server-grade EvoLigand-GNN (E(3)-invariant relative-vector model).
 
@@ -238,6 +255,16 @@ class ScoreWeights(_Base):
     clash_penalty: float = 1.0
     docking_uncertainty_penalty: float = 0.5
     md_instability_penalty: float = 1.0
+    # negative design (user §4): explicitly avoid risky mutations
+    neg_catalytic_mut: float = 4.0
+    neg_conserved_motif: float = 1.5
+    neg_buried_core_polar: float = 1.0
+    neg_catalytic_geometry: float = 2.0
+    neg_overbinding: float = 0.75
+    neg_pose_inversion: float = 1.0
+    # mechanism / specificity bonuses
+    catalytic_geometry_preservation: float = 1.0
+    specificity_divergence_bonus: float = 0.5
 
 
 class ProjectConfig(_Base):
@@ -258,6 +285,7 @@ class Config(_Base):
         default_factory=InteractionModelConfig
     )
     gnn: GNNConfig = Field(default_factory=GNNConfig)
+    advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)
     data_scale: DataScaleConfig = Field(default_factory=DataScaleConfig)
     mutation_generation: MutationGenConfig = Field(default_factory=MutationGenConfig)
     reranking: RerankConfig = Field(default_factory=RerankConfig)

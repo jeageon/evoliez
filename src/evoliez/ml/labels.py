@@ -30,6 +30,10 @@ BOLTZ_DERIVED_PREFIXES = (
     # confidence-aware features (user guidance): never flexibility labels
     "iupred", "mobidb", "disorder", "low_complexity", "edge_conf",
     "relia", "risk", "coordinate_reliability",
+    # mechanism / negative-design / acquisition (priors & penalties, not labels)
+    "neg_", "mechanism", "ts_geometry", "ifp", "interaction_fingerprint",
+    "subfamily", "specificity_divergence", "acquisition", "recommendation",
+    "uncertainty",
 )
 
 # Role each kind of column may play.

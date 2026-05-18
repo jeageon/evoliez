@@ -68,6 +68,7 @@ _FEATURE_KEYS = [
     "d_complex_ipde",
     "d_key_distance",
     "d_pocket_plddt",
+    "specificity_divergence",
 ]
 
 
@@ -112,6 +113,7 @@ class RerankerStage(Stage):
                     "falling back to heuristic family model"
                 )
         econ = ctx.get("ensemble_contacts", [])
+        lig_imp = ctx.get("ligand_importance", {})
 
         for cand in candidates:
             feat = self._features(cand, res_by_pos, pf_by_pos, nearest, atom_by_id)
@@ -147,8 +149,29 @@ class RerankerStage(Stage):
                 cand.scores["gnn_score"] = gscore
                 feat["gnn_score"] = gscore
 
+            # ligand-atom importance weighting (user §2): scale interaction
+            # gain by how catalytically important the contacted atom is.
+            imps, specs = [], []
+            for m in cand.mutations:
+                c = nearest.get(m.position)
+                if c and lig_imp:
+                    imps.append(lig_imp.get(c.ligand_atom_id, 0.4))
+                pf = pf_by_pos.get(m.position)
+                if pf:
+                    specs.append(pf.specificity_divergence)
+            imp_w = sum(imps) / len(imps) if imps else 1.0
+            feat["interaction_gain"] = round(
+                feat["interaction_gain"] * (0.5 + imp_w), 4
+            )
+            feat["specificity_divergence"] = round(
+                sum(specs) / len(specs), 4
+            ) if specs else 0.0
+
             cand.details["features"] = feat
             cand.scores["family_interaction_score"] = fam
+            cand.scores["specificity_divergence"] = feat[
+                "specificity_divergence"
+            ]
             cand.scores["msa_permissiveness"] = feat["msa_permissiveness"]
             cand.scores["interaction_gain"] = feat["interaction_gain"]
             cand.scores["conservation_penalty"] = round(

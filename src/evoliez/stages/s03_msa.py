@@ -36,6 +36,20 @@ class MSAStage(Stage):
         )
 
         feats = compute_position_features(msa)
+
+        # subfamily-aware evolutionary prior (user §7)
+        if ctx.config.advanced.subfamily_msa:
+            from evoliez.features.subfamily import annotate_subfamilies
+
+            cluster_of = {h.id: h.cluster_id for h in homologs}
+            cluster_of[ctx.config.input.target_id] = -1
+            annotate_subfamilies(msa, feats, cluster_of)
+            ctx.persist_meta(
+                "mean_specificity_divergence",
+                round(sum(f.specificity_divergence for f in feats)
+                      / max(1, len(feats)), 4),
+            )
+
         # MSA QC (spec 8.2): effective sequence count.
         neff = len(msa)
         ctx.persist_meta("msa_depth", neff)

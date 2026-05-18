@@ -38,6 +38,10 @@ def compute_final_score(cand: Candidate, w: ScoreWeights) -> ScoreBreakdown:
         "family_interaction": w.family_interaction
         * s.get("family_interaction_score", 0.0),
         "gnn": w.gnn * s.get("gnn_score", 0.0),
+        "catalytic_geometry_preservation": w.catalytic_geometry_preservation
+        * s.get("ts_geometry_score", 0.0),
+        "specificity_divergence": w.specificity_divergence_bonus
+        * s.get("specificity_divergence", 0.0),
     }
     penalties = {
         "conservation": w.conservation_penalty * s.get("conservation_penalty", 0.0),
@@ -48,6 +52,18 @@ def compute_final_score(cand: Candidate, w: ScoreWeights) -> ScoreBreakdown:
         "docking_uncertainty": w.docking_uncertainty_penalty
         * s.get("docking_uncertainty", 0.0),
         "md_instability": w.md_instability_penalty * s.get("md_instability", 0.0),
+        # negative design (user §4)
+        "neg_catalytic_mut": w.neg_catalytic_mut
+        * s.get("neg_catalytic_mut", 0.0),
+        "neg_conserved_motif": w.neg_conserved_motif
+        * s.get("neg_conserved_motif", 0.0),
+        "neg_buried_core_polar": w.neg_buried_core_polar
+        * s.get("neg_buried_core_polar", 0.0),
+        "neg_catalytic_geometry": w.neg_catalytic_geometry
+        * s.get("neg_catalytic_geometry", 0.0),
+        "neg_overbinding": w.neg_overbinding * s.get("neg_overbinding", 0.0),
+        "neg_pose_inversion": w.neg_pose_inversion
+        * s.get("neg_pose_inversion", 0.0),
     }
     total = sum(contrib.values()) - sum(penalties.values())
     return ScoreBreakdown(

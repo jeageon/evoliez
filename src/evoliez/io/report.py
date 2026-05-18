@@ -85,6 +85,17 @@ def _write_markdown(
         if bd:
             for line in rationale(c, bd):
                 L.append(f"  - {line}")
+        rec = c.details.get("recommendation")
+        if rec:
+            L.append(
+                f"  - **{rec}** (uncertainty "
+                f"{c.scores.get('uncertainty', 0.0):.2f})"
+            )
+        if c.scores.get("ts_geometry_score") is not None:
+            L.append(
+                f"  - catalytic geometry score "
+                f"{c.scores.get('ts_geometry_score', 0.0):.2f}"
+            )
         md_fail = c.details.get("md_failure_reasons")
         if md_fail:
             L.append(f"  - MD note: {md_fail}")

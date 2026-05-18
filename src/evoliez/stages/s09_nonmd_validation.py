@@ -56,6 +56,9 @@ class NonMDValidationStage(Stage):
         backend = ctx.config.backend_for(self.name)
 
         wt_cat = catalytic_distances(wt.structure, ref_atoms, catalytic)
+        wt_mech = ctx.get("mechanism")
+        pfeats = ctx.get("position_features", [])
+        adv = ctx.config.advanced
         kept: List[Candidate] = []
         for cand in candidates:
             mc = _mutant_complex(wt, cand)
@@ -97,6 +100,28 @@ class NonMDValidationStage(Stage):
             cand.scores["key_contact_preservation"] = round(consistency, 4)
             cand.scores["complex_confidence"] = wt.confidence
             cand.scores["instability"] = round(inst, 4)
+
+            # mechanism-aware negative design (user §1, §4)
+            if adv.negative_design and wt_mech is not None:
+                from evoliez.features.mechanism import annotate
+                from evoliez.ranking.negative_design import negative_penalties
+
+                mut_mech = annotate(
+                    mc, catalytic_positions=catalytic,
+                    cofactor=ctx.config.input.cofactor,
+                    annotation_file=adv.mechanism_annotation_file,
+                )
+                cand.scores["ts_geometry_score"] = mut_mech.ts_geometry_score
+                negp = negative_penalties(
+                    cand, wt_mech=wt_mech, mut_mech=mut_mech,
+                    position_features=pfeats,
+                    catalytic_positions=catalytic,
+                    buried_fraction=cand.details.get("features", {}).get(
+                        "buried_fraction", 0.5),
+                    docking_score=pose.score,
+                    redocking_consistency=consistency,
+                )
+                cand.scores.update(negp)
 
             # filters (spec 14.3)
             reasons = []

@@ -36,6 +36,9 @@ class PositionFeature:
     pssm_vector: Dict[str, float] = field(default_factory=dict)
     allowed_aa: List[str] = field(default_factory=list)
     residue_class: Optional[int] = None
+    # subfamily-aware (user §7): filled by features.subfamily
+    subfamily_conservation: float = 0.0
+    specificity_divergence: float = 0.0
 
 
 def target_column_map(msa: Sequence[tuple[str, str]]) -> Dict[int, int]:

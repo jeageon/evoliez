@@ -86,6 +86,49 @@ class InteractionGraphStage(Stage):
         ctx.persist_meta("n_designable", len(designable))
         ctx.persist_meta("designable_positions", designable)
 
+        # --- accuracy layers (user guidance) ------------------------------ #
+        adv = ctx.config.advanced
+        if adv.mechanism:
+            from evoliez.features.mechanism import annotate
+
+            mech = annotate(
+                cx,
+                catalytic_positions=catalytic,
+                cofactor=ctx.config.input.cofactor,
+                annotation_file=adv.mechanism_annotation_file,
+            )
+            ctx.put("mechanism", mech)
+            ctx.persist_meta(
+                "mechanism",
+                {
+                    "source": mech.source,
+                    "reactive_ligand_atoms": mech.reactive_ligand_atoms,
+                    "transfer_distance": mech.transfer_distance,
+                    "ts_geometry_score": mech.ts_geometry_score,
+                },
+            )
+        else:
+            mech = None
+
+        if adv.ligand_importance:
+            from evoliez.features.ligand_importance import ligand_atom_importance
+
+            ctx.put("ligand_importance",
+                    ligand_atom_importance(cx.ligand, mech))
+
+        if adv.interaction_fingerprint:
+            from evoliez.adapters.plip import (
+                fingerprint,
+                type_counts,
+            )
+
+            ifp = fingerprint(
+                cx.structure, cx.ligand.atoms,
+                backend=ctx.config.backend_for(self.name),
+            )
+            ctx.put("ifp_contacts", ifp)
+            ctx.persist_meta("ifp_type_counts", type_counts(ifp))
+
         (ctx.paths.interaction_graphs / "graph_features.json").write_text(
             json.dumps(
                 {

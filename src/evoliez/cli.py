@@ -109,6 +109,35 @@ def train_gnn(
 
 
 @app.command()
+def bench(
+    config: Path = typer.Option(..., "-c", "--config"),
+    benchmark: Path = typer.Option(..., "--benchmark",
+                                   help="CSV: mutation,label[,activity]"),
+    k: int = typer.Option(20, "--topk"),
+) -> None:
+    """Run the pipeline then score it against a known-mutation benchmark
+    (recovery / deleterious avoidance / Spearman / AUROC) - user §9."""
+    import json as _json
+
+    setup_logging()
+    cfg = load_config(config)
+    seed_everything(cfg.seed)
+    ctx = RunContext(
+        cfg, allow_small_disk=cfg.backend is Backend.mock
+    )
+    ctx.setup()
+    Pipeline().run(ctx)
+    from evoliez.ml.benchmark import load_benchmark, run_benchmark
+
+    ranked = ctx.get("ranked_candidates", [])
+    result = run_benchmark(ranked, load_benchmark(benchmark), k=k)
+    (ctx.paths.reports / "benchmark.json").write_text(
+        _json.dumps(result, indent=2)
+    )
+    typer.echo(_json.dumps(result, indent=2))
+
+
+@app.command()
 def version() -> None:
     typer.echo(__version__)
 
