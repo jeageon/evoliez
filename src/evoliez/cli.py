@@ -138,6 +138,29 @@ def bench(
 
 
 @app.command()
+def doctor(
+    config: Optional[str] = typer.Option(
+        None, "-c", "--config", help="also validate this run config"
+    ),
+) -> None:
+    """Preflight: check tools / deps / GPU / disk before a real server run."""
+    from evoliez.diagnostics import BLOCK, MISSING, OK, WARN, collect
+
+    mark = {OK: "[OK]   ", WARN: "[WARN] ", MISSING: "[MISS] ",
+            BLOCK: "[BLOCK]"}
+    rep = collect(config)
+    for c in rep.checks:
+        typer.echo(f"{mark[c.status]} {c.name:<22} {c.detail}")
+    n_warn = sum(1 for c in rep.checks if c.status in (WARN, MISSING))
+    typer.echo(
+        f"\n{len(rep.checks)} checks | {rep.n_block} blocking | {n_warn} warn/missing"
+    )
+    if rep.n_block:
+        typer.echo("blocking issues must be fixed before a real run.")
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def version() -> None:
     typer.echo(__version__)
 

@@ -52,6 +52,32 @@ backend: real
 backends: { s10_md: mock }
 ```
 
+## Preflight (run first on the server)
+
+```bash
+evoliez doctor -c configs/server_fdh_nadp.yaml
+```
+
+Reports tools / Python deps / CUDA / GPU free VRAM / disk / `/mnt/data2`
+writability / weights env vars / config sanity. Fix any `[BLOCK]` before a
+real run; `[MISS]` on an optional tool just means that stage falls back to
+mock.
+
+## Staged validation ladder (do not big-bang)
+
+| Step | Command | Validates |
+|---|---|---|
+| 0 | `evoliez run -c configs/example_fdh_nadp.yaml` (mock) | install integrity |
+| 1 | `... --backend real --dry-run` | exact tool commands, no execution |
+| 2 | `backends: {s04_complex: real}`, `--to s06b_interaction` | Boltz-2 + parser, 1 GPU |
+| 3 | `--from s05_docking` + docking/FoldX real | redock / stability parsers |
+| 4 | `backends: {s10_md: real}` | OpenMM-CUDA MD-lite |
+| 5 | `configs/server_fdh_nadp.yaml` full real | end-to-end + datasets |
+| 6 | `evoliez train-gnn` → `torchrun --nproc_per_node=4` | GNN 1-GPU → DDP |
+| 7 | `evoliez bench --benchmark <known mutations>` | quantitative metrics |
+
+`--resume` skips completed stages, so iterate per-stage cheaply.
+
 ## Run
 
 ```bash
