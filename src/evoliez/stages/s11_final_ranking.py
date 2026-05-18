@@ -206,9 +206,13 @@ class FinalRankingStage(Stage):
                 gnn_ckpt=(str(ctx.paths.root / ctx.config.gnn.checkpoint)
                           if ctx.config.gnn.enabled else None),
             )
+            prov["run_fingerprint"] = ctx.run_fingerprint()
+            prov["resume_invalidated"] = ctx.invalidated
             write_provenance(ctx.paths.reports / "provenance.json", prov)
             for c in ranked:
-                c.details["provenance_id"] = prov["config_sha1"]
+                c.details["provenance_id"] = prov["run_fingerprint"][
+                    "config_sha1"
+                ]
 
         ctx.put("ranked_candidates", ranked)
         ctx.persist_meta("n_ranked", len(ranked))

@@ -6,6 +6,7 @@ the inter-stage artifact bus.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -32,10 +33,13 @@ class RunContext:
         self.paths = ProjectPaths(self.root)
         self._allow_small_disk = allow_small_disk
         self.artifacts: Dict[str, Any] = {}  # rich, in-memory only
-        self._state: Dict[str, Any] = {"completed_stages": [], "meta": {}}
+        self._state: Dict[str, Any] = {
+            "completed_stages": [], "meta": {}, "fingerprint": {}
+        }
         self.project_id: Optional[int] = None
         self.dry_run: bool = False
         self.store: Optional[Store] = None
+        self.invalidated: bool = False  # resume state wiped (inputs changed)
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -86,12 +90,59 @@ class RunContext:
     # ------------------------------------------------------------------ #
     # resume state
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _sha1(text: str) -> str:
+        return hashlib.sha1(text.encode()).hexdigest()[:16]
+
+    def run_fingerprint(self) -> Dict[str, str]:
+        """Identity of this run. Any change here invalidates the resume
+        checkpoint so stale artifacts are never silently reused (expert
+        review: config / input / backend / software-version invalidation)."""
+        from evoliez import __version__
+        from evoliez.io.provenance import RANKING_FORMULA_VERSION
+
+        ci = self.config.input
+        if ci.target_sequence:
+            seq = ci.target_sequence.strip().upper()
+        elif ci.target_fasta and Path(ci.target_fasta).exists():
+            seq = Path(ci.target_fasta).read_text()
+        else:
+            seq = ci.target_fasta or ""
+        input_blob = f"{seq}|{ci.ligand.type}|{ci.ligand.value}"
+        cfg_blob = json.dumps(
+            self.config.model_dump(mode="json"), sort_keys=True, default=str
+        )
+        return {
+            "evoliez_version": __version__,
+            "ranking_formula_version": RANKING_FORMULA_VERSION,
+            "backend": self.config.backend.value,
+            "input_sha1": self._sha1(input_blob),
+            "config_sha1": self._sha1(cfg_blob),
+        }
+
     def _load_state(self) -> None:
         sp = self.paths.state_path
+        current = self.run_fingerprint()
         if sp.exists():
             self._state = json.loads(sp.read_text())
             self._state.setdefault("completed_stages", [])
             self._state.setdefault("meta", {})
+            stored = self._state.get("fingerprint", {})
+            if stored and stored != current:
+                changed = [
+                    k for k in current
+                    if stored.get(k) != current.get(k)
+                ]
+                log.warning(
+                    "run fingerprint changed (%s) - invalidating resume "
+                    "checkpoint; all stages will re-run",
+                    ", ".join(changed),
+                )
+                self._state["completed_stages"] = []
+                self._state["meta"] = {}
+                self.invalidated = True
+        self._state["fingerprint"] = current
+        self._save_state()
 
     def _save_state(self) -> None:
         self.paths.state_path.write_text(json.dumps(self._state, indent=2, default=str))
