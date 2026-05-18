@@ -52,6 +52,18 @@ complex_prediction:
   pocket_constraints: true
   predict_affinity: true
 
+interaction_model:                         # self-supervised family geometry model (spec 9.2 + 13.3)
+  enabled: true
+  representative_homologs: 24              # clustered representatives (structure+dock each)
+  poses_per_homolog: 12                    # docking pose ensemble per homolog
+  docking_method: vina                     # vina | gnina | diffdock
+  contact_cutoff: 6.0                      # ligand-atom -> residue interaction distance (A)
+  k_nearest_residues: 6
+  pose_select_mad_z: 2.5                   # keep poses within this robust z of consensus
+  pose_outlier_mad_z: 4.0                  # beyond this -> negative example
+  min_decoys_per_homolog: 4
+  model: xgboost                           # xgboost | logistic | heuristic (auto-fallback)
+
 mutation_generation:
   methods: [chemistry_rules, msa_sampler]  # add "ligandmpnn" on the GPU server
   max_candidates: 2000

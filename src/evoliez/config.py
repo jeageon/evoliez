@@ -146,6 +146,30 @@ class RerankConfig(_Base):
     top_for_md: int = 30
 
 
+class InteractionModelConfig(_Base):
+    """Self-supervised family interaction-geometry model (spec 9.2 + 13.3).
+
+    For each representative homolog: predict its structure, dock the ligand as
+    a pose ensemble, extract per-ligand-atom interaction-distance descriptors.
+    Statistically select family-consensus poses (positives) vs outliers/decoys
+    (negatives); train a classifier; score mutant complexes by family
+    consistency. No experimental labels required.
+    """
+
+    enabled: bool = True
+    representative_homologs: int = 24  # clustered representatives; "all" via -1
+    poses_per_homolog: int = 12
+    docking_method: str = "vina"  # vina | gnina | diffdock
+    contact_cutoff: float = 6.0  # ligand-atom -> residue interaction distance
+    k_nearest_residues: int = 6  # per-ligand-atom nearest enzyme points
+    # statistical pose selection
+    pose_select_mad_z: float = 2.5  # keep poses within this robust z of consensus
+    pose_outlier_mad_z: float = 4.0  # beyond this -> negative example
+    min_decoys_per_homolog: int = 4  # synthetic negatives if poses too consistent
+    # model
+    model: str = "xgboost"  # xgboost | logistic | heuristic (auto-fallback)
+
+
 class OutputConfig(_Base):
     final_library_size: int = 96
     top_single_mutants: int = 50
@@ -163,6 +187,7 @@ class ScoreWeights(_Base):
     key_contact_preservation: float = 1.0
     stability: float = 0.75
     md_lite: float = 1.0
+    family_interaction: float = 1.0  # learned family-geometry consistency
     # penalties
     conservation_penalty: float = 1.0
     catalytic_geometry_penalty: float = 1.5
@@ -185,6 +210,9 @@ class Config(_Base):
     msa: MSAConfig = Field(default_factory=MSAConfig)
     complex_prediction: ComplexPredictionConfig = Field(
         default_factory=ComplexPredictionConfig
+    )
+    interaction_model: InteractionModelConfig = Field(
+        default_factory=InteractionModelConfig
     )
     mutation_generation: MutationGenConfig = Field(default_factory=MutationGenConfig)
     reranking: RerankConfig = Field(default_factory=RerankConfig)

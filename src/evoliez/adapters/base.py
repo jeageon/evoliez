@@ -146,3 +146,32 @@ def mock_redock(
         rmsd_to_reference=round(rmsd_val, 3),
         cluster=seed % 4,
     )
+
+
+def mock_dock_ensemble(
+    candidate_id: str,
+    method: str,
+    reference_atoms: Sequence[LigandAtom],
+    *,
+    n_poses: int,
+    base_instability: float = 0.15,
+) -> List[Pose]:
+    """Deterministic K-pose ensemble. Most poses cluster near the reference
+    (low instability); a deterministic minority are displaced outliers so the
+    statistical pose-selection step has something to reject."""
+    poses: List[Pose] = []
+    for p in range(n_poses):
+        h = derive_seed(0xE17B, candidate_id, method, str(p))
+        # ~25% of poses are outliers (large displacement)
+        outlier = (h % 4) == 0
+        inst = (0.75 + (h % 25) / 100.0) if outlier else (
+            base_instability + (h % 30) / 300.0
+        )
+        pose = mock_redock(
+            f"{candidate_id}#p{p}", method, reference_atoms,
+            instability=inst, score_offset=(h % 20) / 100.0 - 0.1,
+        )
+        pose.candidate_id = candidate_id
+        pose.cluster = p
+        poses.append(pose)
+    return poses

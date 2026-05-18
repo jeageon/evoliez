@@ -41,6 +41,18 @@ complex_prediction:
   use_msa_server: true
   representative_homologs: 20
 
+interaction_model:
+  enabled: true
+  representative_homologs: 16
+  poses_per_homolog: 10
+  docking_method: vina
+  contact_cutoff: 6.0
+  k_nearest_residues: 6
+  pose_select_mad_z: 2.5
+  pose_outlier_mad_z: 4.0
+  min_decoys_per_homolog: 4
+  model: xgboost
+
 mutation_generation:
   methods: [chemistry_rules, msa_sampler, ligandmpnn]
   max_candidates: 1500

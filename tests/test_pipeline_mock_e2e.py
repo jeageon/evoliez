@@ -60,6 +60,12 @@ def test_full_mock_pipeline(tmp_path):
     assert (paths.reports / "focused_library.csv").exists()
     assert (paths.reports / "session.pml").exists()
 
+    # s06b family interaction-geometry model trained + persisted
+    assert (paths.interaction_graphs / "interaction_model.json").exists()
+    imeta = ctx.meta("interaction_model")
+    assert imeta and imeta["train_rows"] > 0 and imeta["n_consensus"] > 0
+    assert ctx.get("interaction_model") is not None
+
     ranked = ctx.get("ranked_candidates")
     assert ranked and len(ranked) >= 1
     # scores are monotonically non-increasing (sorted)
@@ -68,8 +74,11 @@ def test_full_mock_pipeline(tmp_path):
     # every ranked candidate has the full score decomposition
     for c in ranked:
         assert "score_breakdown" in c.details
-        for k in ("ml_score", "md_lite_score", "final_score"):
+        for k in ("ml_score", "md_lite_score", "final_score",
+                  "family_interaction_score"):
             assert k in c.scores
+        assert 0.0 <= c.scores["family_interaction_score"] <= 1.0
+        assert "family_interaction" in c.details["score_breakdown"]["contributions"]
 
     # spec 17.1 DB populated
     store = Store(paths.db_path)

@@ -23,6 +23,7 @@ _FEATURE_KEYS = [
     "n_mutations",
     "buried_fraction",
     "dist_to_ligand",
+    "family_interaction_score",
 ]
 
 
@@ -45,9 +46,28 @@ class RerankerStage(Stage):
         for c in sorted(contacts, key=lambda c: c.distance):
             nearest.setdefault(c.residue_index, c)
 
+        # family interaction-geometry model (stage s06b); None if disabled
+        imodel = ctx.get("interaction_model")
+        from evoliez.stages.s09_nonmd_validation import _mutant_complex
+
         for cand in candidates:
             feat = self._features(cand, res_by_pos, pf_by_pos, nearest, atom_by_id)
+
+            if imodel is not None:
+                mc = _mutant_complex(cx, cand)
+                fam = imodel.score_complex(
+                    mc.structure, mc.ligand.atoms,
+                    msa_membership=0.0,  # designed mutant, not an MSA homolog
+                    identity_to_target=1.0,
+                    pred_score=round(-cand.scores.get("docking_score", -7.0)
+                                     + cx.confidence, 4),
+                )
+            else:
+                fam = 0.5  # neutral when the interaction model is disabled
+            feat["family_interaction_score"] = fam
+
             cand.details["features"] = feat
+            cand.scores["family_interaction_score"] = fam
             cand.scores["msa_permissiveness"] = feat["msa_permissiveness"]
             cand.scores["interaction_gain"] = feat["interaction_gain"]
             cand.scores["conservation_penalty"] = round(
@@ -103,7 +123,8 @@ class RerankerStage(Stage):
         for c in candidates:
             f = c.details["features"]
             score = (
-                1.2 * f["interaction_gain"]
+                1.5 * f.get("family_interaction_score", 0.5)
+                + 1.2 * f["interaction_gain"]
                 + 0.9 * f["msa_permissiveness"]
                 - 0.8 * max(0.0, f["conservation"] - 0.55)
                 - 0.15 * (f["n_mutations"] - 1)

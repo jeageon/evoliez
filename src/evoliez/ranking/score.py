@@ -35,6 +35,8 @@ def compute_final_score(cand: Candidate, w: ScoreWeights) -> ScoreBreakdown:
         * s.get("key_contact_preservation", 0.0),
         "stability": w.stability * s.get("stability_score", 0.0),
         "md_lite": w.md_lite * s.get("md_lite_score", 0.0),
+        "family_interaction": w.family_interaction
+        * s.get("family_interaction_score", 0.0),
     }
     penalties = {
         "conservation": w.conservation_penalty * s.get("conservation_penalty", 0.0),

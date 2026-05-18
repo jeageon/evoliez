@@ -14,6 +14,7 @@ maps to one pipeline stage; each external tool to one adapter.
 | `s04_complex` | §9 | `stages/s04_complex.py` | `adapters/boltz` (Boltz-2) |
 | `s05_docking` | §10 | `stages/s05_docking.py` | `adapters/{vina,gnina,diffdock}` |
 | `s06_graph` | §11 | `stages/s06_interaction_graph.py` | `features/graph` |
+| `s06b_interaction` | §9.2+§13.3 | `stages/s06b_interaction_model.py` | `adapters/{boltz,docking}`, `ml/{pose_selection,interaction_model}`, `features/interaction_descriptor` |
 | `s07_mutation_gen` | §12 | `stages/s07_mutation_gen.py` | `adapters/ligandmpnn` |
 | `s08_reranker` | §13 | `stages/s08_reranker.py` | xgboost (optional) |
 | `s09_nonmd` | §14 | `stages/s09_nonmd_validation.py` | `adapters/{foldx,rosetta}`, dockers |
@@ -34,6 +35,30 @@ and reporting run identically on a laptop. `real` shells out (via
 tools raise an actionable error or degrade to mock per the spec §23 risk
 mitigations.
 
+## Family interaction-geometry model (`s06b`)
+
+Self-supervised, no experimental labels (spec §9.2 + §13.3):
+
+1. Cluster the MSA homologs; take ≤ `representative_homologs` representatives.
+2. For each: predict its structure (Boltz-2) and dock the ligand as a
+   `poses_per_homolog` **pose ensemble** (`adapters/docking.dock_ensemble`).
+3. For each pose, build a fixed-length **ligand-atom interaction-distance
+   fingerprint** (`features/interaction_descriptor`): per ligand atom, relative
+   distances to the nearest enzyme residue points within `contact_cutoff` +
+   interaction-type counts. Extra features: **MSA membership**,
+   identity-to-target, and the **per-pose prediction score**.
+4. `ml/pose_selection`: robust consensus (median + MAD). Poses within
+   `pose_select_mad_z` = positives (family-consistent); beyond
+   `pose_outlier_mad_z` + synthetic decoys = negatives. Each retained pose is
+   one augmented training row (small pool → many rows).
+5. `ml/interaction_model`: train a consensus/outlier classifier
+   (xgboost → logistic → dependency-free heuristic). Persisted to
+   `interaction_graphs/interaction_model.json`.
+6. `s08` scores each mutant's approximate complex with this model
+   (`family_interaction_score`) — a reranker feature and a weighted final-score
+   term (`ScoreWeights.family_interaction`); the dominant learned signal when
+   no experimental labels exist.
+
 ## Phase coverage (spec §21)
 
 - Phase 0 scaffold/schema/config/example/report ✓
@@ -53,6 +78,8 @@ target_sequence, ligand            (s01)
  -> wt_complex                     (s04)
  -> reference_atoms                (s05)
  -> interaction_graph, designable_positions  (s06)
+ -> interaction_model              (s06b: per-homolog complex+dock ensemble,
+                                    consensus/outlier self-supervised classifier)
  -> candidates                     (s07)
  -> redock_candidates              (s08)
  -> validated_candidates, md_candidates       (s09)
