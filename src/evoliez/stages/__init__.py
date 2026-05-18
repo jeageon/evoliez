@@ -10,6 +10,7 @@ from evoliez.stages.s06_interaction_graph import InteractionGraphStage
 from evoliez.stages.s06b_interaction_model import InteractionModelStage
 from evoliez.stages.s07_mutation_gen import MutationGenStage
 from evoliez.stages.s08_reranker import RerankerStage
+from evoliez.stages.s08b_mutant_boltz import MutantBoltzStage
 from evoliez.stages.s09_nonmd_validation import NonMDValidationStage
 from evoliez.stages.s10_md import MDStage
 from evoliez.stages.s11_final_ranking import FinalRankingStage
@@ -24,6 +25,7 @@ ALL_STAGES = [
     InteractionModelStage,
     MutationGenStage,
     RerankerStage,
+    MutantBoltzStage,
     NonMDValidationStage,
     MDStage,
     FinalRankingStage,

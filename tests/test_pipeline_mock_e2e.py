@@ -114,6 +114,9 @@ def test_full_mock_pipeline(tmp_path):
         # accuracy / paper-readiness layers
         assert "recommendation" in c.details
         assert "provenance_id" in c.details
+        assert c.details.get("boltz_delta_source") in (
+            "proxy", "mock", "real"
+        )
         assert "neg_catalytic_mut" in c.scores
         bd = c.details["score_breakdown"]
         assert "neg_catalytic_mut" in bd["penalties"]

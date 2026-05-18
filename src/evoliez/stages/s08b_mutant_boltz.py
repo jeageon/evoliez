@@ -1,0 +1,83 @@
+"""Stage 08b - per-mutant Boltz re-evaluation (expert review #2).
+
+The fast reranker (s08) uses a cheap *proxy* WT-vs-mutant Boltz Δ. Re-running
+Boltz for every candidate is infeasible, so here we re-predict the **mutant
+complex with Boltz for the top-N reranked candidates only** and replace the
+proxy Δ with a real Δ. Each candidate records ``boltz_delta_source`` =
+proxy | mock | real so downstream analysis never confuses the two.
+
+Inserted between s08 (fast rerank) and s09 (non-MD validation).
+"""
+
+from __future__ import annotations
+
+from typing import List
+
+from evoliez.adapters.boltz import predict_complex
+from evoliez.context import RunContext
+from evoliez.features.delta import boltz_delta_features
+from evoliez.stages.base import Stage
+from evoliez.types import Candidate
+
+_DELTA_KEYS = ("d_ligand_iptm", "d_complex_iplddt", "d_complex_ipde",
+               "d_key_distance", "d_pocket_plddt")
+
+
+def _mutant_sequence(wt_seq: str, cand: Candidate) -> str:
+    seq = list(wt_seq)
+    for m in cand.mutations:
+        if 0 < m.position <= len(seq):
+            seq[m.position - 1] = m.mut
+    return "".join(seq)
+
+
+class MutantBoltzStage(Stage):
+    name = "s08b_mutant_boltz"
+
+    def run(self, ctx: RunContext) -> None:
+        rcfg = ctx.config.reranking
+        candidates: List[Candidate] = ctx.get("redock_candidates", [])
+        if not rcfg.mutant_boltz_enabled or not candidates:
+            self.log.info("mutant Boltz re-eval disabled; Δ stays proxy")
+            return
+
+        wt = ctx.require("wt_complex")
+        seq = ctx.require("target_sequence")
+        ligand = ctx.require("ligand")
+        catalytic = ctx.get("catalytic_positions", [])
+        backend = ctx.config.backend_for(self.name)
+        cp_cfg = ctx.config.complex_prediction.model_copy(
+            update={"diffusion_samples": rcfg.mutant_boltz_diffusion_samples}
+        )
+        top = candidates[: rcfg.mutant_boltz_top_n]
+        outdir = ctx.paths.complexes / "mutant_boltz"
+
+        n_done = 0
+        for cand in top:
+            mut_cx = predict_complex(
+                cand.candidate_id, _mutant_sequence(seq, cand), ligand,
+                cp_cfg, outdir, backend=backend, dry_run=ctx.dry_run,
+            )
+            delta = boltz_delta_features(
+                mut_cx, wt, catalytic_positions=catalytic
+            )
+            cand.details["delta"] = delta
+            cand.details["boltz_delta_source"] = backend.value  # mock | real
+            feat = cand.details.setdefault("features", {})
+            for dk in _DELTA_KEYS:
+                v = delta.get(dk, 0.0)
+                feat[dk] = v
+                cand.scores[dk] = v
+            n_done += 1
+
+        ctx.put("redock_candidates", candidates)
+        ctx.persist_meta("n_mutant_boltz_evaluated", n_done)
+        ctx.persist_meta(
+            "mutant_boltz_backend",
+            backend.value if not ctx.dry_run else "dry-run",
+        )
+        self.log.info(
+            "real ΔBoltz on top %d/%d candidates (backend=%s); "
+            "remainder keep proxy Δ",
+            n_done, len(candidates), backend.value,
+        )

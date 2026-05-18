@@ -145,6 +145,11 @@ class RerankConfig(_Base):
     use_experimental_labels: bool = False
     top_for_redocking: int = 200
     top_for_md: int = 30
+    # explicit staged Boltz Δ (expert review #2): proxy Δ in the fast pass
+    # (s08), then a real per-mutant Boltz re-evaluation on the top-N only.
+    mutant_boltz_enabled: bool = True
+    mutant_boltz_top_n: int = 100
+    mutant_boltz_diffusion_samples: int = 3
 
 
 class InteractionModelConfig(_Base):
