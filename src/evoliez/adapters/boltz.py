@@ -429,10 +429,13 @@ def _parse_real_structure(pdb: Path, sequence: str, ligand: Ligand) -> Complex:
 
     lig_atoms, locked = relabel_to_canonical(lig_atoms, ligand.atoms)
     if not locked and ligand.atoms:
+        # relabel_to_canonical already logged WHY (count mismatch or
+        # chemistry-graph atom-order not verified); record the consequence and
+        # tag the ligand source so id-keyed features can treat it as unreliable.
         log.warning(
-            "Boltz ligand atom count (%d) != canonical (%d); atom ids NOT "
-            "locked - downstream id-keyed features may be inconsistent",
-            len(lig_atoms), len(ligand.atoms),
+            "Boltz ligand atom ids NOT verified for %s (canonical=%d, "
+            "tool=%d); downstream id-keyed features may be inconsistent",
+            getattr(ligand, "id", "?"), len(ligand.atoms), len(lig_atoms),
         )
     struct = ProteinStructure(
         sequence=sequence, residues=residues, method="boltz", pdb_path=str(pdb)

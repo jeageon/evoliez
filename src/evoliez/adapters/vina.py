@@ -133,14 +133,15 @@ def _parse_vina(candidate_id: str, out: Path, ref: Sequence[LigandAtom]) -> Pose
                     for k in range(3)) for i in range(len(locked))
             ) / len(locked)), 3)
     else:
-        # Couldn't lock the pose -> fall back to the reference atoms so
-        # downstream always has a ligand (rmsd unavailable). Warn only when
-        # atoms WERE parsed but the heavy counts disagreed (real mismatch),
+        # Couldn't verify the pose atom ids (count mismatch or chemistry-graph
+        # atom-order unverified - relabel_to_canonical already logged which)
+        # -> fall back to the reference atoms so downstream always has a
+        # ligand, with rmsd unavailable. Warn only when atoms WERE parsed,
         # not when the file simply had no parseable ATOM records.
         if parsed:
             log.warning(
-                "Vina pose vs reference heavy-atom mismatch (%d vs %d) for "
-                "%s; RMSD unavailable",
+                "Vina pose atom ids NOT verified vs reference (%d vs %d "
+                "heavy) for %s; RMSD-to-reference unavailable",
                 sum(1 for a in parsed if (a.element or "").upper() != "H"),
                 sum(1 for a in ref if (a.element or "").upper() != "H"),
                 candidate_id,
