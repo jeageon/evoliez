@@ -72,18 +72,25 @@ def _foldx_real(
          f"--mutant-file={mut_file.name}", "--output-dir", str(workdir)],
         cwd=workdir, dry_run=dry_run,
     )
-    ddg = 0.0
-    for f in workdir.glob("Dif_*.fxout"):
+    if dry_run:
+        return _mock(candidate_id, structure, mutations)
+    return {"ddg_fold": round(_parse_foldx(workdir), 3), "clash_score": 0.0}
+
+
+def _parse_foldx(workdir) -> float:
+    """FoldX BuildModel `Dif_*.fxout`: skip the header block, the first
+    numeric column of a data row is total ΔΔG (kcal/mol)."""
+    from pathlib import Path
+
+    for f in Path(workdir).glob("Dif_*.fxout"):
         for line in f.read_text().splitlines():
             parts = line.split("\t")
             if len(parts) > 1:
                 try:
-                    ddg = float(parts[1])
+                    return float(parts[1])
                 except ValueError:
                     continue
-    if dry_run:
-        return _mock(candidate_id, structure, mutations)
-    return {"ddg_fold": round(ddg, 3), "clash_score": 0.0}
+    return 0.0
 
 
 def _mock(

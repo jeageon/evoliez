@@ -66,12 +66,32 @@ def _redock_real(
     )
     if dry_run or not out.exists():
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
-    score = 0.0
-    for line in out.read_text().splitlines():
-        if "minimizedAffinity" in line:
-            try:
-                score = float(line.split()[-1])
-            except Exception:
-                pass
-    return Pose(candidate_id=candidate_id, method=METHOD, score=score,
+    return Pose(candidate_id=candidate_id, method=METHOD,
+                score=_parse_gnina(out),
                 ligand_atoms=list(reference_atoms), cluster=0)
+
+
+def _parse_gnina(out) -> float:
+    """Best (lowest) minimizedAffinity from a gnina SDF. In real SDF the tag
+    value is on the line AFTER `> <minimizedAffinity>` (the old in-line
+    float() parse missed it)."""
+    from pathlib import Path
+
+    lines = Path(out).read_text().splitlines()
+    scores = []
+    for i, ln in enumerate(lines):
+        if "<minimizedAffinity>" in ln:
+            for j in range(i + 1, min(i + 3, len(lines))):
+                tok = lines[j].strip().split()
+                if tok:
+                    try:
+                        scores.append(float(tok[0]))
+                        break
+                    except ValueError:
+                        continue
+        elif "minimizedAffinity" in ln:  # rare single-line form
+            try:
+                scores.append(float(ln.split()[-1]))
+            except ValueError:
+                pass
+    return round(min(scores), 4) if scores else 0.0

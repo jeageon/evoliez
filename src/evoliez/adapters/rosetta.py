@@ -47,12 +47,19 @@ def estimate_stability(
     )
     if dry_run:
         return _ddg_mock(candidate_id, structure, mutations)
-    ddg = 0.0
-    for f in workdir.glob("*.ddg"):
+    return {"ddg_fold": round(_parse_rosetta(workdir), 3),
+            "clash_score": 0.0}
+
+
+def _parse_rosetta(workdir) -> float:
+    """Mean of the numeric tokens in cartesian_ddg `*.ddg` output."""
+    from pathlib import Path
+
+    for f in Path(workdir).glob("*.ddg"):
         nums = [float(x) for x in f.read_text().split() if _is_float(x)]
         if nums:
-            ddg = sum(nums) / len(nums)
-    return {"ddg_fold": round(ddg, 3), "clash_score": 0.0}
+            return sum(nums) / len(nums)
+    return 0.0
 
 
 def _is_float(x: str) -> bool:

@@ -29,6 +29,8 @@ databases/
 *.ckpt
 *.pth
 *.npz
+# but DO track committed test fixtures (real tool-output samples)
+!tests/fixtures/**
 
 # Local config overrides
 *.local.yaml

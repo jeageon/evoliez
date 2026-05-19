@@ -72,7 +72,19 @@ def _redock_real(
     )
     if dry_run or not out.exists():
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
-    confs = sorted(out.rglob("rank1*.sdf"))
-    score = -7.0 if confs else 0.0
+    score = _parse_diffdock(out)
     return Pose(candidate_id=candidate_id, method=METHOD, score=score,
                 ligand_atoms=list(reference_atoms), cluster=0)
+
+
+def _parse_diffdock(out_dir) -> float:
+    """DiffDock writes `rank1_confidence-X.XX.sdf`; the confidence is encoded
+    in the filename. Return it (higher = better; 0.0 if no pose)."""
+    import re
+    from pathlib import Path
+
+    confs = sorted(Path(out_dir).rglob("rank1*.sdf"))
+    if not confs:
+        return 0.0
+    m = re.search(r"confidence(-?\d+\.?\d*)", confs[0].name)
+    return round(float(m.group(1)), 4) if m else -7.0

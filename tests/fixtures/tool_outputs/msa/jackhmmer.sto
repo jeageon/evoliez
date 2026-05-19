@@ -1,0 +1,10 @@
+# STOCKHOLM 1.0
+
+query        ACDEFGHIKL
+hitA         ACDEFGHIKL
+hitB         ACDEFGHIKM
+
+query        MNPQRSTVWY
+hitA         MNPQRSTVWY
+hitB         MNPQRSTVWF
+//

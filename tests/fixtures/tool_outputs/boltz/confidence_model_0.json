@@ -1,0 +1,12 @@
+{
+  "confidence_score": 0.842,
+  "ptm": 0.81,
+  "iptm": 0.74,
+  "ligand_iptm": 0.69,
+  "complex_plddt": 0.86,
+  "complex_iplddt": 0.79,
+  "complex_pde": 1.42,
+  "complex_ipde": 2.05,
+  "chains_ptm": {"0": 0.83},
+  "pair_chains_iptm": {"0": {"1": 0.71}}
+}
