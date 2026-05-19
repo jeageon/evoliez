@@ -43,13 +43,27 @@ if [ -x "$BOLTZ_ENV/bin/boltz" ]; then
   echo ">> using isolated Boltz: $BOLTZ_ENV/bin/boltz"
 fi
 
+# Pick a GPU that is ACTUALLY free, not merely idle-but-VRAM-allocated.
+# Delegates to evoliez.utils.gpu.select_gpu (filters by free VRAM, then
+# least-busy / most-free, with logging) instead of the old util-only
+# nvidia-smi sort that could land on a 0%%-util GPU another user has
+# fully VRAM-allocated -> Boltz-2 OOM. Threshold is Boltz-sized and
+# overridable: EVOLIEZ_GPU_MIN_FREE_MIB (default 20000 = ~20 GiB).
 pin_gpu() {
-  if command -v nvidia-smi >/dev/null 2>&1 && [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
-    export CUDA_VISIBLE_DEVICES="$(nvidia-smi \
-      --query-gpu=index,memory.free,utilization.gpu \
-      --format=csv,noheader,nounits | sort -t, -k3 -n -k2 -nr \
-      | head -1 | cut -d, -f1 | tr -d ' ')"
-    echo ">> pinned GPU $CUDA_VISIBLE_DEVICES"
+  [ -n "${CUDA_VISIBLE_DEVICES:-}" ] && {
+    echo ">> CUDA_VISIBLE_DEVICES preset to $CUDA_VISIBLE_DEVICES; honoring it"
+    return 0; }
+  command -v nvidia-smi >/dev/null 2>&1 || return 0
+  local minf="${EVOLIEZ_GPU_MIN_FREE_MIB:-20000}"
+  local idx
+  idx="$(python -c "from evoliez.utils.gpu import select_gpu; i=select_gpu($minf); print('' if i is None else i)" 2>/dev/null || true)"
+  if [ -n "$idx" ]; then
+    export CUDA_VISIBLE_DEVICES="$idx"
+    echo ">> pinned GPU $idx (selected for >= ${minf} MiB free; see gpu log)"
+  else
+    echo ">> WARNING: GPU auto-select found none with >= ${minf} MiB free;" \
+         "not pinning - a real stage may OOM or contend. Set" \
+         "CUDA_VISIBLE_DEVICES manually or lower EVOLIEZ_GPU_MIN_FREE_MIB."
   fi
 }
 
