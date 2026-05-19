@@ -148,6 +148,59 @@ def _protein_only_pdbfixed(pdb_path: Path):
     return fx.topology, fx.positions
 
 
+class _LigandParamUnsupported(Exception):
+    """No available small-molecule FF can parameterize this ligand (e.g.
+    GAFF/AM1-BCC on a large multiply-phosphorylated cofactor like NADP -
+    confirmed on the server: ligand-only create_system fails). This is NOT
+    a candidate failure: MD-lite is NEUTRALLY skipped and the candidate is
+    judged on the other layers (expert: metals/cofactors legitimately
+    skip)."""
+
+
+def _ligand_system_generator(off_lig, workdir: Path):
+    """A SystemGenerator whose small-molecule FF can ACTUALLY parameterize
+    this ligand. Probe ligand-only create_system per FF: gaff-2.11, then
+    espaloma-0.3.2 if the `espaloma` package is installed (a graph-net FF,
+    no antechamber, that handles cofactors GAFF/AM1-BCC cannot). Raise
+    _LigandParamUnsupported if none can - decisive, since the probe IS the
+    exact ligand-only parameterization that failed for NADP on the server."""
+    import openmm.app as app
+    from openmmforcefields.generators import SystemGenerator
+
+    ffs = ["gaff-2.11"]
+    try:
+        import espaloma  # noqa: F401
+
+        ffs.append("espaloma-0.3.2")
+    except Exception:
+        pass
+    last = None
+    for ff in ffs:
+        try:
+            sg = SystemGenerator(
+                forcefields=["amber14-all.xml", "implicit/obc2.xml"],
+                small_molecule_forcefield=ff,
+                molecules=[off_lig],
+                cache=str(workdir / f"ff_cache_{ff}.json"),
+                forcefield_kwargs={"constraints": app.HBonds},
+                nonperiodic_forcefield_kwargs={
+                    "nonbondedMethod": app.CutoffNonPeriodic,
+                },
+            )
+            sg.create_system(                       # PROBE: ligand ALONE
+                off_lig.to_topology().to_openmm(), molecules=[off_lig]
+            )
+            log.info("ligand parameterized with %s", ff)
+            return sg, ff
+        except Exception as exc:
+            last = exc
+            log.warning(
+                "small-molecule FF %s cannot parameterize the ligand: %s",
+                ff, str(exc)[:200],
+            )
+    raise _LigandParamUnsupported(str(last))
+
+
 def run_md(
     cx: Complex,
     candidate_id: str,
@@ -338,19 +391,39 @@ def _run_real(
     # (structure / chemistry / template), surfaced as failed - never a pass.
     try:
         off_lig = _ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)
-        system_generator = SystemGenerator(
-            forcefields=["amber14-all.xml", "implicit/obc2.xml"],
-            small_molecule_forcefield="gaff-2.11",
-            molecules=[off_lig],
-            cache=str(workdir / "ff_cache.json"),
-            # openmmforcefields refuses nonbondedMethod in forcefield_kwargs;
-            # it must go in (non)periodic_forcefield_kwargs (implicit/GBSA
-            # -> non-periodic).
-            forcefield_kwargs={"constraints": app.HBonds},
-            nonperiodic_forcefield_kwargs={
-                "nonbondedMethod": app.CutoffNonPeriodic,
-            },
+    except Exception as exc:
+        # Ligand chemistry could not be built from PDB+CONECT+SMILES
+        # (rare; verified-correct for NADP locally) - a real structure
+        # problem, surfaced as failed.
+        log.warning("MD ligand build failed for %s (%s)", candidate_id, exc)
+        return MDResult(
+            candidate_id=candidate_id, status="failed",
+            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            simulation_time_ns=0.0, integration_failed=True,
+            failure_reason=f"ligand build: {exc}",
         )
+
+    # Ligand parameterization PROBE -> classify precisely: a ligand the
+    # small-molecule FFs can't handle (NADP-class cofactor) is the NEUTRAL
+    # skipped_parameterization (candidate judged on the other layers), NOT
+    # a hard failure. Only protein/assembly failures below are `failed`.
+    try:
+        system_generator, _ff = _ligand_system_generator(off_lig, workdir)
+    except _LigandParamUnsupported as exc:
+        log.warning(
+            "no small-molecule FF can parameterize the ligand for %s "
+            "(large/charged cofactor e.g. NADP); recording "
+            "skipped_parameterization (NEUTRAL - judged on other layers): "
+            "%s", candidate_id, str(exc)[:200],
+        )
+        return MDResult(
+            candidate_id=candidate_id, status="skipped_parameterization",
+            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            simulation_time_ns=0.0,
+            failure_reason=f"ligand FF unsupported (cofactor): {exc}",
+        )
+
+    try:
         topo, posns = _protein_only_pdbfixed(pdb_path)
         if topo is None:                          # pdbfixer absent
             log.warning(

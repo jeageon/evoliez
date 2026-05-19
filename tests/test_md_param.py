@@ -9,12 +9,16 @@ from evoliez.md.analysis import analyse
 
 
 def test_real_md_registers_ligand_forcefield():
-    src = inspect.getsource(openmm_engine._run_real)
-    assert "SystemGenerator" in src
-    assert "small_molecule_forcefield" in src           # GAFF/OpenFF template
-    assert "skipped_parameterization" in src             # explicit skip status
+    # Module-level introspection (robust to internal factoring: the
+    # SystemGenerator now lives in the _ligand_system_generator probe
+    # helper, not inline in _run_real).
+    mod = inspect.getsource(openmm_engine)
+    assert "SystemGenerator" in mod
+    assert "small_molecule_forcefield" in mod           # GAFF/OpenFF template
+    run = inspect.getsource(openmm_engine._run_real)
+    assert "skipped_parameterization" in run             # explicit skip status
     # ligand-specific (not whole-system) RMSD
-    assert "lig_idx" in src and "pkt_idx" in src
+    assert "lig_idx" in run and "pkt_idx" in run
 
 
 def test_skipped_parameterization_is_not_a_failure():

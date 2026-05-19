@@ -65,10 +65,20 @@ def main() -> int:
             "pocket_rmsd_mean", "ligand_rmsd_mean", "energy_drift",
             "catalytic_distance_mean", "md_lite_score", "passed")},
         indent=2))
-    ok = res.status not in ("failed",) and not str(
-        res.status).startswith("skipped_no")
-    print(">> REAL OpenMM MD path:",
-          "VALIDATED" if ok else f"NOT validated ({res.status})")
+    # "VALIDATED" only if MD ACTUALLY RAN: any skipped* (incl. the neutral
+    # skipped_parameterization) means MD did not execute, so it must NOT be
+    # reported as validated even though it is a neutral pass for the
+    # pipeline. failed = real failure.
+    st = str(res.status)
+    ok = st not in ("failed",) and not st.startswith("skipped")
+    if ok:
+        verdict = "VALIDATED"
+    elif st == "skipped_parameterization":
+        verdict = (f"NOT validated - ligand unparameterizable, neutral "
+                   f"skip ({st}); MD did not run")
+    else:
+        verdict = f"NOT validated ({st})"
+    print(">> REAL OpenMM MD path:", verdict)
     return 0 if ok else 1
 
 
