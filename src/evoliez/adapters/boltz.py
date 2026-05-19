@@ -197,6 +197,9 @@ def _predict_real(
     cmd = [
         "boltz", "predict", str(yml), "--out_dir", str(outdir),
         "--diffusion_samples", str(max(1, cfg.diffusion_samples)),
+        # Boltz defaults to mmCIF; force PDB so the structure parser works
+        # (a CIF backstop parser also exists below).
+        "--output_format", "pdb",
     ]
     if cfg.use_msa_server and msa_path is None:
         cmd.append("--use_msa_server")
@@ -279,14 +282,71 @@ def _load_plddt(outdir: Path, idx: int) -> List[float]:
     return []
 
 
+def _parse_cif_atoms(path: Path):
+    """Minimal mmCIF _atom_site loop parser (Boltz default output format).
+    Returns (residues[CA], ligand_atoms[HETATM])."""
+    from evoliez.types import LigandAtom, Residue
+
+    lines = path.read_text().splitlines()
+    cols: list[str] = []
+    residues: list[Residue] = []
+    lig: list[LigandAtom] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() == "loop_":
+            j = i + 1
+            hdr = []
+            while j < len(lines) and lines[j].strip().startswith("_atom_site."):
+                hdr.append(lines[j].strip())
+                j += 1
+            if hdr:
+                cols = [h.split(".", 1)[1] for h in hdr]
+                idx = {c: k for k, c in enumerate(cols)}
+                need = ("group_PDB", "type_symbol", "label_atom_id",
+                        "Cartn_x", "Cartn_y", "Cartn_z")
+                if all(c in idx for c in need):
+                    seqk = ("label_seq_id" if "label_seq_id" in idx
+                            else "auth_seq_id")
+                    while j < len(lines):
+                        s = lines[j].strip()
+                        if not s or s.startswith(("#", "loop_", "_")):
+                            break
+                        p = s.split()
+                        if len(p) >= len(cols):
+                            grp = p[idx["group_PDB"]]
+                            x, y, z = (float(p[idx["Cartn_x"]]),
+                                       float(p[idx["Cartn_y"]]),
+                                       float(p[idx["Cartn_z"]]))
+                            if grp == "ATOM" and p[idx["label_atom_id"]] == "CA":
+                                try:
+                                    ri = int(p[idx.get(seqk, -1)])
+                                except (ValueError, KeyError):
+                                    ri = len(residues) + 1
+                                residues.append(
+                                    Residue(index=ri, aa="X", ca=(x, y, z),
+                                            sidechain_centroid=(x, y, z))
+                                )
+                            elif grp == "HETATM":
+                                el = p[idx["type_symbol"]]
+                                lig.append(LigandAtom(
+                                    id=f"{el}{len(lig)}", element=el or "C",
+                                    coord=(x, y, z)))
+                        j += 1
+                i = j
+                continue
+        i += 1
+    return residues, lig
+
+
 def _parse_real_structure(pdb: Path, sequence: str, ligand: Ligand) -> Complex:
     from evoliez.types import ProteinStructure, Residue
 
     residues: list[Residue] = []
     lig_atoms: list[LigandAtom] = []
-    text = pdb.read_text() if pdb.suffix == ".pdb" else ""
-    if text:
-        for line in text.splitlines():
+    if pdb.suffix in (".cif", ".mmcif"):
+        residues, lig_atoms = _parse_cif_atoms(pdb)
+    else:
+        for line in pdb.read_text().splitlines():
             if line.startswith("ATOM") and line[12:16].strip() == "CA":
                 idx = int(line[22:26])
                 x, y, z = (float(line[30:38]), float(line[38:46]),
