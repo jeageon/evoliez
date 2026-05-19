@@ -161,6 +161,34 @@ def _predict_mock(
 # --------------------------------------------------------------------------- #
 # Real
 # --------------------------------------------------------------------------- #
+def _to_a3m(src: Path, dst: Path) -> Optional[Path]:
+    """Boltz-2 rejects FASTA MSAs ('only a3m or csv'); s03 writes aligned
+    FASTA. A block alignment (equal-length, '-' gaps, no a3m insertion
+    semantics) is valid a3m once uppercased, so rewrite it with an .a3m
+    extension. Returns None if the source is missing/empty."""
+    try:
+        text = src.read_text()
+    except OSError:
+        return None
+    recs: List[tuple[str, str]] = []
+    hdr, buf = None, []
+    for line in text.splitlines():
+        if line.startswith(">"):
+            if hdr is not None:
+                recs.append((hdr, "".join(buf)))
+            hdr, buf = line.rstrip(), []
+        elif line.strip():
+            buf.append(line.strip())
+    if hdr is not None:
+        recs.append((hdr, "".join(buf)))
+    recs = [(h, s.upper().replace(".", "-").replace(" ", "-"))
+            for h, s in recs if s.strip()]
+    if not recs:
+        return None
+    dst.write_text("".join(f"{h}\n{s}\n" for h, s in recs))
+    return dst
+
+
 def _predict_real(
     label: str,
     sequence: str,
@@ -190,7 +218,17 @@ def _predict_real(
     if cfg.predict_affinity:
         spec["properties"] = [{"affinity": {"binder": "B"}}]
     if msa_path is not None:
-        spec["sequences"][0]["protein"]["msa"] = str(msa_path)
+        mp = Path(msa_path)
+        if mp.suffix.lower() in (".a3m", ".csv"):
+            a3m: Optional[Path] = mp
+        else:
+            a3m = _to_a3m(mp, outdir / f"{label}_msa.a3m")
+        if a3m is not None:
+            spec["sequences"][0]["protein"]["msa"] = str(a3m)
+            msa_path = a3m  # keep the --use_msa_server guard correct
+        else:
+            log.warning("MSA %s unusable; falling back to MSA server", mp)
+            msa_path = None
 
     yml = outdir / f"{label}_boltz_input.yaml"
     yml.write_text(yaml.safe_dump(spec, sort_keys=False))
@@ -209,14 +247,26 @@ def _predict_real(
     if dry_run:
         return _predict_mock(label, sequence, ligand, cfg, outdir)
 
-    pdbs = sorted(outdir.rglob("*.pdb")) + sorted(outdir.rglob("*.cif"))
-    if not pdbs:
-        log.warning("Boltz produced no structure for %s; mock fallback", label)
+    # Boltz writes predictions ONLY under boltz_results_*/ (predictions/...).
+    # Scope discovery there and exclude our own mock fallback (*_complex.pdb)
+    # so a stale/mock file is never mis-read as a real Boltz structure
+    # (previously a leftover wt_complex.pdb was stamped method=boltz2).
+    roots = sorted(outdir.glob("boltz_results_*"))
+    found: List[Path] = []
+    for root in roots:
+        found += sorted(root.rglob("*.cif")) + sorted(root.rglob("*.pdb"))
+    found = [p for p in found if not p.name.endswith("_complex.pdb")]
+    if not found:
+        log.warning(
+            "Boltz produced no prediction for %s "
+            "(no boltz_results_*/.../*.cif|pdb); mock fallback", label,
+        )
         return _predict_mock(label, sequence, ligand, cfg, outdir)
 
-    cx = _parse_real_structure(pdbs[0], sequence, ligand)
+    structure_file = found[0]
+    cx = _parse_real_structure(structure_file, sequence, ligand)
     cx.method = cfg.primary_method
-    cx.path = str(pdbs[0])
+    cx.path = str(structure_file)
     cx.samples = _parse_real_samples(outdir, cx.ligand.atoms)
     if not cx.samples:  # at least one sample from aggregate scores
         m = _parse_one_confidence(outdir) or {}
