@@ -32,26 +32,33 @@ class ComplexPredictionStage(Stage):
 
         assert ctx.store is not None
         with ctx.store.session() as s:
-            st = Structure(
-                project_id=ctx.project_id,
-                method=cx.method,
-                confidence_score=cx.confidence,
-                pdb_path=cx.path or "",
-                pocket_confidence=cx.confidence,
-            )
-            s.add(st)
-            s.flush()
-            s.add(
-                ComplexPrediction(
+            # idempotent: a --resume re-run must not duplicate WT complex rows
+            if (
+                s.query(ComplexPrediction)
+                .filter_by(project_id=ctx.project_id, method=cx.method)
+                .first()
+                is None
+            ):
+                st = Structure(
                     project_id=ctx.project_id,
-                    structure_id=st.structure_id,
-                    ligand_id=ligand.id,
                     method=cx.method,
-                    confidence=cx.confidence,
-                    affinity_score=cx.affinity_score,
-                    complex_path=cx.path or "",
+                    confidence_score=cx.confidence,
+                    pdb_path=cx.path or "",
+                    pocket_confidence=cx.confidence,
                 )
-            )
+                s.add(st)
+                s.flush()
+                s.add(
+                    ComplexPrediction(
+                        project_id=ctx.project_id,
+                        structure_id=st.structure_id,
+                        ligand_id=ligand.id,
+                        method=cx.method,
+                        confidence=cx.confidence,
+                        affinity_score=cx.affinity_score,
+                        complex_path=cx.path or "",
+                    )
+                )
         self.log.info(
             "WT complex: method=%s confidence=%.3f affinity=%s",
             cx.method, cx.confidence, cx.affinity_score,

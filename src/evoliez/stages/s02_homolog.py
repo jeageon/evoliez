@@ -36,18 +36,25 @@ class HomologStage(Stage):
 
         assert ctx.store is not None
         with ctx.store.session() as s:
-            for h in homologs:
-                s.add(
-                    Sequence(
-                        project_id=ctx.project_id,
-                        fasta=f">{h.id}\n{h.sequence}\n",
-                        source="homolog",
-                        identity_to_target=h.identity,
-                        coverage=h.coverage,
-                        annotation=h.annotation,
-                        cluster_id=h.cluster_id,
+            # idempotent: a --resume re-run must not duplicate homolog rows
+            existing = (
+                s.query(Sequence)
+                .filter_by(project_id=ctx.project_id, source="homolog")
+                .first()
+            )
+            if existing is None:
+                for h in homologs:
+                    s.add(
+                        Sequence(
+                            project_id=ctx.project_id,
+                            fasta=f">{h.id}\n{h.sequence}\n",
+                            source="homolog",
+                            identity_to_target=h.identity,
+                            coverage=h.coverage,
+                            annotation=h.annotation,
+                            cluster_id=h.cluster_id,
+                        )
                     )
-                )
         self.log.info(
             "homologs=%d (core=%d, diverse=%d)",
             len(homologs), len(core), len(diverse),
