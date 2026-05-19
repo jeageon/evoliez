@@ -52,7 +52,8 @@ def _search_real(
     workdir.mkdir(parents=True, exist_ok=True)
     query = workdir / "query.fasta"
     query.write_text(f">query\n{sequence}\n")
-    out = workdir / "hits.m8"
+    out = (workdir / "aln.sto" if cfg.method == "jackhmmer"
+           else workdir / "hits.m8")
     if cfg.database is None:
         raise ValueError(
             "homologs.database is required for backend=real "
@@ -70,9 +71,12 @@ def _search_real(
         )
     elif cfg.method == "jackhmmer":
         require("jackhmmer")
+        # -A writes the hit MSA (Stockholm); --tblout alone has NO aligned
+        # sequences, so the old shared parser produced invalid homologs.
         run(
-            ["jackhmmer", "--noali", "-N", "3", "-E", str(cfg.evalue_max),
-             "--tblout", str(out), str(query), cfg.database],
+            ["jackhmmer", "-N", "3", "-E", str(cfg.evalue_max),
+             "-A", str(out), "--tblout", str(workdir / "hits.tbl"),
+             str(query), cfg.database],
             dry_run=dry_run,
         )
     else:  # blastp
@@ -86,27 +90,92 @@ def _search_real(
         )
     if dry_run or not out.exists():
         return _search_mock(sequence, cfg)
-    return _parse_hits(out, cfg)
+    return _parse_hits(out, cfg, sequence)
 
 
-def _parse_hits(out: Path, cfg: HomologConfig) -> List[Homolog]:
-    homologs: List[Homolog] = []
+def _band(cfg: HomologConfig, ident: float) -> bool:
+    return cfg.identity_min <= ident <= cfg.identity_max
+
+
+def _pairwise_identity(a: str, b: str) -> float:
+    n = min(len(a), len(b))
+    if n == 0:
+        return 0.0
+    same = sum(1 for i in range(n) if a[i] == b[i] and a[i] != "-")
+    cols = sum(1 for i in range(n) if a[i] != "-" or b[i] != "-")
+    return same / cols if cols else 0.0
+
+
+def _parse_mmseqs_m8(out: Path, cfg: HomologConfig) -> List[Homolog]:
+    """format-output: query,target,fident,alnlen,evalue,tseq"""
+    hs: List[Homolog] = []
     for i, line in enumerate(out.read_text().splitlines()):
-        if not line.strip() or line.startswith("#"):
+        p = line.rstrip("\n").split("\t")
+        if len(p) < 6:
             continue
-        parts = line.split("\t") if "\t" in line else line.split()
         try:
-            ident = float(parts[2])
-            ident = ident / 100.0 if ident > 1.0 else ident
-            seq = parts[-1].replace("-", "")
-        except (ValueError, IndexError):
+            ident = float(p[2])
+        except ValueError:
             continue
-        if not (cfg.identity_min <= ident <= cfg.identity_max):
+        ident = ident / 100.0 if ident > 1.0 else ident
+        seq = p[5].replace("-", "")
+        if seq and _band(cfg, ident):
+            hs.append(Homolog(f"mm_{i}", seq, round(ident, 4), 1.0))
+    return hs[: cfg.max_sequences]
+
+
+def _parse_blast_m8(out: Path, cfg: HomologConfig) -> List[Homolog]:
+    """outfmt 6: sseqid pident qcovs evalue sseq  (pident is col 1!)"""
+    hs: List[Homolog] = []
+    for i, line in enumerate(out.read_text().splitlines()):
+        p = line.rstrip("\n").split("\t")
+        if len(p) < 5:
             continue
-        homologs.append(
-            Homolog(id=f"hit_{i}", sequence=seq, identity=ident, coverage=1.0)
-        )
-    return homologs[: cfg.max_sequences]
+        try:
+            pident = float(p[1])
+            cov = float(p[2])
+        except ValueError:
+            continue
+        ident = pident / 100.0 if pident > 1.0 else pident
+        seq = p[4].replace("-", "")
+        if seq and _band(cfg, ident):
+            hs.append(Homolog(f"bl_{i}", seq, round(ident, 4),
+                              round(cov / 100.0 if cov > 1.0 else cov, 4)))
+    return hs[: cfg.max_sequences]
+
+
+def _parse_stockholm(out: Path, cfg: HomologConfig,
+                     query_seq: str) -> List[Homolog]:
+    """jackhmmer -A Stockholm MSA: aggregate aligned rows per sequence,
+    identity computed vs the query."""
+    rows: dict[str, str] = {}
+    for line in out.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s == "//":
+            continue
+        parts = s.split()
+        if len(parts) != 2:
+            continue
+        name, aln = parts
+        rows[name] = rows.get(name, "") + aln
+    hs: List[Homolog] = []
+    for i, (name, aln) in enumerate(rows.items()):
+        seq = aln.replace("-", "").replace(".", "").upper()
+        if not seq:
+            continue
+        ident = _pairwise_identity(seq, query_seq)
+        if _band(cfg, ident):
+            hs.append(Homolog(f"jh_{i}", seq, round(ident, 4), 1.0))
+    return hs[: cfg.max_sequences]
+
+
+def _parse_hits(out: Path, cfg: HomologConfig,
+                query_seq: str = "") -> List[Homolog]:
+    if cfg.method == "mmseqs2":
+        return _parse_mmseqs_m8(out, cfg)
+    if cfg.method == "jackhmmer":
+        return _parse_stockholm(out, cfg, query_seq)
+    return _parse_blast_m8(out, cfg)
 
 
 def _search_mock(sequence: str, cfg: HomologConfig) -> List[Homolog]:
