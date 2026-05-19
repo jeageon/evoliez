@@ -65,14 +65,20 @@ def _redock_real(
          "-h", "--partialcharge", "gasteiger"], dry_run=dry_run)
     cx = [sum(a.coord[i] for a in reference_atoms) / max(1, len(reference_atoms))
           for i in range(3)]
-    run(
-        ["vina", "--receptor", str(rec_q), "--ligand", str(lig_q),
-         "--center_x", f"{cx[0]:.2f}", "--center_y", f"{cx[1]:.2f}",
-         "--center_z", f"{cx[2]:.2f}", "--size_x", "22", "--size_y", "22",
-         "--size_z", "22", "--num_modes", str(cfg.poses_per_candidate),
-         "--out", str(out)],
-        dry_run=dry_run,
-    )
+    vina_cmd = [
+        "vina", "--receptor", str(rec_q), "--ligand", str(lig_q),
+        "--center_x", f"{cx[0]:.2f}", "--center_y", f"{cx[1]:.2f}",
+        "--center_z", f"{cx[2]:.2f}", "--size_x", "22", "--size_y", "22",
+        "--size_z", "22", "--num_modes", str(cfg.poses_per_candidate),
+        "--exhaustiveness", str(getattr(cfg, "exhaustiveness", 8)),
+        "--out", str(out),
+    ]
+    cpu = getattr(cfg, "cpu", 0)
+    if cpu and cpu > 0:
+        vina_cmd += ["--cpu", str(cpu)]
+    # Hard wall: a runaway NADP-scale dock fails loudly instead of hanging
+    # forever with hidden (captured) stdout.
+    run(vina_cmd, dry_run=dry_run, timeout=getattr(cfg, "timeout_s", 1800))
     if dry_run or not out.exists():
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
     return _parse_vina(candidate_id, out, reference_atoms)

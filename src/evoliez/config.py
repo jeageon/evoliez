@@ -105,6 +105,13 @@ class DockingConfig(_Base):
     methods: List[str] = Field(default_factory=lambda: ["vina"])  # vina|gnina|diffdock
     poses_per_candidate: int = 10
     pose_rmsd_cluster: float = 2.0
+    # AutoDock Vina is O(exhaustiveness x ligand flexibility). A big flexible
+    # cofactor like NADP (44 heavy, ~11 rotatable) at the default
+    # exhaustiveness=8 with no time bound can run for hours and, with
+    # captured stdout, *looks* hung. Bound it; smoke configs drop it further.
+    exhaustiveness: int = 8
+    cpu: int = 0          # 0 = Vina default (all cores); >0 caps it (shared box)
+    timeout_s: int = 1800  # hard wall so a runaway dock fails loudly, never hangs
 
 
 class StabilityConfig(_Base):

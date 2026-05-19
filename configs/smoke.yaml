@@ -46,6 +46,14 @@ gnn:
   enabled: false              # GNN train is a separate smoke step
   build_dataset: true         # but still export a small graph dataset
 
+docking:
+  # Wiring smoke: we only need Vina to emit an out.pdbqt to exercise the
+  # parser, NOT docking quality. NADP is huge/flexible so default
+  # exhaustiveness=8 x 10 modes runs for hours - slash it.
+  poses_per_candidate: 3
+  exhaustiveness: 1
+  timeout_s: 900              # fail loudly if even this is too slow
+
 mutation_generation:
   methods: [chemistry_rules]
   max_candidates: 40
