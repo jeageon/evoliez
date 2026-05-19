@@ -27,14 +27,25 @@ NOTE ON EXTERNAL TOOLS
 This repository orchestrates third-party tools that are NOT bundled and carry
 their own licenses. You must obtain and comply with each separately:
 
-  - Boltz / Boltz-2        (https://github.com/jwohlwend/boltz)
-  - LigandMPNN             (https://github.com/dauparas/LigandMPNN)
-  - DiffDock               (https://github.com/gcorso/DiffDock)
-  - GNINA                  (https://github.com/gnina/gnina)
-  - AutoDock Vina          (https://vina.scripps.edu/)
-  - OpenMM                 (https://openmm.org/)
-  - FoldX                  (https://foldxsuite.crg.eu/  - academic license)
-  - Rosetta                (https://rosettacommons.org/  - license required)
-  - MAFFT / HMMER / MMseqs2 / Foldseek (see their respective sites)
+  - Boltz / Boltz-2        MIT        (github.com/jwohlwend/boltz)
+  - LigandMPNN             MIT        (github.com/dauparas/LigandMPNN)
+  - DiffDock               MIT        (github.com/gcorso/DiffDock)
+  - AutoDock Vina          Apache-2.0 (vina.scripps.edu)
+  - OpenMM                 MIT        (openmm.org)
+  - MAFFT / HMMER          permissive (BSD-style)
+  - BLAST+                 NCBI public domain
+  - GNINA / MMseqs2 / Foldseek / OpenBabel / PLIP   GPL (2.0/3.0)
+        -> separate-process use is fine; do NOT bundle into a non-GPL
+           distribution.
+  - FoldX                  PROPRIETARY, academic-only: no commercial use,
+                           no redistribution (foldxsuite.crg.eu)
+  - Rosetta                academic/non-commercial free; commercial = paid
+                           (rosettacommons.org)
+  - IUPred2A               academic-only, not open source
+
+These do NOT affect the license of the code in this repository (they are
+invoked as external processes, never imported or bundled). All GPL/academic
+tools are optional with mock / alternative fallbacks. Full audit:
+docs/THIRD_PARTY_LICENSES.md
 
 See docs/DATA_AND_WEIGHTS.md for acquisition instructions.

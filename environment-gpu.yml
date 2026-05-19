@@ -32,11 +32,10 @@ dependencies:
   - biopython
   - scikit-learn
   - xgboost
-  # md (CUDA-enabled OpenMM)
+  # md (CUDA-enabled OpenMM); MDAnalysis/MDTraj intentionally excluded
+  # (unused in-process; keeps the dependency closure permissive)
   - openmm
   - cudatoolkit=12.*
-  - mdanalysis
-  - mdtraj
   - openff-toolkit
   - openmmforcefields
   - ambertools

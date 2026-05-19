@@ -26,7 +26,6 @@ _PY_DEPS = {
     "sklearn": "logistic reranker / GNN logistic fallback",
     "xgboost": "family + mutation reranker (else heuristic)",
     "openmm": "real MD (else mock MD-lite)",
-    "MDAnalysis": "MD trajectory analysis",
     "torch": "EvoLigand-GNN train/score (else heuristic family model)",
     "torch_geometric": "optional GNN backend (not required)",
 }

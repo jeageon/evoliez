@@ -32,11 +32,12 @@ science = [
     "scikit-learn>=1.2",
     "xgboost>=1.7",
 ]
-# Molecular dynamics (OpenMM is conda-first; pip wheels exist for some platforms).
+# Molecular dynamics (OpenMM is conda-first; pip wheels exist for some
+# platforms). NOTE: MD metrics are computed with numpy in-process; we do
+# NOT import MDAnalysis (GPL-2.0) or MDTraj (LGPL-2.1), so the dependency
+# closure stays permissive. See docs/THIRD_PARTY_LICENSES.md.
 md = [
     "openmm>=8.0",
-    "mdanalysis>=2.4",
-    "mdtraj>=1.9",
     "openff-toolkit>=0.14",
 ]
 # GPU / deep-learning tools that only run on the CUDA server.
