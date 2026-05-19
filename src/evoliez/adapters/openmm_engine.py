@@ -44,6 +44,21 @@ class MDResult:
     failure_reason: Optional[str] = None
 
 
+def _is_full_atom_pdb(path: Path) -> bool:
+    """True if the PDB has more than a CA trace per residue. write_min_pdb
+    (mock) emits ONLY CA ATOM records, which OpenMM cannot turn into Amber
+    residue templates ('HIS residue has the wrong set of atoms')."""
+    try:
+        for line in path.read_text().splitlines():
+            if line.startswith("ATOM") and line[12:16].strip() not in (
+                "CA", ""
+            ):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def run_md(
     cx: Complex,
     candidate_id: str,
@@ -157,8 +172,29 @@ def _run_real(
     from openmm import unit
 
     apply_gpu_selection()
-    pdb_path = workdir / f"{candidate_id}_input.pdb"
-    write_min_pdb(pdb_path, cx.structure, cx.ligand.atoms)
+    src = getattr(cx.structure, "pdb_path", None)
+    if src and Path(src).exists() and _is_full_atom_pdb(Path(src)):
+        pdb_path = Path(src)                       # real full-atom structure
+    else:
+        # Our internal ProteinStructure is a CA-only trace and write_min_pdb
+        # emits CA-only records; OpenMM cannot build residue templates from
+        # that, so real MD genuinely CANNOT run on a mock upstream. Record
+        # an HONEST skip DISTINCT from skipped_parameterization (= optional
+        # ligand FF missing, legitimately neutral). This must NOT pass - it
+        # is the difference between "MD validated" and "MD never ran".
+        log.warning(
+            "MD needs a full-atom structure but %s is a CA-only trace "
+            "(upstream mock); recording skipped_no_full_atom_structure",
+            candidate_id,
+        )
+        return MDResult(
+            candidate_id=candidate_id,
+            status="skipped_no_full_atom_structure",
+            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            simulation_time_ns=0.0,
+            failure_reason="MD requires a full-atom protein (got CA-only); "
+                           "run s04_complex real or supply a full-atom PDB",
+        )
     pdb = app.PDBFile(str(pdb_path))
 
     # Ligand parameterization (was MISSING -> every real candidate failed).

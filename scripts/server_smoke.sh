@@ -104,10 +104,16 @@ dock)     # step 4: ONLY docking real (Vina). FoldX is academic/optional so
     --stage-backend s05_docking=real --to s05_docking
   bash scripts/capture_fixtures.sh "$RUN/dock"
   ;;
-md)       # step 5: OpenMM minimise/MD-lite real (protocol level via config)
+md)       # step 5: real OpenMM MD-lite. MUST also run s04 real: OpenMM
+          # needs a FULL-ATOM structure and mock s04 only yields a CA trace
+          # (-> "wrong set of atoms" / skipped_no_full_atom_structure). So
+          # this rung includes a real Boltz-2 run (~20 min, GPU) feeding a
+          # real full-atom PDB into MD. protocol level via smoke.yaml.
   pin_gpu
+  export BOLTZ_CACHE="${BOLTZ_CACHE:-$EVOLIEZ_ROOT/evoliez_assets/boltz_cache}"
+  mkdir -p "$BOLTZ_CACHE"
   evoliez run -c "$SMOKE_CFG" --backend mock --output-dir "$RUN/md" \
-    --stage-backend s10_md=real
+    --stage-backend s04_complex=real --stage-backend s10_md=real
   bash scripts/capture_fixtures.sh "$RUN/md"
   ;;
 gnn)      # step 6: 1-epoch single-GPU GNN train (DDP comes later)

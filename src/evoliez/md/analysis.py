@@ -39,11 +39,21 @@ CAT_DIST_MAX = 7.0
 def analyse(result: MDResult, weights: ScoreWeights) -> MDMetrics:
     m = MDMetrics()
 
-    # Skipped (e.g. ligand parameterization failed - common for metals /
-    # cofactors): NOT a candidate failure. Neutral, not penalised, still
-    # passes; the candidate is judged on the other layers (expert review).
-    if result.status.startswith("skipped"):
+    # ONLY skipped_parameterization is neutral: an optional small-molecule
+    # FF was unavailable (common for metals/cofactors) - judge the candidate
+    # on the other layers, don't penalise (expert review). Any OTHER skip
+    # (e.g. skipped_no_full_atom_structure) means real MD never ran on this
+    # candidate -> NOT a pass; surfacing it honestly is the difference
+    # between "MD validated" and "MD silently didn't run".
+    if result.status == "skipped_parameterization":
         m.passed = True
+        m.md_lite_score = 0.0
+        m.failure_reasons.append(f"MD {result.status}: "
+                                 f"{result.failure_reason or 'n/a'}")
+        return m
+    if result.status.startswith("skipped"):
+        m.passed = False
+        m.simulation_health_ok = False
         m.md_lite_score = 0.0
         m.failure_reasons.append(f"MD {result.status}: "
                                  f"{result.failure_reason or 'n/a'}")
