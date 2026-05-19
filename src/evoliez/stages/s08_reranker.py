@@ -17,7 +17,7 @@ from evoliez.features.delta import boltz_delta_features
 from evoliez.ml.labels import assert_supervised_label_allowed
 from evoliez.stages.base import Stage
 from evoliez.stages.s07_mutation_gen import _RULE_POOL, _ligand_role
-from evoliez.types import Candidate
+from evoliez.types import Candidate, Residue
 
 _BOLTZ_SCALED = (
     "confidence_score", "ptm", "iptm", "ligand_iptm",
@@ -26,20 +26,38 @@ _BOLTZ_SCALED = (
 
 
 def _approx_mutant_complex(cx, cand):
-    """Proxy mutant complex for WT-delta features WITHOUT a per-candidate
-    Boltz run: WT geometry/metrics degraded by mutation disruptiveness
-    (conservation x #mutations). A real per-mutant Boltz re-eval is the
-    server-side enhancement; deltas remain FEATURES, never labels."""
-    mc = copy.deepcopy(cx)
-    by = {r.index: r for r in mc.structure.residues}
-    seq = list(mc.structure.sequence)
-    for m in cand.mutations:
-        r = by.get(m.position)
-        if r is not None:
-            r.aa = m.mut
-            if 0 < m.position <= len(seq):
-                seq[m.position - 1] = m.mut
-    mc.structure.sequence = "".join(seq)
+    """Proxy mutant complex for WT-delta + family-interaction features
+    WITHOUT a per-candidate Boltz run AND without a full deepcopy.
+
+    WT geometry is unchanged (coords identical) - only the mutated residue
+    identities + the sequence change, and Boltz metrics are degraded by
+    mutation disruptiveness (conservation x #mutations). Every downstream
+    consumer (fingerprint / boltz_delta_features / gnn) only READS structure
+    + ligand, so unchanged residues and the ligand are shared with WT by
+    reference; only the few mutated Residues and the metrics dict are copied.
+    This turns an O(471) deepcopy (x candidates) into O(#mutations). Deltas
+    remain FEATURES, never labels."""
+    muts = {m.position: m.mut for m in cand.mutations}
+    seq = list(cx.structure.sequence)
+    new_res = []
+    for r in cx.structure.residues:
+        mt = muts.get(r.index)
+        if mt is not None:
+            r = Residue(
+                index=r.index, aa=mt, ca=r.ca,
+                sidechain_centroid=r.sidechain_centroid,
+                secondary_structure=r.secondary_structure,
+                sasa=r.sasa, plddt=r.plddt,
+            )
+            if 0 < r.index <= len(seq):
+                seq[r.index - 1] = mt
+        new_res.append(r)
+    st = copy.copy(cx.structure)        # shallow: don't deepcopy 471 residues
+    st.residues = new_res
+    st.sequence = "".join(seq)
+    mc = copy.copy(cx)                  # shallow: ligand/samples shared (RO)
+    mc.structure = st
+    mc.metrics = dict(cx.metrics)       # copy so scaling can't touch WT
     f = cand.details.get("features", {})
     inst = min(1.0, 0.5 * f.get("conservation", 0.5)
                + 0.15 * (len(cand.mutations) - 1))
@@ -94,7 +112,6 @@ class RerankerStage(Stage):
 
         # family interaction-geometry model (stage s06b); None if disabled
         imodel = ctx.get("interaction_model")
-        from evoliez.stages.s09_nonmd_validation import _mutant_complex
 
         # optional server-grade EvoLigand-GNN (torch + checkpoint required)
         gnn_scorer = None
@@ -124,10 +141,13 @@ class RerankerStage(Stage):
         for cand in candidates:
             feat = self._features(cand, res_by_pos, pf_by_pos, nearest, atom_by_id)
 
+            # ONE lightweight approx-mutant build, reused for the family
+            # interaction score, the WT-delta features and the GNN (was two
+            # full deepcopies of the 471-residue complex per candidate).
+            amc = _approx_mutant_complex(cx, cand)
             if imodel is not None:
-                mc = _mutant_complex(cx, cand)
                 fam = imodel.score_complex(
-                    mc.structure, mc.ligand.atoms,
+                    amc.structure, amc.ligand.atoms,
                     msa_membership=0.0,  # designed mutant, not an MSA homolog
                     identity_to_target=1.0,
                     pred_score=round(-cand.scores.get("docking_score", -7.0)
@@ -139,8 +159,7 @@ class RerankerStage(Stage):
 
             # WT - mutant Boltz delta features (proxy; FEATURES, not labels)
             delta = boltz_delta_features(
-                _approx_mutant_complex(cx, cand), cx,
-                catalytic_positions=catalytic,
+                amc, cx, catalytic_positions=catalytic,
             )
             cand.details["delta"] = delta
             cand.details["boltz_delta_source"] = "proxy"  # s08b may upgrade
@@ -150,7 +169,7 @@ class RerankerStage(Stage):
 
             if gnn_scorer is not None:
                 gscore = gnn_scorer.score_complex(
-                    _approx_mutant_complex(cx, cand), feats, econ,
+                    amc, feats, econ,
                     catalytic_positions=catalytic,
                 )
                 cand.scores["gnn_score"] = gscore
