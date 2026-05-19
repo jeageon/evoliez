@@ -22,6 +22,38 @@ def parse_residue_tokens(tokens: list[str]) -> list[int]:
     return out
 
 
+def _residue_token_wt(token: str):
+    """('H155A') -> ('H', 155). Leading letter = asserted WT identity."""
+    m = re.match(r"\s*([A-Za-z]?)\s*(\d+)", str(token))
+    if not m:
+        return None, None
+    return (m.group(1).upper() or None), int(m.group(2))
+
+
+def validate_residue_tokens(tokens, seq: str, kind: str, log) -> None:
+    """A token like 'H155' asserts His at position 155. Silently ignoring
+    the letter (old behaviour) lets a wrong numbering/sequence mis-place the
+    catalytic site and corrupt every downstream result. Warn loudly on
+    out-of-range positions or WT-letter / sequence mismatch."""
+    for t in tokens or []:
+        wt, pos = _residue_token_wt(t)
+        if pos is None:
+            continue
+        if pos < 1 or pos > len(seq):
+            log.warning(
+                "%s residue token %r: position %d is out of range "
+                "(target sequence is %d aa)", kind, str(t), pos, len(seq)
+            )
+            continue
+        actual = seq[pos - 1]
+        if wt and wt != "X" and actual != "X" and actual != wt:
+            log.warning(
+                "%s residue token %r asserts %s at position %d but the target "
+                "sequence has %s there - check residue numbering / that this "
+                "is the right sequence", kind, str(t), wt, pos, actual
+            )
+
+
 class InputPreprocessStage(Stage):
     name = "s01_input"
 
@@ -48,6 +80,11 @@ class InputPreprocessStage(Stage):
             f"{ligand.smiles}\t{ligand.id}\n"
         )
 
+        validate_residue_tokens(cfg.catalytic_residues, seq, "catalytic",
+                                 self.log)
+        validate_residue_tokens(cfg.fixed_residues, seq, "fixed", self.log)
+        validate_residue_tokens(cfg.known_binding_site, seq, "binding-site",
+                                 self.log)
         catalytic = parse_residue_tokens(cfg.catalytic_residues)
         fixed = parse_residue_tokens(cfg.fixed_residues) or list(catalytic)
         known_site = parse_residue_tokens(cfg.known_binding_site)

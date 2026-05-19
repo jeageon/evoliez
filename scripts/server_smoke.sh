@@ -21,12 +21,15 @@ export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-$EVOLIEZ_NUM_THREADS}"
 export NUMEXPR_MAX_THREADS="${NUMEXPR_MAX_THREADS:-$EVOLIEZ_NUM_THREADS}"
 export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-$EVOLIEZ_NUM_THREADS}"
 
-STEP="${1:?usage: server_smoke.sh <doctor|dryrun|boltz|dock|md|gnn|all> [config]}"
-# doctor validates the REAL intended config; the run steps use a tiny smoke
-# config (seconds-to-minutes, not the 80x15 real-scale grind). Override with
-# arg 2.
-REAL_CFG="${2:-configs/server_fdh_nadp.yaml}"
-CFG="${2:-configs/smoke.yaml}"
+STEP="${1:?usage: server_smoke.sh <doctor|dryrun|boltz|dock|md|gnn|all> [smoke_config]}"
+# Two INDEPENDENT configs (do not collapse them):
+#  - REAL_CFG : the real-run config `doctor` validates. Env-overridable ONLY,
+#    NEVER from arg2 - otherwise `all` would pass the smoke config in and make
+#    doctor validate the wrong thing.
+#  - SMOKE_CFG: the tiny config the run steps use (arg2 overrides it).
+REAL_CFG="${REAL_CFG:-configs/server_fdh_nadp.yaml}"
+SMOKE_CFG="${2:-configs/smoke.yaml}"
+export REAL_CFG SMOKE_CFG   # so an env override survives the `all` sub-calls
 EVOLIEZ_ROOT="${EVOLIEZ_ROOT:-/mnt/data2/${USER}}"
 RUN="$EVOLIEZ_ROOT/runs/smoke"
 
@@ -55,7 +58,7 @@ doctor)
   evoliez doctor -c "$REAL_CFG"     # validate the real-run config
   ;;
 dryrun)   # step 2: command preview, no execution, no GPU
-  evoliez run -c "$CFG" --backend real --dry-run --output-dir "$RUN/dry"
+  evoliez run -c "$SMOKE_CFG" --backend real --dry-run --output-dir "$RUN/dry"
   ;;
 boltz)    # step 3: ONLY Boltz real (homolog/MSA stay mock -> synthetic feed,
           # no homolog DB needed). Minimal real surface, stop at s04.
@@ -63,33 +66,33 @@ boltz)    # step 3: ONLY Boltz real (homolog/MSA stay mock -> synthetic feed,
   export BOLTZ_CACHE="${BOLTZ_CACHE:-$EVOLIEZ_ROOT/evoliez_assets/boltz_cache}"
   mkdir -p "$BOLTZ_CACHE"
   echo ">> BOLTZ_CACHE=$BOLTZ_CACHE"
-  evoliez run -c "$CFG" --backend mock --output-dir "$RUN/boltz" \
+  evoliez run -c "$SMOKE_CFG" --backend mock --output-dir "$RUN/boltz" \
     --stage-backend s04_complex=real --to s04_complex
   bash scripts/capture_fixtures.sh "$RUN/boltz"
   ;;
 dock)     # step 4: ONLY docking real (Vina). FoldX is academic/optional so
           # s09 stays mock here; isolate the docking parser/prep.
   pin_gpu
-  evoliez run -c "$CFG" --backend mock --output-dir "$RUN/dock" \
+  evoliez run -c "$SMOKE_CFG" --backend mock --output-dir "$RUN/dock" \
     --stage-backend s05_docking=real --to s05_docking
   bash scripts/capture_fixtures.sh "$RUN/dock"
   ;;
 md)       # step 5: OpenMM minimise/MD-lite real (protocol level via config)
   pin_gpu
-  evoliez run -c "$CFG" --backend mock --output-dir "$RUN/md" \
+  evoliez run -c "$SMOKE_CFG" --backend mock --output-dir "$RUN/md" \
     --stage-backend s10_md=real
   bash scripts/capture_fixtures.sh "$RUN/md"
   ;;
 gnn)      # step 6: 1-epoch single-GPU GNN train (DDP comes later)
   pin_gpu
-  evoliez run -c "$CFG" --backend mock --output-dir "$RUN/gnn" >/dev/null
-  evoliez train-gnn -c "$CFG" --epochs 1 \
+  evoliez run -c "$SMOKE_CFG" --backend mock --output-dir "$RUN/gnn" >/dev/null
+  evoliez train-gnn -c "$SMOKE_CFG" --epochs 1 \
     --dataset "$RUN/gnn/datasets/graph_pt"
   ;;
 all)
   for s in doctor dryrun boltz dock md gnn; do
     echo "==== smoke step: $s ===="
-    bash "$0" "$s" "$CFG"
+    bash "$0" "$s" "$SMOKE_CFG"
   done
   ;;
 *) echo "unknown step '$STEP'"; exit 1 ;;

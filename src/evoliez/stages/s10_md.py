@@ -76,7 +76,9 @@ class MDStage(Stage):
         n_pass = sum(1 for c in candidates if c.details.get("md_passed"))
         ctx.put("md_candidates", candidates)
         ctx.persist_meta("n_md_passed", n_pass)
+        mode = ("dry-run preview" if ctx.dry_run
+                else getattr(backend, "value", str(backend)))
         self.log.info(
-            "MD (L%d, %s): %d/%d passed",
-            mdcfg.protocol_level, mdcfg.solvent, n_pass, len(candidates),
+            "MD (L%d, %s) [%s]: %d/%d passed",
+            mdcfg.protocol_level, mdcfg.solvent, mode, n_pass, len(candidates),
         )

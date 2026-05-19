@@ -158,8 +158,10 @@ class NonMDValidationStage(Stage):
         ctx.put("md_candidates", md_top)
         ctx.persist_meta("n_after_nonmd", len(kept))
         ctx.persist_meta("n_for_md", len(md_top))
+        mode = ("dry-run preview" if ctx.dry_run
+                else getattr(backend, "value", str(backend)))
         self.log.info(
-            "non-MD validation: %d/%d passed; %d advance to MD",
-            len(kept), len(candidates), len(md_top),
+            "non-MD validation [%s]: %d/%d passed; %d advance to MD",
+            mode, len(kept), len(candidates), len(md_top),
         )
         _ = rmsd  # geometry helper kept importable for real-backend extensions

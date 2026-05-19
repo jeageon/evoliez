@@ -79,10 +79,51 @@ def _redock_real(
 
 
 def _parse_vina(candidate_id: str, out: Path, ref: Sequence[LigandAtom]) -> Pose:
+    """Parse the BEST (first) Vina pose: affinity + the docked ligand
+    coordinates. Coordinates are locked onto the canonical reference atom
+    list (ids/chemistry kept, Vina xyz adopted) so RMSD-to-reference and
+    pose-escape are computable downstream - the old parser discarded the
+    docked coords (ligand_atoms=ref, rmsd=None), making pose-quality
+    validation structurally impossible."""
+    import math
+
     score = 0.0
+    got_score = False
+    coords: list[tuple[float, float, float]] = []
     for line in out.read_text().splitlines():
-        if line.startswith("REMARK VINA RESULT"):
-            score = float(line.split()[3])
-            break
+        if line.startswith("REMARK VINA RESULT") and not got_score:
+            try:
+                score = float(line.split()[3])
+                got_score = True
+            except (ValueError, IndexError):
+                score = 0.0
+        elif line.startswith("ENDMDL"):
+            if coords:  # keep only the first (best) model
+                break
+        elif line.startswith(("ATOM", "HETATM")):
+            try:
+                coords.append((float(line[30:38]), float(line[38:46]),
+                               float(line[46:54])))
+            except ValueError:
+                continue
+
+    if coords and len(coords) == len(ref):
+        atoms = []
+        for a, c in zip(ref, coords):
+            na = LigandAtom(**vars(a))
+            na.coord = c
+            atoms.append(na)
+        rmsd = round(math.sqrt(sum(
+            sum((atoms[i].coord[k] - ref[i].coord[k]) ** 2 for k in range(3))
+            for i in range(len(ref))
+        ) / len(ref)), 3)
+    else:
+        if coords:
+            log.warning(
+                "Vina pose atom count (%d) != reference (%d) for %s; keeping "
+                "reference coords, RMSD unavailable",
+                len(coords), len(ref), candidate_id,
+            )
+        atoms, rmsd = list(ref), None
     return Pose(candidate_id=candidate_id, method=METHOD, score=score,
-                ligand_atoms=list(ref), rmsd_to_reference=None, cluster=0)
+                ligand_atoms=atoms, rmsd_to_reference=rmsd, cluster=0)
