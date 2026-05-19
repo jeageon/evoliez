@@ -93,9 +93,11 @@ def _parse_vina(candidate_id: str, out: Path, ref: Sequence[LigandAtom]) -> Pose
     validation structurally impossible."""
     import math
 
+    from evoliez.features.ligand import relabel_to_canonical
+
     score = 0.0
     got_score = False
-    coords: list[tuple[float, float, float]] = []
+    parsed: list[LigandAtom] = []
     for line in out.read_text().splitlines():
         if line.startswith("REMARK VINA RESULT") and not got_score:
             try:
@@ -104,32 +106,62 @@ def _parse_vina(candidate_id: str, out: Path, ref: Sequence[LigandAtom]) -> Pose
             except (ValueError, IndexError):
                 score = 0.0
         elif line.startswith("ENDMDL"):
-            if coords:  # keep only the first (best) model
+            if parsed:  # keep only the first (best) model
                 break
         elif line.startswith(("ATOM", "HETATM")):
             try:
-                coords.append((float(line[30:38]), float(line[38:46]),
-                               float(line[46:54])))
+                x, y, z = (float(line[30:38]), float(line[38:46]),
+                           float(line[46:54]))
             except ValueError:
                 continue
+            tok = line.split()
+            elem = _ad_element(tok[-1]) if tok else "C"
+            parsed.append(LigandAtom(id=f"{elem}{len(parsed)}",
+                                     element=elem, coord=(x, y, z)))
 
-    if coords and len(coords) == len(ref):
-        atoms = []
-        for a, c in zip(ref, coords):
-            na = LigandAtom(**vars(a))
-            na.coord = c
-            atoms.append(na)
-        rmsd = round(math.sqrt(sum(
-            sum((atoms[i].coord[k] - ref[i].coord[k]) ** 2 for k in range(3))
-            for i in range(len(ref))
-        ) / len(ref)), 3)
+    # Vina pdbqt = heavy + polar H (e.g. 54), canonical = heavy + all RDKit H
+    # (e.g. 70). Delegate to the heavy-atom-aware atom-index lock instead of
+    # an exact-count check, so docked coords + RMSD survive the H asymmetry.
+    locked, ok = relabel_to_canonical(parsed, list(ref))
+    rmsd = None
+    if ok and locked:
+        rref = ([a for a in ref if (a.element or "").upper() != "H"]
+                if len(locked) != len(ref) else list(ref))
+        if len(rref) == len(locked):
+            rmsd = round(math.sqrt(sum(
+                sum((locked[i].coord[k] - rref[i].coord[k]) ** 2
+                    for k in range(3)) for i in range(len(locked))
+            ) / len(locked)), 3)
     else:
-        if coords:
+        # Couldn't lock the pose -> fall back to the reference atoms so
+        # downstream always has a ligand (rmsd unavailable). Warn only when
+        # atoms WERE parsed but the heavy counts disagreed (real mismatch),
+        # not when the file simply had no parseable ATOM records.
+        if parsed:
             log.warning(
-                "Vina pose atom count (%d) != reference (%d) for %s; keeping "
-                "reference coords, RMSD unavailable",
-                len(coords), len(ref), candidate_id,
+                "Vina pose vs reference heavy-atom mismatch (%d vs %d) for "
+                "%s; RMSD unavailable",
+                sum(1 for a in parsed if (a.element or "").upper() != "H"),
+                sum(1 for a in ref if (a.element or "").upper() != "H"),
+                candidate_id,
             )
-        atoms, rmsd = list(ref), None
+        locked = list(ref)
     return Pose(candidate_id=candidate_id, method=METHOD, score=score,
-                ligand_atoms=atoms, rmsd_to_reference=rmsd, cluster=0)
+                ligand_atoms=locked, rmsd_to_reference=rmsd, cluster=0)
+
+
+# AutoDock atom type -> element (pdbqt last column). Only the H vs non-H
+# distinction must be exact (drives the heavy-atom lock); HD/HS are polar H.
+_AD2ELEM = {
+    "A": "C", "C": "C", "N": "N", "NA": "N", "NS": "N", "O": "O", "OA": "O",
+    "OS": "O", "S": "S", "SA": "S", "P": "P", "H": "H", "HD": "H", "HS": "H",
+    "F": "F", "CL": "Cl", "BR": "Br", "I": "I", "MG": "Mg", "MN": "Mn",
+    "ZN": "Zn", "CA": "Ca", "FE": "Fe",
+}
+
+
+def _ad_element(adtype: str) -> str:
+    t = (adtype or "").strip().upper()
+    if t in _AD2ELEM:
+        return _AD2ELEM[t]
+    return "H" if t[:1] == "H" else (t[:1].title() or "C")

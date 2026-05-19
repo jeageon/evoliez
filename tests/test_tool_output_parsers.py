@@ -79,6 +79,31 @@ def test_vina_pdbqt_best_mode():
     assert abs(pose.score - (-8.7)) < 1e-9
 
 
+def test_vina_real_pdbqt_heavy_atom_lock_and_rmsd():
+    """Real Vina pdbqt (captured on server: REMARK VINA RESULT + AutoDock
+    types). Vina emits heavy + polar H (here 5) while the canonical ligand
+    has explicit RDKit H (here 7) - the parser must take the BEST model's
+    score, lock on HEAVY atoms despite the count asymmetry, and still
+    compute RMSD-to-reference (the old exact-count check left rmsd=None)."""
+    ref = [
+        LigandAtom(id="O0", element="O", coord=(0.0, 0.0, 0.0)),
+        LigandAtom(id="C1", element="C", coord=(0.0, 0.0, 0.0)),
+        LigandAtom(id="N2", element="N", coord=(0.0, 0.0, 0.0)),
+        LigandAtom(id="P3", element="P", coord=(0.0, 0.0, 0.0)),
+        LigandAtom(id="H4", element="H", coord=(0.0, 0.0, 0.0)),
+        LigandAtom(id="H5", element="H", coord=(0.0, 0.0, 0.0)),
+        LigandAtom(id="H6", element="H", coord=(0.0, 0.0, 0.0)),
+    ]
+    pose = _parse_vina("wt", FX / "vina_real" / "wt_vina_out.pdbqt", ref)
+    assert abs(pose.score - (-2.565)) < 1e-9          # BEST (first) model
+    assert len(pose.ligand_atoms) == 4                # heavy-locked, H dropped
+    assert [a.id for a in pose.ligand_atoms] == ["O0", "C1", "N2", "P3"]
+    assert all(a.element != "H" for a in pose.ligand_atoms)
+    # heavy pose coords (1,1,1) vs reference (0,0,0) -> rmsd = sqrt(3)
+    assert pose.rmsd_to_reference is not None
+    assert abs(pose.rmsd_to_reference - 1.732) < 1e-3
+
+
 def test_gnina_sdf_tag_on_next_line():
     # value is on the line AFTER `> <minimizedAffinity>`; best (lowest) = -7.85
     assert _parse_gnina(FX / "gnina" / "out.sdf") == -7.85
