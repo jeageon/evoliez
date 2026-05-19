@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "EvoLigand-Enzyme Engineer: ligand-aware, enzyme-family-specific protein engineering pipeline with MD validation"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = { text = "Proprietary - All Rights Reserved (unpublished research)" }
 authors = [{ name = "EvoLiEZ" }]
 keywords = ["enzyme-engineering", "protein-ligand", "molecular-dynamics", "boltz", "ligandmpnn"]
 

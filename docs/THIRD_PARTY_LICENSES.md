@@ -56,7 +56,9 @@ They constrain only (1) redistributing a bundle that includes them and
 ## C. Practical conclusions
 
 1. **Our code license is free to choose** — no in-process dep forces
-   copyleft. MIT (current), Apache-2.0, or proprietary all work.
+   copyleft. Current choice: **Proprietary / All Rights Reserved**
+   (unpublished research, private repo); Apache-2.0 is the planned option
+   at publication.
 2. **We never bundle external tools**; GPL ones (GNINA/MMseqs2/Foldseek/
    OpenBabel/PLIP) are user-installed subprocess deps → no GPL obligation on
    our code. Each adapter degrades to mock/alternative if the tool is absent.
