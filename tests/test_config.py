@@ -39,3 +39,16 @@ def test_unknown_key_rejected():
 def test_input_requires_sequence_source():
     with pytest.raises(Exception):
         Config.model_validate({"input": {"ligand": {"value": "C"}}})
+
+
+@pytest.mark.parametrize(
+    "cfg_path",
+    sorted((ROOT / "configs").glob("*.yaml")),
+    ids=lambda p: p.name,
+)
+def test_all_shipped_configs_validate(cfg_path):
+    """Every configs/*.yaml must pass Config schema validation (extra keys
+    are forbidden). Regression guard: pytest never loaded smoke.yaml, so a
+    stray top-level key (e.g. a misplaced `docking:`) only blew up on the
+    server. This makes any shipped config a CI citizen."""
+    load_config(cfg_path)
