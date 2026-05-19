@@ -104,16 +104,27 @@ dock)     # step 4: ONLY docking real (Vina). FoldX is academic/optional so
     --stage-backend s05_docking=real --to s05_docking
   bash scripts/capture_fixtures.sh "$RUN/dock"
   ;;
-md)       # step 5: real OpenMM MD-lite. MUST also run s04 real: OpenMM
-          # needs a FULL-ATOM structure and mock s04 only yields a CA trace
-          # (-> "wrong set of atoms" / skipped_no_full_atom_structure). So
-          # this rung includes a real Boltz-2 run (~20 min, GPU) feeding a
-          # real full-atom PDB into MD. protocol level via smoke.yaml.
+md)       # step 5: GENUINE per-mutant real MD. OpenMM needs a full-atom
+          # structure, and the MD candidates are MUTANTS - so this rung runs
+          # s04 real (WT Boltz) AND s08b real (per-mutant Boltz) so s10 MDs
+          # the actual mutant structures, not the WT-derived proxy (which
+          # the sequence guard correctly skips). Cost: 1 WT + N mutant Boltz
+          # (~20 min each, GPU) + MD. Then ASSERT real MD actually ran for
+          # >=1 candidate (P0: a degraded stage must not pass as OK).
   pin_gpu
   export BOLTZ_CACHE="${BOLTZ_CACHE:-$EVOLIEZ_ROOT/evoliez_assets/boltz_cache}"
   mkdir -p "$BOLTZ_CACHE"
+  mkdir -p "$RUN/md"
   evoliez run -c "$SMOKE_CFG" --backend mock --output-dir "$RUN/md" \
-    --stage-backend s04_complex=real --stage-backend s10_md=real
+    --stage-backend s04_complex=real --stage-backend s08b_mutant_boltz=real \
+    --stage-backend s10_md=real 2>&1 | tee "$RUN/md/run.log"
+  if grep -qE 'MD real-execution: 0/' "$RUN/md/run.log" \
+     || ! grep -qE 'MD real-execution: [0-9]+/' "$RUN/md/run.log"; then
+    echo ">> FAIL: real MD did not actually run for any candidate" \
+         "(all skipped/failed, or s10 never reported). See" \
+         "'MD real-execution:' above - this is NOT a pass." >&2
+    exit 1
+  fi
   bash scripts/capture_fixtures.sh "$RUN/md"
   ;;
 gnn)      # step 6: 1-epoch single-GPU GNN train (DDP comes later)

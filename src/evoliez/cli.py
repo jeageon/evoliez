@@ -47,10 +47,20 @@ def run(
     if output_dir:
         overrides["project.output_dir"] = output_dir
     if stage_backend:
+        from evoliez.stages import ALL_STAGES
+
+        valid = {s.name for s in ALL_STAGES}
         be = {}
         for item in stage_backend:
             stage, _, val = item.partition("=")
-            be[stage.strip()] = val.strip() or "real"
+            stage = stage.strip()
+            if stage not in valid:
+                raise typer.BadParameter(
+                    f"--stage-backend: unknown stage {stage!r} (a typo here "
+                    f"would silently run mock and 'pass'). Valid: "
+                    f"{', '.join(sorted(valid))}"
+                )
+            be[stage] = val.strip() or "real"
         overrides["backends"] = be
     cfg = load_config(config, overrides)
     seed_everything(cfg.seed)

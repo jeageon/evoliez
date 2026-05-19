@@ -53,11 +53,18 @@ class MutantBoltzStage(Stage):
         outdir = ctx.paths.complexes / "mutant_boltz"
 
         n_done = 0
+        # Per-mutant predicted complex -> consumed by s10_md so REAL MD runs
+        # on the actual mutant structure (the sequence guard otherwise
+        # skips, since _mutant_complex(WT) is not the mutant). In-memory
+        # context map (Complex isn't JSON-persisted); MD-candidates not in
+        # this top-N fall back to the WT-derived proxy and honestly skip.
+        mut_complexes = ctx.get("mutant_complexes", {}) or {}
         for cand in top:
             mut_cx = predict_complex(
                 cand.candidate_id, _mutant_sequence(seq, cand), ligand,
                 cp_cfg, outdir, backend=backend, dry_run=ctx.dry_run,
             )
+            mut_complexes[cand.candidate_id] = mut_cx
             delta = boltz_delta_features(
                 mut_cx, wt, catalytic_positions=catalytic
             )
@@ -70,6 +77,7 @@ class MutantBoltzStage(Stage):
                 cand.scores[dk] = v
             n_done += 1
 
+        ctx.put("mutant_complexes", mut_complexes)
         ctx.put("redock_candidates", candidates)
         ctx.persist_meta("n_mutant_boltz_evaluated", n_done)
         ctx.persist_meta(

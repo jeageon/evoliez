@@ -18,11 +18,25 @@ copy_first() {  # <subdir> <name-pattern> <dest-name>
   fi
 }
 
-copy_first complexes "*.cif"            boltz_real.cif
-copy_first complexes "*.pdb"            boltz_real.pdb
-copy_first complexes "confidence*.json" boltz_confidence_real.json
-copy_first complexes "affinity*.json"   boltz_affinity_real.json
-copy_first complexes "plddt*.npz"       boltz_plddt_real.npz
+# Boltz: ONLY capture genuine boltz_results_*/ output. The mock / fallback
+# path writes <label>_complex.pdb directly under complexes/ - capturing
+# that as boltz_real.* poisoned the parser fixtures (it's not real Boltz).
+copy_real_boltz() {  # <name-pattern> <dest-name>
+  local f
+  f="$(find "$RUN/complexes" -type f -path '*/boltz_results_*/*' \
+        -name "$1" 2>/dev/null | head -1 || true)"
+  if [ -n "${f:-}" ]; then
+    cp "$f" "$DEST/$2"; echo "captured $2  <-  $f"
+  else
+    echo "skip $2: no real boltz_results_* output (mock/fallback?)"
+  fi
+}
+
+copy_real_boltz "*.cif"            boltz_real.cif
+copy_real_boltz "*.pdb"            boltz_real.pdb
+copy_real_boltz "confidence*.json" boltz_confidence_real.json
+copy_real_boltz "affinity*.json"   boltz_affinity_real.json
+copy_real_boltz "plddt*.npz"       boltz_plddt_real.npz
 copy_first docking   "*vina_out.pdbqt"  vina_real.pdbqt
 copy_first docking   "*gnina*.sdf"      gnina_real.sdf
 copy_first docking   "rank1*.sdf"       diffdock_real.sdf
