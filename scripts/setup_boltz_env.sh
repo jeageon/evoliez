@@ -23,6 +23,21 @@ echo ">> creating isolated Boltz env at $BOLTZ_ENV"
 "${CREATE[@]}" -p "$BOLTZ_ENV" -y -c conda-forge python=3.10 pip
 conda run -p "$BOLTZ_ENV" pip install -U boltz
 
+# PyPI's default `torch` now ships CUDA-13 wheels. The lab server driver is
+# CUDA 12.4, which CANNOT run cu13 binaries -> torch.cuda.is_available()==False
+# -> Boltz-2 silently falls back to CPU (unusably slow). Pin torch to a
+# CUDA-12.4 build. Override with BOLTZ_TORCH_CUDA=cu126 / =skip if needed.
+BOLTZ_TORCH_CUDA="${BOLTZ_TORCH_CUDA:-cu124}"
+if [ "$BOLTZ_TORCH_CUDA" != "skip" ]; then
+  echo ">> pinning torch to a $BOLTZ_TORCH_CUDA build (server driver = CUDA 12.4)"
+  conda run -p "$BOLTZ_ENV" pip install --force-reinstall --no-cache-dir \
+    torch --index-url "https://download.pytorch.org/whl/$BOLTZ_TORCH_CUDA"
+fi
+echo ">> boltz-env CUDA self-check:"
+conda run -p "$BOLTZ_ENV" python -c \
+  'import torch;print("  torch",torch.__version__,"cuda_build",torch.version.cuda,"avail",torch.cuda.is_available())' \
+  || echo "  (torch import failed - inspect above)"
+
 mkdir -p "$BOLTZ_CACHE"
 ver="$(conda run -p "$BOLTZ_ENV" python -c \
   'import importlib.metadata as m; print(m.version("boltz"))')"
