@@ -184,12 +184,23 @@ def relabel_to_canonical(parsed, canonical):
     """
     from dataclasses import replace
 
-    if not canonical or len(parsed) != len(canonical):
+    if not canonical:
         return list(parsed), False
-    locked = []
-    for canon, p in zip(canonical, parsed):
-        locked.append(replace(canon, coord=p.coord))
-    return locked, True
+    # exact match: keep canonical ids/chemistry, adopt the tool's coords.
+    if len(parsed) == len(canonical):
+        return [replace(c, coord=p.coord)
+                for c, p in zip(canonical, parsed)], True
+    # Structure/docking tools (real Boltz, Vina, ...) re-emit the ligand as
+    # HEAVY ATOMS ONLY, but the canonical parse adds explicit H (Chem.AddHs)
+    # -> e.g. NADP 44 heavy vs 70 with H. Lock on heavy atoms: keep canonical
+    # heavy-atom ids/chemistry + tool coords and drop the H the tool never
+    # produced (downstream interaction features are heavy-atom based). Still
+    # an honest no-lock if the HEAVY counts genuinely differ.
+    ch = [a for a in canonical if (a.element or "").upper() != "H"]
+    ph = [a for a in parsed if (a.element or "").upper() != "H"]
+    if ch and len(ph) == len(ch):
+        return [replace(c, coord=p.coord) for c, p in zip(ch, ph)], True
+    return list(parsed), False
 
 
 def _pharma(element: str, aromatic: bool) -> str:
