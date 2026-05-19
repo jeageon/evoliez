@@ -79,6 +79,46 @@ def _pdb_one_letter_seq(path: Path) -> str:
     return "".join(seq)
 
 
+_STD_RES = {
+    "ALA", "ARG", "ASN", "ASP", "CYS", "CYX", "GLN", "GLU", "GLY",
+    "HIS", "HID", "HIE", "HIP", "ILE", "LEU", "LYS", "LYN", "MET",
+    "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL", "ASH", "GLH",
+    "ACE", "NME", "HOH", "WAT",
+}
+
+
+def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
+    """OpenFF Molecule for the ligand AT THE BOLTZ POSE. Read the HETATM +
+    CONECT ligand from the predicted PDB with RDKit (bonds from CONECT),
+    assign bond orders from the SMILES template, add H with coords, hand to
+    OpenFF. Raises on failure - a mis-built/mis-placed ligand must surface
+    as a REAL MD failure, never a silent pass. (The bond-sparse / H-less
+    PDB HETATM cannot graph-match the GAFF template directly, which is why
+    'No template for residue LIG' happened.)"""
+    from openff.toolkit import Molecule
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    het = [
+        ln for ln in Path(pdb_path).read_text().splitlines()
+        if ln.startswith(("HETATM", "CONECT"))
+    ]
+    if not any(ln.startswith("HETATM") for ln in het):
+        raise ValueError("no ligand HETATM records in the predicted PDB")
+    rd = Chem.MolFromPDBBlock(
+        "\n".join(het) + "\nEND\n",
+        removeHs=False, sanitize=False, proximityBonding=False,
+    )
+    if rd is None:
+        raise ValueError("RDKit could not read the ligand PDB block")
+    tmpl = Chem.MolFromSmiles(smiles)
+    if tmpl is None:
+        raise ValueError(f"unparsable ligand SMILES: {smiles!r}")
+    rd = AllChem.AssignBondOrdersFromTemplate(tmpl, rd)  # orders from SMILES
+    rd = Chem.AddHs(rd, addCoords=True)                  # explicit H + coords
+    return Molecule.from_rdkit(rd, allow_undefined_stereo=True)
+
+
 def run_md(
     cx: Complex,
     candidate_id: str,
@@ -242,32 +282,14 @@ def _run_real(
                             "MD needs a per-mutant predicted structure"),
         )
 
-    # (#4a) Ligand force-field ONLY. A genuine failure here (GAFF /
-    # antechamber missing, unparameterisable cofactor) is the legitimately
-    # NEUTRAL skip - the candidate is judged on the other layers.
+    # (#4a) Ligand FF STACK availability only. Absence of the openff /
+    # openmmforcefields stack is the legitimately NEUTRAL skip - the
+    # candidate is judged on the other layers, not penalised.
     try:
-        from openff.toolkit import Molecule
         from openmmforcefields.generators import SystemGenerator
-
-        off_mol = Molecule.from_smiles(
-            cx.ligand.smiles, allow_undefined_stereo=True
-        )
-        system_generator = SystemGenerator(
-            forcefields=["amber14-all.xml", "implicit/obc2.xml"],
-            small_molecule_forcefield="gaff-2.11",
-            molecules=[off_mol],
-            cache=str(workdir / "ff_cache.json"),
-            # openmmforcefields refuses nonbondedMethod in forcefield_kwargs;
-            # it must go in (non)periodic_forcefield_kwargs (implicit/GBSA
-            # -> non-periodic).
-            forcefield_kwargs={"constraints": app.HBonds},
-            nonperiodic_forcefield_kwargs={
-                "nonbondedMethod": app.CutoffNonPeriodic,
-            },
-        )
     except Exception as exc:
         log.warning(
-            "ligand force-field unavailable for %s (%s); recording "
+            "ligand FF stack unavailable for %s (%s); recording "
             "skipped_parameterization (NOT a candidate failure)",
             candidate_id, exc,
         )
@@ -277,16 +299,29 @@ def _run_real(
             simulation_time_ns=0.0, failure_reason=str(exc),
         )
 
-    # (#4b) Protein prep + system creation. A failure HERE is a REAL MD
-    # failure (input topology / residue templates / system), NOT a neutral
-    # ligand skip - must surface as failed, never as a pass.
-    #
-    # Boltz emits predicted coords but its chain termini lack OXT / terminal
-    # designation, so Amber14 has "No template for residue N (VAL)". Run
-    # PDBFixer first to add missing terminal/heavy atoms (it leaves the
-    # nonstandard ligand untouched - we never replace/strip heterogens).
+    # (#4b) Protein + ligand topology assembly + system creation. Standard
+    # openmmforcefields recipe: the ligand enters the system from the OpenFF
+    # molecule placed at the BOLTZ POSE (PDB+CONECT, bond orders from the
+    # SMILES template) - NOT the bond-sparse/H-less PDB HETATM, which can't
+    # graph-match GAFF ("No template for residue LIG"). The protein is
+    # PDBFixer-repaired (terminal OXT / missing heavy atoms) with the
+    # ligand stripped, then recombined. A failure HERE is a REAL MD failure
+    # (structure / chemistry / template), surfaced as failed - never a pass.
     try:
-        topo, posns = pdb.topology, pdb.positions
+        off_lig = _ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)
+        system_generator = SystemGenerator(
+            forcefields=["amber14-all.xml", "implicit/obc2.xml"],
+            small_molecule_forcefield="gaff-2.11",
+            molecules=[off_lig],
+            cache=str(workdir / "ff_cache.json"),
+            # openmmforcefields refuses nonbondedMethod in forcefield_kwargs;
+            # it must go in (non)periodic_forcefield_kwargs (implicit/GBSA
+            # -> non-periodic).
+            forcefield_kwargs={"constraints": app.HBonds},
+            nonperiodic_forcefield_kwargs={
+                "nonbondedMethod": app.CutoffNonPeriodic,
+            },
+        )
         try:
             from pdbfixer import PDBFixer
 
@@ -298,25 +333,36 @@ def _run_real(
             topo, posns = fixer.topology, fixer.positions
         except ImportError:
             log.warning(
-                "pdbfixer not installed - skipping terminal/missing-atom "
-                "repair for %s; Amber may reject uncapped termini. "
-                "`conda install -c conda-forge pdbfixer`", candidate_id,
+                "pdbfixer not installed - Amber may reject uncapped "
+                "termini for %s. `conda install -c conda-forge pdbfixer`",
+                candidate_id,
             )
+            topo, posns = pdb.topology, pdb.positions
         modeller = app.Modeller(topo, posns)
+        drop = [r for r in modeller.topology.residues()
+                if r.name not in _STD_RES]            # strip ligand/ions
+        if drop:
+            modeller.delete(drop)
         modeller.addHydrogens(system_generator.forcefield)
+        # Recombine the OpenFF ligand at its Boltz-pose conformer.
+        modeller.add(
+            off_lig.to_topology().to_openmm(),
+            off_lig.conformers[0].to_openmm(),
+        )
         system = system_generator.create_system(
-            modeller.topology, molecules=[off_mol]
+            modeller.topology, molecules=[off_lig]
         )
     except Exception as exc:
         log.warning(
-            "MD protein prep / system creation failed for %s (%s)",
-            candidate_id, exc,
+            "MD protein+ligand assembly / system creation failed for "
+            "%s (%s)", candidate_id, exc,
         )
         return MDResult(
             candidate_id=candidate_id, status="failed",
             protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
             simulation_time_ns=0.0, integration_failed=True,
-            failure_reason=f"protein prep / system creation: {exc}",
+            failure_reason=f"protein+ligand assembly / system "
+                           f"creation: {exc}",
         )
 
     # Restraint schedule (spec 15.5): strongly restrain distant backbone.
