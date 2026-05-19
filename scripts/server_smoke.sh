@@ -11,7 +11,8 @@ set -euo pipefail
 
 STEP="${1:?usage: server_smoke.sh <doctor|dryrun|boltz|dock|md|gnn|all> [config]}"
 CFG="${2:-configs/server_fdh_nadp.yaml}"
-RUN="/mnt/data2/${USER}/runs/smoke"
+EVOLIEZ_ROOT="${EVOLIEZ_ROOT:-/mnt/data2/${USER}}"
+RUN="$EVOLIEZ_ROOT/runs/smoke"
 
 pin_gpu() {
   if command -v nvidia-smi >/dev/null 2>&1 && [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then

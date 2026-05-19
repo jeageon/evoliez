@@ -19,7 +19,8 @@ fi
 echo ">> CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<none>}"
 
 # Default real outputs to /mnt/data2 unless the config already does.
-export EVOLIEZ_DATA_DIR="${EVOLIEZ_DATA_DIR:-/mnt/data2/$USER/evoliez_assets}"
+EVOLIEZ_ROOT="${EVOLIEZ_ROOT:-/mnt/data2/$USER}"
+export EVOLIEZ_DATA_DIR="${EVOLIEZ_DATA_DIR:-$EVOLIEZ_ROOT/evoliez_assets}"
 
 cd "$REPO_DIR"
 exec evoliez run -c "$CONFIG" "$@"

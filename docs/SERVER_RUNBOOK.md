@@ -18,19 +18,33 @@ pipeline. Read the constraints before doing anything.
 
 ## First-time setup
 
+One env var, `EVOLIEZ_ROOT`, drives the clone / conda env / weights / DB /
+runs location. Put it in `~/.bashrc` so every script agrees. Must be under
+`/mnt/data2` (NVMe, more free) or `/mnt/data` — never `/` or `$HOME`.
+
 ```bash
-# clone INTO /mnt/data2 (not home/root)
-mkdir -p /mnt/data2/$USER && cd /mnt/data2/$USER
-git clone <your-fork-url> EvoLiEZ && cd EvoLiEZ
+# pick your root (this example: /mnt/data/jglee)
+export EVOLIEZ_ROOT=/mnt/data/jglee
+echo 'export EVOLIEZ_ROOT=/mnt/data/jglee' >> ~/.bashrc
 
-bash scripts/setup_server_env.sh          # conda env at /mnt/data2/$USER/envs/evoliez
-conda activate /mnt/data2/$USER/envs/evoliez
-pip install -e .
+mkdir -p "$EVOLIEZ_ROOT" && cd "$EVOLIEZ_ROOT"
+git clone -b feat/family-interaction-model <your-fork-url> EvoLiEZ
+cd EvoLiEZ
 
-bash scripts/fetch_weights.sh             # Boltz-2 / LigandMPNN -> /mnt/data2
+# creates the conda env at $EVOLIEZ_ROOT/envs/evoliez
+bash scripts/setup_server_env.sh
+conda activate "$EVOLIEZ_ROOT/envs/evoliez"
+pip install -e ".[science,md,gnn]"
+
+bash scripts/fetch_weights.sh             # Boltz-2 / LigandMPNN -> $EVOLIEZ_ROOT
 # optional, large: local homolog DB. Otherwise set msa.remote_server: true
 bash scripts/fetch_databases.sh uniref30
 ```
+
+For a real full run, also point the config at your root:
+`project.output_dir: /mnt/data/jglee/runs/fdh_nadp` and
+`homologs.database: /mnt/data/jglee/evoliez_db/...` in
+`configs/server_fdh_nadp.yaml` (the smoke steps already pass `--output-dir`).
 
 ## Configure a real run
 

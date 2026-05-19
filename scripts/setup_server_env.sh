@@ -2,18 +2,22 @@
 # Create the EvoLiEZ conda env on the GPU server.
 #
 # CRITICAL: the server's root "/" is ~99% full and ~/anaconda3 lives there.
-# The env, weights and DBs MUST go on /mnt/data2 (NVMe, ~4.8 TB free).
+# Env, weights and DBs MUST live under EVOLIEZ_ROOT on /mnt/data2 or /mnt/data.
 #
-# Usage:  bash scripts/setup_server_env.sh
+#   export EVOLIEZ_ROOT=/mnt/data/jglee     # one var drives everything
+#   bash scripts/setup_server_env.sh
+#
+# (/mnt/data2 is NVMe + more free space; /mnt/data also works.)
 set -euo pipefail
 
-ENV_PREFIX="${EVOLIEZ_ENV_PREFIX:-/mnt/data2/$USER/envs/evoliez}"
+EVOLIEZ_ROOT="${EVOLIEZ_ROOT:-/mnt/data2/$USER}"
+ENV_PREFIX="${EVOLIEZ_ENV_PREFIX:-$EVOLIEZ_ROOT/envs/evoliez}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 case "$ENV_PREFIX" in
   /mnt/data2/*|/mnt/data/*) : ;;
   *) echo "REFUSING: env prefix '$ENV_PREFIX' is not under /mnt/data2 or /mnt/data."
-     echo "Root '/' is full - set EVOLIEZ_ENV_PREFIX to a /mnt/data2 path."; exit 1 ;;
+     echo "Root '/' is full - set EVOLIEZ_ROOT=/mnt/data/<you> (or /mnt/data2/<you>)."; exit 1 ;;
 esac
 
 avail_gb=$(df -BG --output=avail "$(dirname "$ENV_PREFIX" 2>/dev/null || echo /mnt/data2)" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
@@ -48,7 +52,7 @@ cat <<EOF
 Done. Activate with:
   conda activate $ENV_PREFIX
 
-Next:
-  bash scripts/fetch_weights.sh        # Boltz-2 / LigandMPNN weights -> /mnt/data2
-  bash scripts/run_pipeline.sh configs/example_fdh_nadp.yaml
+Next (same EVOLIEZ_ROOT=$EVOLIEZ_ROOT):
+  bash scripts/fetch_weights.sh        # Boltz-2 / LigandMPNN weights
+  bash scripts/server_smoke.sh doctor  # preflight
 EOF
