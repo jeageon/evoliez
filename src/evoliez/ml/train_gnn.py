@@ -38,6 +38,7 @@ def train(
     seed: int = 1234,
     coord_noise_min: float = 0.1,
     coord_noise_alpha: float = 1.5,
+    equivariant: bool = False,
 ) -> Path:
     if not egnn.is_available():
         raise RuntimeError(
@@ -61,7 +62,8 @@ def train(
              len(samples), device, ddp)
 
     model = egnn.EvoLigandGNN(NODE_DIM, EDGE_DIM, hidden=hidden,
-                              layers=layers).to(device)
+                              layers=layers,
+                              equivariant=equivariant).to(device)
     if ddp:
         torch.distributed.init_process_group("nccl")
         torch.cuda.set_device(rank)
@@ -114,6 +116,7 @@ def train(
                 "edge_dim": EDGE_DIM,
                 "hidden": hidden,
                 "layers": layers,
+                "equivariant": equivariant,
             },
             out_ckpt,
         )

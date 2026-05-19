@@ -35,6 +35,7 @@ class EvoLigandGNNScorer:
             model = egnn.EvoLigandGNN(
                 blob["node_dim"], blob["edge_dim"],
                 hidden=blob["hidden"], layers=blob["layers"],
+                equivariant=blob.get("equivariant", False),
             )
             model.load_state_dict(blob["state_dict"])
             model.eval()

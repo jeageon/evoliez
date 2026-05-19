@@ -69,7 +69,47 @@ if _HAVE_TORCH:
                 m = m * edge_w.unsqueeze(-1)
             agg = torch.zeros_like(h)
             agg.index_add_(0, dst, m)
-            return h + self.node_mlp(torch.cat([h, agg], dim=-1))
+            return h + self.node_mlp(torch.cat([h, agg], dim=-1)), pos
+
+    class EquivariantEGNNLayer(nn.Module):
+        """True E(3)-equivariant layer (Satorras et al. EGNN): scalar features
+        stay invariant, coordinates are updated equivariantly via the
+        normalised relative vector. Readout from h remains E(3)-invariant."""
+
+        def __init__(self, hidden: int, edge_dim: int):
+            super().__init__()
+            self.edge_mlp = nn.Sequential(
+                nn.Linear(2 * hidden + 1 + edge_dim, hidden),
+                nn.SiLU(),
+                nn.Linear(hidden, hidden),
+                nn.SiLU(),
+            )
+            self.coord_mlp = nn.Sequential(
+                nn.Linear(hidden, hidden), nn.SiLU(), nn.Linear(hidden, 1)
+            )
+            self.node_mlp = nn.Sequential(
+                nn.Linear(2 * hidden, hidden), nn.SiLU(),
+                nn.Linear(hidden, hidden),
+            )
+
+        def forward(self, h, pos, edge_index, edge_attr, edge_w=None):
+            src, dst = edge_index[0], edge_index[1]
+            rel = pos[src] - pos[dst]
+            d2 = (rel ** 2).sum(-1, keepdim=True)
+            m = self.edge_mlp(
+                torch.cat([h[src], h[dst], d2, edge_attr], dim=-1)
+            )
+            if edge_w is not None:
+                m = m * edge_w.unsqueeze(-1)
+            # equivariant coordinate update (vector channel)
+            coeff = self.coord_mlp(m)
+            rel_n = rel / (d2.sqrt() + 1.0)
+            dx = torch.zeros_like(pos)
+            dx.index_add_(0, dst, rel_n * coeff)
+            agg = torch.zeros_like(h)
+            agg.index_add_(0, dst, m)
+            h = h + self.node_mlp(torch.cat([h, agg], dim=-1))
+            return h, pos + dx
 
     class EvoLigandGNN(nn.Module):
         def __init__(
@@ -79,14 +119,17 @@ if _HAVE_TORCH:
             hidden: int = 128,
             layers: int = 4,
             rbf_n: int = 16,
+            equivariant: bool = False,
         ):
             super().__init__()
             self.rbf_n = rbf_n
+            self.equivariant = equivariant
             self.type_emb = nn.Embedding(2, hidden)  # 0 ligand atom, 1 residue
             self.node_enc = nn.Linear(node_in, hidden)
             self.edge_enc = nn.Linear(edge_in + rbf_n, hidden)
+            Layer = EquivariantEGNNLayer if equivariant else EGNNLayer
             self.blocks = nn.ModuleList(
-                [EGNNLayer(hidden, hidden) for _ in range(layers)]
+                [Layer(hidden, hidden) for _ in range(layers)]
             )
             self.contact_head = nn.Linear(2 * hidden, 1)
             self.itype_head = nn.Linear(2 * hidden, N_ITYPES)
@@ -110,7 +153,7 @@ if _HAVE_TORCH:
             )
             ew = batch.get("edge_conf")
             for blk in self.blocks:
-                h = blk(h, pos, ei, ea, ew)
+                h, pos = blk(h, pos, ei, ea, ew)
 
             lr = batch["lr_edge_index"]  # ligand-atom -> residue edges
             ee = torch.cat([h[lr[0]], h[lr[1]]], dim=-1)

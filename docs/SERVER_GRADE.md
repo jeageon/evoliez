@@ -35,7 +35,8 @@ Boltz/Boltz-2 diffusion ensemble  (features, NOT labels - see ML_DATA_POLICY)
  + ligand-atom→protein relative-vector graph dataset
  + MSA evolutionary features
         ↓
-EvoLigand-GNN  (ml/egnn.py) — E(3)-invariant heterogeneous EGNN
+EvoLigand-GNN  (ml/egnn.py) — E(3)-invariant by default; optional
+  E(3)-equivariant coord-update layers (gnn.equivariant), invariant readout
   nodes: ligand atoms + nearby residues
   edges: r_ij + |r_ij| + unit vector + RBF
   multitask: contact prob · interaction type · permissiveness ·

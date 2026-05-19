@@ -214,6 +214,8 @@ class GNNConfig(_Base):
     hidden_dim: int = 128
     layers: int = 4
     rbf: int = 16
+    equivariant: bool = False  # True = E(3)-equivariant coord-update layers
+                               # (à la EGNN); default = E(3)-invariant readout
     radius_lr: float = 6.0  # ligand-atom -> residue edge radius (Å)
     radius_rr: float = 8.0  # residue-residue spatial edge radius (Å)
     lr: float = 1.0e-3

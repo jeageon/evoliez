@@ -110,3 +110,30 @@ def test_egnn_forward_if_torch_available():
     assert out["contact_logit"].shape[0] == s["lr_edge_index"].shape[1]
     loss = egnn.multitask_loss(out, to_torch(s))
     assert torch.isfinite(loss)
+
+
+def test_equivariant_readout_is_invariant_if_torch():
+    """E(3)-equivariant message passing -> rotation/translation-invariant
+    contact/score readout (expert review #6 / terminology)."""
+    if not egnn.is_available():
+        return
+    import torch
+
+    from evoliez.ml.graph_dataset import to_torch
+
+    cx, pf, econ = _ctx()
+    s = build_graph_sample(cx, pf, econ)
+    model = egnn.EvoLigandGNN(NODE_DIM, EDGE_DIM, hidden=32, layers=3,
+                              equivariant=True).eval()
+    b = to_torch(s)
+    with torch.no_grad():
+        o1 = model(b)
+        # random rotation + translation of all coordinates
+        q, _ = torch.linalg.qr(torch.randn(3, 3))
+        if torch.det(q) < 0:
+            q[:, 0] = -q[:, 0]
+        b2 = dict(b)
+        b2["pos"] = b["pos"].float() @ q.T + torch.tensor([5.0, -2.0, 1.0])
+        o2 = model(b2)
+    assert torch.allclose(o1["contact_logit"], o2["contact_logit"], atol=1e-4)
+    assert torch.allclose(o1["graph_score"], o2["graph_score"], atol=1e-4)

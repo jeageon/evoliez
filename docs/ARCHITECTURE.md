@@ -71,8 +71,12 @@ Multi-level datasets are exported to `<run>/ml_datasets/` (spec §7).
 
 ## Server-grade EvoLigand-GNN (optional)
 
-`ml/egnn.py` is an E(3)-invariant heterogeneous EGNN over ligand-atom +
-residue nodes with relative-vector edges (`ml/graph_dataset.py` builds the
+`ml/egnn.py` uses **E(3)-invariant message passing** (distance-only) by
+default and produces E(3)-invariant contact/score readouts; an optional
+**E(3)-equivariant** mode (`gnn.equivariant`, EGNN coordinate-update layers)
+encodes the relative geometry equivariantly while keeping the readout
+invariant. Heterogeneous over ligand-atom + residue nodes with
+relative-vector edges (`ml/graph_dataset.py` builds the
 dataset, exported to `<run>/datasets/graph_pt/`). Train with `evoliez
 train-gnn` (single GPU or `torchrun` DDP); `ml/gnn_scorer.py` adds an optional
 `gnn_score` to ranking. torch is server-only — no torch / no checkpoint falls
