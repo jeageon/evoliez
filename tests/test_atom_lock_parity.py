@@ -34,6 +34,34 @@ def test_relabel_to_canonical_locks_ids():
     assert not ok2
 
 
+def test_relabel_locks_on_heavy_atoms_when_tool_drops_H():
+    """Real server case: canonical parse adds explicit H (Chem.AddHs) e.g.
+    NADP 44 heavy + 26 H = 70, but Boltz/Vina re-emit HEAVY ATOMS ONLY.
+    The lock must succeed on heavy atoms (canonical heavy ids/chemistry +
+    tool coords, H dropped), not bail on the 70!=44 count. rdkit-independent
+    so it runs in CI regardless of the ligand-parse backend."""
+    from evoliez.types import LigandAtom
+
+    canonical = (
+        [LigandAtom(id=f"C{i}", element="C", coord=(0.0, 0.0, 0.0))
+         for i in range(3)]
+        + [LigandAtom(id=f"H{i}", element="H", coord=(0.0, 0.0, 0.0))
+           for i in range(5)]                       # 3 heavy + 5 H = 8
+    )
+    tool = [LigandAtom(id=f"X{i}", element="C", coord=(float(i), 0.0, 0.0))
+            for i in range(3)]                       # 3 heavy, no H
+
+    locked, ok = relabel_to_canonical(tool, canonical)
+    assert ok                                        # heavy 3 == 3 -> locked
+    assert [a.id for a in locked] == ["C0", "C1", "C2"]   # canonical heavy ids
+    assert not any(a.element == "H" for a in locked)      # H dropped
+    assert [a.coord[0] for a in locked] == [0.0, 1.0, 2.0]  # tool coords
+
+    # genuine heavy-count disagreement still an honest no-lock
+    _, ok_bad = relabel_to_canonical(tool[:-1], canonical)
+    assert not ok_bad
+
+
 def _tiny_cfg(tmp_path, **ov):
     base = {
         "project.output_dir": str(tmp_path / "run"),
