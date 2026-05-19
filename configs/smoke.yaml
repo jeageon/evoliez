@@ -52,6 +52,7 @@ docking:
   # exhaustiveness=8 x 10 modes runs for hours - slash it.
   poses_per_candidate: 3
   exhaustiveness: 1
+  cpu: 4                      # shared box: don't grab all 48 cores
   timeout_s: 900              # fail loudly if even this is too slow
 
 mutation_generation:
