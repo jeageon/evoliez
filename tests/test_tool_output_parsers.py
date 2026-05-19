@@ -48,6 +48,31 @@ def test_boltz_confidence_affinity_and_plddt():
     assert plddt == [85.0, 78.0, 60.0, 92.0]
 
 
+def test_boltz_2_2_1_real_output_contract():
+    """Pinned against ACTUAL Boltz-2.2.1 output captured on the GPU server
+    (boltz_results_*/predictions/<name>/{confidence,affinity,plddt}). Guards
+    the real key layout: nested dicts (chains_ptm, pair_chains_iptm) must be
+    ignored without error; affinity_pred_value* + scalar confidence metrics
+    must populate; plddt npz key='plddt', len = protein+ligand tokens."""
+    samples = _parse_real_samples(FX / "boltz_real", [])
+    assert samples, "no Boltz-2.2.1 samples parsed from real fixture"
+    m = samples[0].metrics
+    assert abs(m["confidence_score"] - 0.223751500248909) < 1e-9
+    assert abs(m["ptm"] - 0.14932133257389069) < 1e-9
+    assert abs(m["iptm"] - 0.1401701271533966) < 1e-9
+    assert abs(m["ligand_iptm"] - 0.1401701271533966) < 1e-9
+    assert abs(m["complex_plddt"] - 0.2446468323469162) < 1e-9
+    assert abs(m["complex_pde"] - 5.7725701332092285) < 1e-9
+    assert abs(m["affinity_pred_value"] - (-0.01101875863969326)) < 1e-9
+    assert abs(m["affinity_probability_binary"] - 0.4802740812301636) < 1e-9
+    assert abs(m["affinity_pred_value1"] - (-0.009195908904075623)) < 1e-9
+    assert abs(m["affinity_pred_value2"] - (-0.012841608375310898)) < 1e-9
+    # nested-dict keys must NOT leak into the flat float metrics (no crash)
+    assert "chains_ptm" not in m and "pair_chains_iptm" not in m
+    plddt = _load_plddt(FX / "boltz_real", 0)
+    assert len(plddt) == 445  # 401 protein + 44 ligand tokens
+
+
 def test_vina_pdbqt_best_mode():
     ref = [LigandAtom(id="C0", element="C", coord=(0, 0, 0))]
     pose = _parse_vina("c", FX / "vina" / "out.pdbqt", ref)
