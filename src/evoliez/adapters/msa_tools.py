@@ -54,10 +54,33 @@ def _search_real(
     query.write_text(f">query\n{sequence}\n")
     out = (workdir / "aln.sto" if cfg.method == "jackhmmer"
            else workdir / "hits.m8")
+
+    # dry-run previews the command without needing the DB/tool installed.
+    # The missing-database hard check belongs to a real run (and to
+    # `evoliez doctor`), NOT to dry-run preview - otherwise --dry-run UX
+    # breaks for the default example config.
+    if dry_run:
+        db = cfg.database or "<HOMOLOG_DB: set homologs.database>"
+        preview = {
+            "mmseqs2": ["mmseqs", "easy-search", str(query), db,
+                        str(out), str(workdir / "mmseqs_tmp")],
+            "jackhmmer": ["jackhmmer", "-N", "3", "-A", str(out), str(query),
+                          db],
+        }.get(cfg.method, ["blastp", "-query", str(query), "-db", db,
+                            "-out", str(out)])
+        run(preview, dry_run=True)
+        if cfg.database is None:
+            log.warning(
+                "[dry-run] homologs.database is unset - a REAL run requires "
+                "it (or set msa.remote_server: true)"
+            )
+        return _search_mock(sequence, cfg)
+
     if cfg.database is None:
         raise ValueError(
             "homologs.database is required for backend=real "
-            "(point it at a UniRef/BFD DB on /mnt/data2)"
+            "(point it at a UniRef/BFD DB on /mnt/data2), "
+            "or set msa.remote_server: true"
         )
     if cfg.method == "mmseqs2":
         require("mmseqs")
