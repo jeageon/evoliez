@@ -31,18 +31,21 @@ doctor)
 dryrun)   # step 2: command preview, no execution, no GPU
   evoliez run -c "$CFG" --backend real --dry-run --output-dir "$RUN/dry"
   ;;
-boltz)    # step 3: homolog+MSA+Boltz real, stop at s04
+boltz)    # step 3: ONLY Boltz real (homolog/MSA stay mock -> synthetic feed,
+          # no homolog DB needed). Minimal real surface, stop at s04.
   pin_gpu
+  export BOLTZ_CACHE="${BOLTZ_CACHE:-$EVOLIEZ_ROOT/evoliez_assets/boltz_cache}"
+  mkdir -p "$BOLTZ_CACHE"
+  echo ">> BOLTZ_CACHE=$BOLTZ_CACHE"
   evoliez run -c "$CFG" --backend mock --output-dir "$RUN/boltz" \
-    --stage-backend s02_homolog=real --stage-backend s03_msa=real \
     --stage-backend s04_complex=real --to s04_complex
   bash scripts/capture_fixtures.sh "$RUN/boltz"
   ;;
-dock)     # step 4: docking + stability real on a few candidates
+dock)     # step 4: ONLY docking real (Vina). FoldX is academic/optional so
+          # s09 stays mock here; isolate the docking parser/prep.
   pin_gpu
   evoliez run -c "$CFG" --backend mock --output-dir "$RUN/dock" \
-    --stage-backend s05_docking=real --stage-backend s09_nonmd=real \
-    --to s09_nonmd
+    --stage-backend s05_docking=real --to s05_docking
   bash scripts/capture_fixtures.sh "$RUN/dock"
   ;;
 md)       # step 5: OpenMM minimise/MD-lite real (protocol level via config)
