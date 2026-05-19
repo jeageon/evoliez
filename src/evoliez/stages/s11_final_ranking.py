@@ -85,6 +85,23 @@ class FinalRankingStage(Stage):
 
         written = write_reports(ctx.config, ctx.paths, ranked, breakdowns)
 
+        # model-used transparency (expert review #5): make the fallback
+        # explicit in the human report so results are never over-trusted.
+        md_report = ctx.paths.reports / "final_report.md"
+        if md_report.exists():
+            gstat = ctx.meta("gnn_status", "disabled")
+            ikind = (ctx.meta("interaction_model", {}) or {}).get(
+                "model_kind", "n/a"
+            )
+            with md_report.open("a") as fh:
+                fh.write(
+                    f"\n## Model provenance\n\n"
+                    f"- EvoLigand-GNN: **{gstat}**"
+                    f"{' (heuristic family model used instead)' if gstat == 'heuristic_fallback' else ''}\n"
+                    f"- family interaction model: `{ikind}`\n"
+                    f"- backend: `{ctx.config.backend.value}`\n"
+                )
+
         # Multi-level ML datasets (spec section 7). Boltz-derived columns are
         # tagged feature/weight/weak-label/filter in roles.json; the only
         # supervised-label column is experiment-sourced (ml/labels policy).
@@ -208,6 +225,11 @@ class FinalRankingStage(Stage):
             )
             prov["run_fingerprint"] = ctx.run_fingerprint()
             prov["resume_invalidated"] = ctx.invalidated
+            prov["gnn_status"] = ctx.meta("gnn_status", "disabled")
+            prov["interaction_model_kind"] = (
+                ctx.meta("interaction_model", {}) or {}
+            ).get("model_kind")
+            prov["ligand_atom_ids"] = ctx.meta("ligand_atom_ids", [])
             write_provenance(ctx.paths.reports / "provenance.json", prov)
             for c in ranked:
                 c.details["provenance_id"] = prov["run_fingerprint"][

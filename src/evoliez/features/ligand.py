@@ -172,6 +172,26 @@ def _parse_synthetic(spec: LigandInput) -> Ligand:
     )
 
 
+def relabel_to_canonical(parsed, canonical):
+    """Atom-index lock (expert review #5).
+
+    A tool (e.g. real Boltz) may re-emit ligand atoms in a different order /
+    id scheme than the canonical parse. Every downstream module keys by atom
+    id (importance, IFP, edges), so when the atom count matches we keep the
+    **canonical atom ids + chemistry** and only adopt the tool's coordinates.
+    On a count mismatch we keep the parsed atoms but flag the ligand so the
+    inconsistency is visible, never silent.
+    """
+    from dataclasses import replace
+
+    if not canonical or len(parsed) != len(canonical):
+        return list(parsed), False
+    locked = []
+    for canon, p in zip(canonical, parsed):
+        locked.append(replace(canon, coord=p.coord))
+    return locked, True
+
+
 def _pharma(element: str, aromatic: bool) -> str:
     if aromatic:
         return "aromatic"

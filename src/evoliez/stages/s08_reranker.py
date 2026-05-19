@@ -112,6 +112,12 @@ class RerankerStage(Stage):
                     "gnn.enabled but no usable checkpoint/torch; "
                     "falling back to heuristic family model"
                 )
+        # GNN-fallback transparency (expert review #5): record what scored
+        gnn_status = (
+            "trained" if gnn_scorer is not None
+            else ("heuristic_fallback" if gcfg.enabled else "disabled")
+        )
+        ctx.persist_meta("gnn_status", gnn_status)
         econ = ctx.get("ensemble_contacts", [])
         lig_imp = ctx.get("ligand_importance", {})
 

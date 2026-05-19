@@ -171,6 +171,12 @@ def _predict_real(
     dry_run: bool,
     msa_path: Optional[Path],
 ) -> Complex:
+    # dry-run previews the command set without the tool installed and must
+    # return the same structured contract as a real/mock run.
+    if dry_run:
+        log.info("[dry-run] boltz predict (diffusion_samples=%d) for %s",
+                 cfg.diffusion_samples, label)
+        return _predict_mock(label, sequence, ligand, cfg, outdir)
     require("boltz")
     apply_gpu_selection()
     spec = {
@@ -302,10 +308,21 @@ def _parse_real_structure(pdb: Path, sequence: str, ligand: Ligand) -> Complex:
             r.aa = sequence[i]
     if not lig_atoms:
         lig_atoms = ligand.atoms
+    # atom-index lock: keep canonical ids/chemistry, adopt Boltz coordinates
+    from evoliez.features.ligand import relabel_to_canonical
+
+    lig_atoms, locked = relabel_to_canonical(lig_atoms, ligand.atoms)
+    if not locked and ligand.atoms:
+        log.warning(
+            "Boltz ligand atom count (%d) != canonical (%d); atom ids NOT "
+            "locked - downstream id-keyed features may be inconsistent",
+            len(lig_atoms), len(ligand.atoms),
+        )
     struct = ProteinStructure(
         sequence=sequence, residues=residues, method="boltz", pdb_path=str(pdb)
     )
     return Complex(structure=struct, ligand=Ligand(
         id=ligand.id, smiles=ligand.smiles, atoms=lig_atoms,
-        formal_charge=ligand.formal_charge, source=ligand.source,
+        formal_charge=ligand.formal_charge,
+        source=ligand.source if locked else ligand.source + "|reindexed",
     ))

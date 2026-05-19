@@ -60,6 +60,8 @@ class InputPreprocessStage(Stage):
         ctx.persist_meta("sequence_length", len(seq))
         ctx.persist_meta("ligand_smiles", ligand.smiles)
         ctx.persist_meta("ligand_n_heavy", ligand.n_heavy)
+        # canonical atom-id list (atom-index lock reference, expert review #5)
+        ctx.persist_meta("ligand_atom_ids", [a.id for a in ligand.atoms])
         ctx.persist_meta("catalytic_positions", catalytic)
 
         assert ctx.store is not None
