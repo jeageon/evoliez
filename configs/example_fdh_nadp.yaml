@@ -18,8 +18,13 @@ input:
     id: NADP_cofactor
     type: smiles
     value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
-  catalytic_residues: ["H155", "R285"]
-  fixed_residues: ["G10", "G12", "H155", "R285"]
+  # NOTE: examples/fdh/target.fasta is an ILLUSTRATIVE placeholder. Tokens
+  # are self-consistent with that sequence (His@154, Arg@285, Gly@15/33) so
+  # the mock example is coherent - NOT a verified FDH active site. Replace
+  # the target + numbering for real work; `evoliez doctor` BLOCKs a real
+  # backend on this placeholder.
+  catalytic_residues: ["H154", "R285"]
+  fixed_residues: ["G15", "G33", "H154", "R285"]
   cofactor: NADP
   target_ph: 7.5
   organism: "Cupriavidus necator"

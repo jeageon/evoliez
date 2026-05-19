@@ -13,6 +13,12 @@ project:
   output_dir: /mnt/data2/evoligand/runs/fdh_nadp     # NEVER root / or ~
 
 input:
+  # !!! REPLACE BEFORE ANY REAL RUN !!!
+  # examples/fdh/target.fasta is a bundled ILLUSTRATIVE placeholder and the
+  # catalytic/fixed tokens below do NOT match it. Point target_fasta at the
+  # real target FDH and set catalytic_residues / fixed_residues from the
+  # authoritative numbering (UniProt/PDB/paper). `evoliez doctor` will BLOCK
+  # a real backend until this is done.
   target_id: fdh
   target_fasta: examples/fdh/target.fasta
   ligand:

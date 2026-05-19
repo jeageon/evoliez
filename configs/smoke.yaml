@@ -15,8 +15,13 @@ input:
     id: NADP_cofactor
     type: smiles
     value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
-  catalytic_residues: ["H155", "R285"]
-  fixed_residues: ["G10", "G12", "H155", "R285"]
+  # NOTE: examples/fdh/target.fasta is an ILLUSTRATIVE placeholder. These
+  # tokens are chosen to be self-consistent with that sequence (His@154,
+  # Arg@285, Gly@15/33) so the wiring smoke is clean - they are NOT a
+  # verified FDH active site. A real run needs the real target + numbering;
+  # `evoliez doctor` BLOCKs a real backend on this placeholder.
+  catalytic_residues: ["H154", "R285"]
+  fixed_residues: ["G15", "G33", "H154", "R285"]
   cofactor: NADP
   ec_number: "1.2.1.2"
 

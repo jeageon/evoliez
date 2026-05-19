@@ -176,3 +176,43 @@ def _check_config(r: Report, config_path: str) -> None:
     if cfg.gnn.enabled and not _has_module("torch"):
         r.add("config:gnn", WARN,
               "gnn.enabled but torch missing -> heuristic fallback")
+
+    # A real run must NOT proceed on the bundled illustrative placeholder or
+    # with catalytic/fixed tokens that disagree with the target sequence -
+    # both silently corrupt the science (active-site protection + scoring).
+    if cfg.backend is Backend.real:
+        from evoliez.stages.s01_input_preprocess import _residue_token_wt
+
+        ic = cfg.input
+        seq = (ic.target_sequence or "").strip().upper()
+        hdr = ""
+        if not seq and ic.target_fasta and Path(ic.target_fasta).exists():
+            ls = Path(ic.target_fasta).read_text().splitlines()
+            hdr = next((x for x in ls if x.startswith(">")), "")
+            seq = "".join(x.strip() for x in ls
+                          if x and not x.startswith(">")).upper()
+        if not seq:
+            r.add("config:target", BLOCK,
+                  "backend=real but no target sequence resolved")
+        elif any(w in hdr.lower() for w in ("illustrative", "example",
+                                            "placeholder")):
+            r.add("config:target", BLOCK,
+                  f"target is the bundled placeholder ({hdr.strip()}); set "
+                  "input.target_fasta to the real target + verified "
+                  "catalytic/fixed numbering before a real run")
+        else:
+            bad = []
+            for kind in ("catalytic_residues", "fixed_residues",
+                         "known_binding_site"):
+                for t in (getattr(ic, kind, None) or []):
+                    wt, pos = _residue_token_wt(t)
+                    if (wt and pos and 1 <= pos <= len(seq)
+                            and seq[pos - 1] not in (wt, "X")):
+                        bad.append(f"{t}->{seq[pos - 1]}{pos}")
+            if bad:
+                r.add("config:catalytic", BLOCK,
+                      "residue tokens disagree with target sequence: "
+                      + ", ".join(bad))
+            else:
+                r.add("config:target", OK,
+                      f"{len(seq)} aa, residue tokens consistent")
