@@ -87,15 +87,54 @@ def calibration_curve(
     }
 
 
+def validate_benchmark(
+    bench: Sequence[dict], target_sequence: str = ""
+) -> List[str]:
+    """Warn when a benchmark mutation's wild-type letter does not match the
+    target sequence (the old example had A85K while residue 85 is E)."""
+    warnings: List[str] = []
+    if not target_sequence:
+        return warnings
+    for b in bench:
+        m = b["mutation"]
+        try:
+            wt, pos = m[0], int(m[1:-1])
+        except (ValueError, IndexError):
+            warnings.append(f"unparseable mutation '{m}'")
+            continue
+        if pos < 1 or pos > len(target_sequence):
+            warnings.append(f"{m}: position out of range")
+        elif target_sequence[pos - 1] != wt:
+            warnings.append(
+                f"{m}: WT '{wt}' != sequence '{target_sequence[pos - 1]}'"
+            )
+    return warnings
+
+
 def run_benchmark(
     ranked: Sequence[Candidate], bench: Sequence[dict], *, k: int = 20,
     catalytic_positions: Sequence[int] = (),
     known_site: Sequence[int] = (),
+    target_sequence: str = "",
+    min_overlap: int = 1,
 ) -> Dict[str, object]:
     rank_of = {c.mutation_str: i + 1 for i, c in enumerate(ranked)}
     score_of = {c.mutation_str: c.scores.get("final_score", 0.0)
                 for c in ranked}
     n = len(ranked)
+
+    # validity guard: distinguish "model is bad" from "benchmark mismatch"
+    overlap = sum(1 for b in bench if b["mutation"] in rank_of)
+    warnings = validate_benchmark(bench, target_sequence)
+    if overlap < min_overlap:
+        warnings.append(
+            f"benchmark/candidate overlap = {overlap} (< {min_overlap}); "
+            f"recall/AUROC/calibration are NOT meaningful - the benchmark "
+            f"mutations do not match the generated candidates"
+        )
+    valid = overlap >= min_overlap and not any(
+        "WT '" in w for w in warnings
+    )
 
     benef = [b for b in bench if b["label"] == "beneficial"]
     delet = [b for b in bench if b["label"] in ("deleterious", "inactive")]
@@ -157,6 +196,9 @@ def run_benchmark(
         "binding_site_enrichment": site_enrichment,
         "recovered": [b["mutation"] for b in recovered],
         "calibration": calibration_curve(ranked, bench),
+        "overlap": overlap,
+        "valid": valid,
+        "warnings": warnings,
     }
 
 

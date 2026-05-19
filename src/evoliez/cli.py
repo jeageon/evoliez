@@ -119,6 +119,10 @@ def bench(
         False, "--ablation",
         help="also re-run with each accuracy layer disabled (slower)"
     ),
+    allow_no_overlap: bool = typer.Option(
+        False, "--allow-no-overlap",
+        help="do not fail when benchmark/candidate overlap is 0"
+    ),
 ) -> None:
     """Run the pipeline then score it against a known-mutation benchmark
     (recovery / deleterious avoidance / Spearman / AUROC / calibration),
@@ -145,6 +149,7 @@ def bench(
         ranked, bench_rows, k=k,
         catalytic_positions=ctx.get("catalytic_positions", []),
         known_site=ctx.get("known_binding_site", []),
+        target_sequence=ctx.get("target_sequence", ""),
     )
     if ablation:
         result["ablation_study"] = run_ablation(
@@ -154,6 +159,15 @@ def bench(
         _json.dumps(result, indent=2)
     )
     typer.echo(_json.dumps(result, indent=2, default=str))
+    for w in result.get("warnings", []):
+        typer.echo(f"WARNING: {w}")
+    if not result.get("valid", True) and not allow_no_overlap:
+        typer.echo(
+            "benchmark is NOT valid for this run (see warnings). "
+            "Metrics above are not meaningful; fix the benchmark or pass "
+            "--allow-no-overlap to proceed anyway."
+        )
+        raise typer.Exit(code=2)
 
 
 @app.command()
