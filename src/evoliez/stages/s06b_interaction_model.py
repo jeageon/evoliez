@@ -61,13 +61,22 @@ class InteractionModelStage(Stage):
         backend = ctx.config.backend_for(self.name)
 
         # Boltz diffusion-sample ensemble sized by poses_per_homolog.
+        n_reps = cfg.representative_homologs
+        n_samp = cfg.poses_per_homolog
+        if ctx.dry_run:
+            # dry-run only previews commands; real Boltz never runs, so do
+            # NOT grind the synthetic mock over the full (e.g. 80x15)
+            # ensemble - cap it so dry-run stays a fast command preview.
+            n_reps, n_samp = min(n_reps, 2), min(n_samp, 2)
+            self.log.info("[dry-run] capping s06b ensemble to %d reps x %d "
+                          "samples (command-preview only)", n_reps, n_samp)
         cp_cfg = ctx.config.complex_prediction.model_copy(
-            update={"diffusion_samples": cfg.poses_per_homolog}
+            update={"diffusion_samples": n_samp}
         )
-        reps = _pick_representatives(homologs, cfg.representative_homologs)
+        reps = _pick_representatives(homologs, n_reps)
         self.log.info(
             "representatives=%d (of %d homologs), Boltz samples/homolog=%d",
-            len(reps), len(homologs), cfg.poses_per_homolog,
+            len(reps), len(homologs), n_samp,
         )
 
         records: List[PoseRecord] = []

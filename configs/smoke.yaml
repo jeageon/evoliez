@@ -1,0 +1,73 @@
+# Tiny config for staged server smoke (scripts/server_smoke.sh). Minimal
+# scale so each step finishes in seconds-to-minutes, not hours. Real-run
+# scale lives in configs/server_fdh_nadp.yaml. server_smoke.sh flips one
+# stage to real per step; output_dir is overridden by the script.
+
+project:
+  name: fdh_smoke
+  objective: cofactor_switching
+  output_dir: runs/smoke
+
+input:
+  target_id: fdh
+  target_fasta: examples/fdh/target.fasta
+  ligand:
+    id: NADP_cofactor
+    type: smiles
+    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
+  catalytic_residues: ["H155", "R285"]
+  fixed_residues: ["G10", "G12", "H155", "R285"]
+  cofactor: NADP
+  ec_number: "1.2.1.2"
+
+homologs:
+  method: mmseqs2
+  max_sequences: 200          # synthetic in mock; small
+
+msa:
+  method: mafft
+  remote_server: false        # no UniRef DB needed for smoke
+
+complex_prediction:
+  primary_method: boltz2
+  diffusion_samples: 2        # tiny Boltz ensemble for the WT
+
+interaction_model:
+  enabled: true
+  representative_homologs: 3  # was 80 -> 3 for smoke
+  poses_per_homolog: 2        # was 15 -> 2
+
+gnn:
+  enabled: false              # GNN train is a separate smoke step
+  build_dataset: true         # but still export a small graph dataset
+
+mutation_generation:
+  methods: [chemistry_rules]
+  max_candidates: 40
+  design_radius_angstrom: 9.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 12
+  top_for_md: 4
+  mutant_boltz_enabled: true
+  mutant_boltz_top_n: 3
+  mutant_boltz_diffusion_samples: 2
+
+validation:
+  redocking:
+    methods: [vina]           # CPU; gnina/diffdock optional
+  stability:
+    method: ml                # FoldX/Rosetta optional; ml proxy for smoke
+  md:
+    enabled: true
+    protocol_level: 0         # minimise-only = fastest MD smoke
+    top_candidates: 4
+
+output:
+  final_library_size: 24
+  report_format: [markdown, csv]
+
+backend: mock                 # server_smoke.sh flips one stage to real
+seed: 1234

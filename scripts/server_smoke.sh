@@ -10,7 +10,11 @@
 set -euo pipefail
 
 STEP="${1:?usage: server_smoke.sh <doctor|dryrun|boltz|dock|md|gnn|all> [config]}"
-CFG="${2:-configs/server_fdh_nadp.yaml}"
+# doctor validates the REAL intended config; the run steps use a tiny smoke
+# config (seconds-to-minutes, not the 80x15 real-scale grind). Override with
+# arg 2.
+REAL_CFG="${2:-configs/server_fdh_nadp.yaml}"
+CFG="${2:-configs/smoke.yaml}"
 EVOLIEZ_ROOT="${EVOLIEZ_ROOT:-/mnt/data2/${USER}}"
 RUN="$EVOLIEZ_ROOT/runs/smoke"
 
@@ -26,7 +30,7 @@ pin_gpu() {
 
 case "$STEP" in
 doctor)
-  evoliez doctor -c "$CFG"
+  evoliez doctor -c "$REAL_CFG"     # validate the real-run config
   ;;
 dryrun)   # step 2: command preview, no execution, no GPU
   evoliez run -c "$CFG" --backend real --dry-run --output-dir "$RUN/dry"
