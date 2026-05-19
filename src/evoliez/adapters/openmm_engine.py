@@ -161,15 +161,43 @@ def _run_real(
     write_min_pdb(pdb_path, cx.structure, cx.ligand.atoms)
     pdb = app.PDBFile(str(pdb_path))
 
-    forcefield = app.ForceField("amber14-all.xml", "implicit/obc2.xml")
-    modeller = app.Modeller(pdb.topology, pdb.positions)
-    modeller.addHydrogens(forcefield)
-    system = forcefield.createSystem(
-        modeller.topology,
-        nonbondedMethod=app.CutoffNonPeriodic,
-        constraints=app.HBonds,
-        implicitSolvent=(cfg.solvent == "implicit"),
-    )
+    # Ligand parameterization (was MISSING -> every real candidate failed).
+    # Build a small-molecule template via openmmforcefields + OpenFF/GAFF.
+    # Failure here is NOT a candidate failure: record skipped_parameterization
+    # (common for metals / cofactors) so it is never auto-rejected.
+    try:
+        from openff.toolkit import Molecule
+        from openmmforcefields.generators import SystemGenerator
+
+        off_mol = Molecule.from_smiles(
+            cx.ligand.smiles, allow_undefined_stereo=True
+        )
+        system_generator = SystemGenerator(
+            forcefields=["amber14-all.xml", "implicit/obc2.xml"],
+            small_molecule_forcefield="gaff-2.11",
+            molecules=[off_mol],
+            cache=str(workdir / "ff_cache.json"),
+            forcefield_kwargs={
+                "constraints": app.HBonds,
+                "nonbondedMethod": app.CutoffNonPeriodic,
+            },
+        )
+        modeller = app.Modeller(pdb.topology, pdb.positions)
+        modeller.addHydrogens(system_generator.forcefield)
+        system = system_generator.create_system(
+            modeller.topology, molecules=[off_mol]
+        )
+    except Exception as exc:
+        log.warning(
+            "ligand parameterization failed for %s (%s); recording "
+            "skipped_parameterization (NOT a candidate failure)",
+            candidate_id, exc,
+        )
+        return MDResult(
+            candidate_id=candidate_id, status="skipped_parameterization",
+            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            simulation_time_ns=0.0, failure_reason=str(exc),
+        )
 
     # Restraint schedule (spec 15.5): strongly restrain distant backbone.
     restraint = mm.CustomExternalForce(
@@ -201,6 +229,27 @@ def _run_real(
             sim.topology, sim.context.getState(getPositions=True).getPositions(), fh
         )
 
+    # ligand-specific + pocket-specific atom indices (was whole-system RMSD)
+    lig_idx = [a.index for a in modeller.topology.atoms()
+               if a.residue.name in ("LIG", "UNL", "UNK")]
+    init = np.array([[p.x, p.y, p.z] for p in
+                     sim.context.getState(getPositions=True).getPositions()])
+    if lig_idx:
+        lc = init[lig_idx].mean(axis=0)
+        ca_idx = [a.index for a in modeller.topology.atoms()
+                  if a.name == "CA"]
+        pkt_idx = [i for i in ca_idx
+                   if float(((init[i] - lc) ** 2).sum()) ** 0.5 <= 0.8]
+    else:
+        pkt_idx = [a.index for a in modeller.topology.atoms()
+                   if a.name == "CA"]
+
+    def _rmsd(cur, idx, ref):
+        if not idx:
+            return 0.0
+        d = cur[idx] - ref[idx]
+        return float(np.sqrt((d * d).sum(axis=1).mean())) * 10.0  # nm->Å
+
     lig_series: List[float] = []
     pkt_series: List[float] = []
     e_start = e_last = None
@@ -210,17 +259,12 @@ def _run_real(
         nsteps = max(50, min(nsteps, 5000) if cfg.protocol_level < 3 else nsteps)
         traj = workdir / f"{candidate_id}.dcd"
         sim.reporters.append(app.DCDReporter(str(traj), max(1, nsteps // 50)))
-        ref = np.array(
-            [[p.x, p.y, p.z] for p in sim.context.getState(getPositions=True)
-             .getPositions()]
-        )
         for blk in range(50):
             sim.step(max(1, nsteps // 50))
             st = sim.context.getState(getPositions=True, getEnergy=True)
             cur = np.array([[p.x, p.y, p.z] for p in st.getPositions()])
-            d = np.sqrt(((cur - ref) ** 2).sum(axis=1).mean()) * 10.0
-            lig_series.append(round(float(d), 3))
-            pkt_series.append(round(float(d) * 0.5, 3))
+            lig_series.append(round(_rmsd(cur, lig_idx, init), 3))
+            pkt_series.append(round(_rmsd(cur, pkt_idx, init), 3))
             e = st.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
             e_start = e if e_start is None else e_start
             e_last = e

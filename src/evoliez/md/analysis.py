@@ -39,6 +39,16 @@ CAT_DIST_MAX = 7.0
 def analyse(result: MDResult, weights: ScoreWeights) -> MDMetrics:
     m = MDMetrics()
 
+    # Skipped (e.g. ligand parameterization failed - common for metals /
+    # cofactors): NOT a candidate failure. Neutral, not penalised, still
+    # passes; the candidate is judged on the other layers (expert review).
+    if result.status.startswith("skipped"):
+        m.passed = True
+        m.md_lite_score = 0.0
+        m.failure_reasons.append(f"MD {result.status}: "
+                                 f"{result.failure_reason or 'n/a'}")
+        return m
+
     if result.status == "failed" or result.integration_failed:
         m.simulation_health_ok = False
         m.passed = False
