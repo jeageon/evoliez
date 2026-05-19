@@ -28,6 +28,7 @@ _PY_DEPS = {
     "openmm": "real MD (else mock MD-lite)",
     "openmmforcefields": "real MD ligand FF (GAFF; else skipped_parameterization)",
     "openff.toolkit": "real MD ligand topology (else mock MD-lite)",
+    "pdbfixer": "real MD terminal/missing-atom repair (else Amber template err)",
     "torch": "EvoLigand-GNN train/score (else heuristic family model)",
     "torch_geometric": "optional GNN backend (not required)",
 }

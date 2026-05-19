@@ -280,8 +280,29 @@ def _run_real(
     # (#4b) Protein prep + system creation. A failure HERE is a REAL MD
     # failure (input topology / residue templates / system), NOT a neutral
     # ligand skip - must surface as failed, never as a pass.
+    #
+    # Boltz emits predicted coords but its chain termini lack OXT / terminal
+    # designation, so Amber14 has "No template for residue N (VAL)". Run
+    # PDBFixer first to add missing terminal/heavy atoms (it leaves the
+    # nonstandard ligand untouched - we never replace/strip heterogens).
     try:
-        modeller = app.Modeller(pdb.topology, pdb.positions)
+        topo, posns = pdb.topology, pdb.positions
+        try:
+            from pdbfixer import PDBFixer
+
+            fixer = PDBFixer(filename=str(pdb_path))
+            fixer.findMissingResidues()
+            fixer.missingResidues = {}            # don't model unseen loops
+            fixer.findMissingAtoms()              # incl. terminal OXT
+            fixer.addMissingAtoms()
+            topo, posns = fixer.topology, fixer.positions
+        except ImportError:
+            log.warning(
+                "pdbfixer not installed - skipping terminal/missing-atom "
+                "repair for %s; Amber may reject uncapped termini. "
+                "`conda install -c conda-forge pdbfixer`", candidate_id,
+            )
+        modeller = app.Modeller(topo, posns)
         modeller.addHydrogens(system_generator.forcefield)
         system = system_generator.create_system(
             modeller.topology, molecules=[off_mol]

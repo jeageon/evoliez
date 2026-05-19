@@ -43,6 +43,9 @@ md = [
     # without it every real candidate hits skipped_parameterization.
     # (conda env also needs ambertools for antechamber/parmchk2.)
     "openmmforcefields>=0.11",
+    # Adds missing terminal/heavy atoms (OXT) so Amber accepts Boltz's
+    # predicted chain termini ("No template for residue N").
+    "pdbfixer>=1.9",
 ]
 # GPU / deep-learning tools that only run on the CUDA server.
 gpu = [
