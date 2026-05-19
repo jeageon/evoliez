@@ -31,6 +31,10 @@ def run(
     ),
     from_stage: Optional[str] = typer.Option(None, "--from"),
     to_stage: Optional[str] = typer.Option(None, "--to"),
+    stage_backend: Optional[list[str]] = typer.Option(
+        None, "--stage-backend",
+        help="per-stage backend, repeatable: --stage-backend s04_complex=real"
+    ),
     allow_small_disk: bool = typer.Option(
         False, "--allow-small-disk", help="permit runs on a near-full filesystem"
     ),
@@ -42,6 +46,12 @@ def run(
         overrides["backend"] = backend
     if output_dir:
         overrides["project.output_dir"] = output_dir
+    if stage_backend:
+        be = {}
+        for item in stage_backend:
+            stage, _, val = item.partition("=")
+            be[stage.strip()] = val.strip() or "real"
+        overrides["backends"] = be
     cfg = load_config(config, overrides)
     seed_everything(cfg.seed)
 

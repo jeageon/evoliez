@@ -49,3 +49,32 @@ def pose_sanity(
         "valid": bool(clash_free and in_pocket),
         "note": "geometric stand-in; use PoseBusters for physical validity",
     }
+
+
+def pose_rmsd(
+    pose_atoms: Sequence[LigandAtom], ref_atoms: Sequence[LigandAtom]
+) -> float:
+    """Ligand heavy-atom RMSD vs a reference pose (Å) - the standard
+    docking/pose-prediction success metric (success usually RMSD <= 2 Å).
+    Assumes matched atom order (guaranteed by the atom-index lock)."""
+    n = min(len(pose_atoms), len(ref_atoms))
+    if n == 0:
+        return 0.0
+    ss = sum(
+        dist(pose_atoms[i].coord, ref_atoms[i].coord) ** 2 for i in range(n)
+    )
+    return round((ss / n) ** 0.5, 4)
+
+
+def plif_recovery(pred_ifp: Sequence, ref_ifp: Sequence) -> float:
+    """Protein-Ligand Interaction Fingerprint recovery: fraction of the
+    reference (residue, ligand-atom, type) contacts reproduced by the
+    predicted pose. Takes IFPContact-like objects."""
+    def key(c):
+        return (c.residue_index, c.ligand_atom_id, c.itype)
+
+    ref = {key(c) for c in ref_ifp}
+    if not ref:
+        return 0.0
+    pred = {key(c) for c in pred_ifp}
+    return round(len(ref & pred) / len(ref), 4)
