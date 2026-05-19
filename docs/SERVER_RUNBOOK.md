@@ -36,10 +36,18 @@ bash scripts/setup_server_env.sh
 conda activate "$EVOLIEZ_ROOT/envs/evoliez"
 pip install -e ".[science,md,gnn]"
 
-bash scripts/fetch_weights.sh             # Boltz-2 / LigandMPNN -> $EVOLIEZ_ROOT
+bash scripts/fetch_weights.sh             # LigandMPNN/DiffDock code -> $EVOLIEZ_ROOT
 # optional, large: local homolog DB. Otherwise set msa.remote_server: true
 bash scripts/fetch_databases.sh uniref30
+
+# Boltz in its OWN isolated env (NEVER `pip install boltz` into evoliez:
+# Boltz pins numpy<2 / old click and will break rdkit/openmm/typer).
+bash scripts/setup_boltz_env.sh           # -> $EVOLIEZ_ROOT/envs/boltz
 ```
+
+> WARNING: do not `pip install` Boltz / DiffDock into the evoliez env. They
+> are subprocess tools; isolated envs only. `server_smoke.sh` auto-prepends
+> `$EVOLIEZ_ROOT/envs/boltz/bin` to PATH so the `boltz` call resolves there.
 
 For a real full run, also point the config at your root:
 `project.output_dir: /mnt/data/jglee/runs/fdh_nadp` and

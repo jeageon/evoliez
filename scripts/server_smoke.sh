@@ -18,6 +18,16 @@ CFG="${2:-configs/smoke.yaml}"
 EVOLIEZ_ROOT="${EVOLIEZ_ROOT:-/mnt/data2/${USER}}"
 RUN="$EVOLIEZ_ROOT/runs/smoke"
 
+# Boltz lives in its OWN env (pins numpy<2 etc; must NOT pollute evoliez).
+# Prepend it so the `boltz` subprocess resolves there while `evoliez` runs
+# from the evoliez env.
+BOLTZ_ENV="${BOLTZ_ENV:-$EVOLIEZ_ROOT/envs/boltz}"
+if [ -x "$BOLTZ_ENV/bin/boltz" ]; then
+  export PATH="$BOLTZ_ENV/bin:$PATH"
+  export BOLTZ_CACHE="${BOLTZ_CACHE:-$EVOLIEZ_ROOT/evoliez_assets/boltz_cache}"
+  echo ">> using isolated Boltz: $BOLTZ_ENV/bin/boltz"
+fi
+
 pin_gpu() {
   if command -v nvidia-smi >/dev/null 2>&1 && [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
     export CUDA_VISIBLE_DEVICES="$(nvidia-smi \
