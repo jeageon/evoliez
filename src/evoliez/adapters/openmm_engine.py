@@ -177,8 +177,11 @@ def _run_real(
             small_molecule_forcefield="gaff-2.11",
             molecules=[off_mol],
             cache=str(workdir / "ff_cache.json"),
-            forcefield_kwargs={
-                "constraints": app.HBonds,
+            # openmmforcefields refuses nonbondedMethod in forcefield_kwargs;
+            # it must go in (non)periodic_forcefield_kwargs. MD-lite uses
+            # implicit/GBSA -> non-periodic.
+            forcefield_kwargs={"constraints": app.HBonds},
+            nonperiodic_forcefield_kwargs={
                 "nonbondedMethod": app.CutoffNonPeriodic,
             },
         )
