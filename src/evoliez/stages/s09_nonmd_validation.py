@@ -75,8 +75,16 @@ class NonMDValidationStage(Stage):
                     ctx.paths.validation / "foldx", backend=backend,
                     dry_run=ctx.dry_run,
                 )
-            cand.scores["ddg_fold"] = stab.get("ddg_fold", 0.0)
+            ddg = stab.get("ddg_fold", 0.0)
+            cand.scores["ddg_fold"] = ddg
             cand.scores["clash_score"] = stab.get("clash_score", 0.0)
+            # positive stability contribution (was dead: score.py reads
+            # "stability_score" which nothing set). Favourable/neutral ddG
+            # (<=0) -> 1.0; at the allowed cap -> 0.0.
+            cap = scfg.max_ddg_allowed or 2.5
+            cand.scores["stability_score"] = round(
+                max(0.0, 1.0 - max(0.0, ddg) / cap), 4
+            )
 
             inst = _instability(cand)
             pose = redock_with(
