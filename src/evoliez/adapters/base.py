@@ -87,24 +87,35 @@ def write_min_pdb(
     """Minimal PDB (CA-only protein + ligand HETATMs). Lets users open mock
     runs in PyMOL and gives real tools a concrete file path."""
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _rec(rec: str, serial: int, name: str, resn: str, chain: str,
+             resseq: int, x: float, y: float, z: float, b: float,
+             elem: str) -> str:
+        # STRICT PDB columns - OpenMM's PDBFile reader is column-exact and
+        # rejects anything else with "Misaligned residue name". Layout:
+        # 1-6 rec | 7-11 serial | 13-16 name | 17 altLoc | 18-20 resName
+        # | 22 chain | 23-26 resSeq | 31-54 xyz | 55-60 occ | 61-66 b
+        # | 77-78 element.
+        nm = f" {name:<3}" if len(name) < 4 else name[:4]
+        return (
+            f"{rec:<6}{serial:>5d} {nm}"
+            f" {resn[:3]:>3s} {chain:1.1s}{resseq:>4d}    "
+            f"{x:8.3f}{y:8.3f}{z:8.3f}{1.00:6.2f}{b:6.2f}          {elem:>2s}"
+        )
+
     lines: List[str] = []
     serial = 1
     for res in structure.residues:
         x, y, z = res.ca
-        lines.append(
-            f"ATOM  {serial:>5} {'CA':<4}{_THREE.get(res.aa,'GLY'):>3} A"
-            f"{res.index:>4}    {x:8.3f}{y:8.3f}{z:8.3f}  1.00"
-            f"{res.plddt:6.2f}           C"
-        )
+        lines.append(_rec("ATOM", serial, "CA",
+                          _THREE.get(res.aa, "GLY"), "A", res.index,
+                          x, y, z, res.plddt, "C"))
         serial += 1
     if ligand_atoms:
         for a in ligand_atoms:
             x, y, z = a.coord
-            lines.append(
-                f"HETATM{serial:>5} {a.id[:4]:<4}LIG L   1    "
-                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          "
-                f"{a.element:>2}"
-            )
+            lines.append(_rec("HETATM", serial, a.id[:4], "LIG", "L", 1,
+                              x, y, z, 0.0, a.element or "C"))
             serial += 1
     lines.append("END")
     path.write_text("\n".join(lines) + "\n")
