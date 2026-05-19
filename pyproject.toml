@@ -39,6 +39,10 @@ science = [
 md = [
     "openmm>=8.0",
     "openff-toolkit>=0.14",
+    # GAFF small-molecule template generator for real MD ligand params -
+    # without it every real candidate hits skipped_parameterization.
+    # (conda env also needs ambertools for antechamber/parmchk2.)
+    "openmmforcefields>=0.11",
 ]
 # GPU / deep-learning tools that only run on the CUDA server.
 gpu = [

@@ -59,6 +59,26 @@ def _is_full_atom_pdb(path: Path) -> bool:
     return False
 
 
+_AA3TO1 = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+}
+
+
+def _pdb_one_letter_seq(path: Path) -> str:
+    """1-letter sequence from a PDB's CA records (unknown -> 'X')."""
+    seq: List[str] = []
+    try:
+        for line in path.read_text().splitlines():
+            if line.startswith("ATOM") and line[12:16].strip() == "CA":
+                seq.append(_AA3TO1.get(line[17:20].strip().upper(), "X"))
+    except OSError:
+        return ""
+    return "".join(seq)
+
+
 def run_md(
     cx: Complex,
     candidate_id: str,
@@ -197,10 +217,34 @@ def _run_real(
         )
     pdb = app.PDBFile(str(pdb_path))
 
-    # Ligand parameterization (was MISSING -> every real candidate failed).
-    # Build a small-molecule template via openmmforcefields + OpenFF/GAFF.
-    # Failure here is NOT a candidate failure: record skipped_parameterization
-    # (common for metals / cofactors) so it is never auto-rejected.
+    # (#2) The full-atom PDB must actually be THIS candidate's structure.
+    # _mutant_complex only swaps dataclass residue letters; pdb_path stays
+    # the shared WT Boltz file, so MD-ing it for a mutant would silently
+    # "validate" WT, not the mutant. If the PDB sequence != the intended
+    # (mutant) sequence, honestly skip (analysis.py -> NOT a pass). WT
+    # reference (no mutations) matches its own PDB and proceeds.
+    want = (cx.structure.sequence or "").upper()
+    have = _pdb_one_letter_seq(pdb_path)
+    if want and have and want != have:
+        nmut = sum(1 for a, b in zip(want, have) if a != b)
+        log.warning(
+            "MD input for %s is the shared WT structure, not the mutant "
+            "(%d residue(s) differ); recording skipped_no_mutant_structure",
+            candidate_id, nmut,
+        )
+        return MDResult(
+            candidate_id=candidate_id,
+            status="skipped_no_mutant_structure",
+            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            simulation_time_ns=0.0,
+            failure_reason=(f"{nmut} residue(s) differ: the full-atom PDB is "
+                            "WT, not this candidate's mutant - real per-mutant "
+                            "MD needs a per-mutant predicted structure"),
+        )
+
+    # (#4a) Ligand force-field ONLY. A genuine failure here (GAFF /
+    # antechamber missing, unparameterisable cofactor) is the legitimately
+    # NEUTRAL skip - the candidate is judged on the other layers.
     try:
         from openff.toolkit import Molecule
         from openmmforcefields.generators import SystemGenerator
@@ -214,21 +258,16 @@ def _run_real(
             molecules=[off_mol],
             cache=str(workdir / "ff_cache.json"),
             # openmmforcefields refuses nonbondedMethod in forcefield_kwargs;
-            # it must go in (non)periodic_forcefield_kwargs. MD-lite uses
-            # implicit/GBSA -> non-periodic.
+            # it must go in (non)periodic_forcefield_kwargs (implicit/GBSA
+            # -> non-periodic).
             forcefield_kwargs={"constraints": app.HBonds},
             nonperiodic_forcefield_kwargs={
                 "nonbondedMethod": app.CutoffNonPeriodic,
             },
         )
-        modeller = app.Modeller(pdb.topology, pdb.positions)
-        modeller.addHydrogens(system_generator.forcefield)
-        system = system_generator.create_system(
-            modeller.topology, molecules=[off_mol]
-        )
     except Exception as exc:
         log.warning(
-            "ligand parameterization failed for %s (%s); recording "
+            "ligand force-field unavailable for %s (%s); recording "
             "skipped_parameterization (NOT a candidate failure)",
             candidate_id, exc,
         )
@@ -236,6 +275,27 @@ def _run_real(
             candidate_id=candidate_id, status="skipped_parameterization",
             protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
             simulation_time_ns=0.0, failure_reason=str(exc),
+        )
+
+    # (#4b) Protein prep + system creation. A failure HERE is a REAL MD
+    # failure (input topology / residue templates / system), NOT a neutral
+    # ligand skip - must surface as failed, never as a pass.
+    try:
+        modeller = app.Modeller(pdb.topology, pdb.positions)
+        modeller.addHydrogens(system_generator.forcefield)
+        system = system_generator.create_system(
+            modeller.topology, molecules=[off_mol]
+        )
+    except Exception as exc:
+        log.warning(
+            "MD protein prep / system creation failed for %s (%s)",
+            candidate_id, exc,
+        )
+        return MDResult(
+            candidate_id=candidate_id, status="failed",
+            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            simulation_time_ns=0.0, integration_failed=True,
+            failure_reason=f"protein prep / system creation: {exc}",
         )
 
     # Restraint schedule (spec 15.5): strongly restrain distant backbone.

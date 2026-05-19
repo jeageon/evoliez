@@ -26,6 +26,8 @@ _PY_DEPS = {
     "sklearn": "logistic reranker / GNN logistic fallback",
     "xgboost": "family + mutation reranker (else heuristic)",
     "openmm": "real MD (else mock MD-lite)",
+    "openmmforcefields": "real MD ligand FF (GAFF; else skipped_parameterization)",
+    "openff.toolkit": "real MD ligand topology (else mock MD-lite)",
     "torch": "EvoLigand-GNN train/score (else heuristic family model)",
     "torch_geometric": "optional GNN backend (not required)",
 }
@@ -40,6 +42,8 @@ _TOOLS = {
     "vina": ("s05/s09 docking (real)", None),
     "gnina": ("s05/s09 docking (real, CUDA)", None),
     "obabel": ("docking prep (real)", None),
+    "antechamber": ("s10_md GAFF ligand params (real, ambertools)", None),
+    "parmchk2": ("s10_md GAFF ligand params (real, ambertools)", None),
     "foldx": ("s09 stability (real, licensed)", None),
     "iupred2a.py": ("disorder (real, else proxy)", None),
     "snakemake": ("workflow/Snakefile (optional)", None),
