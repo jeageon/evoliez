@@ -171,14 +171,15 @@ def _predict_real(
     dry_run: bool,
     msa_path: Optional[Path],
 ) -> Complex:
-    # dry-run previews the command set without the tool installed and must
-    # return the same structured contract as a real/mock run.
+    # dry-run previews the FULL command set (like Vina) without the tool
+    # installed, writes the exact Boltz input YAML so the contract can be
+    # eyeballed, and returns the same structured mock contract as a real run.
     if dry_run:
         log.info("[dry-run] boltz predict (diffusion_samples=%d) for %s",
                  cfg.diffusion_samples, label)
-        return _predict_mock(label, sequence, ligand, cfg, outdir)
-    require("boltz")
-    apply_gpu_selection()
+    else:
+        require("boltz")
+        apply_gpu_selection()
     spec = {
         "version": 1,
         "sequences": [
