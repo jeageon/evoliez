@@ -242,6 +242,11 @@ def _predict_real(
     ]
     if cfg.use_msa_server and msa_path is None:
         cmd.append("--use_msa_server")
+    if not getattr(cfg, "use_kernels", False):
+        # Boltz-2 hard-fails (ModuleNotFoundError cuequivariance_torch) if the
+        # optimized kernels' optional dep is missing; --no_kernels uses the
+        # pure-torch path. Stock `pip install boltz` has no cuequivariance.
+        cmd.append("--no_kernels")
     run(cmd, dry_run=dry_run, timeout=None)
 
     if dry_run:

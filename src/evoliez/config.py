@@ -93,6 +93,12 @@ class ComplexPredictionConfig(_Base):
     pocket_constraints: bool = True
     predict_affinity: bool = True
     diffusion_samples: int = 5  # Boltz poses per prediction (ensemble features)
+    # Boltz-2's optimized triangular kernels need the optional NVIDIA
+    # `cuequivariance_torch` dep and HARD-FAIL (ModuleNotFoundError) if it's
+    # absent rather than falling back to pure torch. Default OFF (-> pass
+    # --no_kernels) so a stock `pip install boltz` env works; flip on only
+    # after installing cuequivariance-torch (faster, GPU-specific).
+    use_kernels: bool = False
 
 
 class DockingConfig(_Base):
