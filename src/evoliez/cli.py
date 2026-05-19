@@ -123,6 +123,14 @@ def bench(
         False, "--allow-no-overlap",
         help="do not fail when benchmark/candidate overlap is 0"
     ),
+    external_format: str = typer.Option(
+        "none", "--external-format",
+        help="parse --benchmark as a public set: none|proteingym|flip"
+    ),
+    baselines: bool = typer.Option(
+        False, "--baselines",
+        help="also score random/conservation/MSA/interaction baselines"
+    ),
 ) -> None:
     """Run the pipeline then score it against a known-mutation benchmark
     (recovery / deleterious avoidance / Spearman / AUROC / calibration),
@@ -138,12 +146,17 @@ def bench(
     ctx.setup()
     Pipeline().run(ctx)
     from evoliez.ml.benchmark import (
+        compare_baselines,
         load_benchmark,
+        load_external_benchmark,
         run_ablation,
         run_benchmark,
     )
 
-    bench_rows = load_benchmark(benchmark)
+    if external_format != "none":
+        bench_rows = load_external_benchmark(benchmark, fmt=external_format)
+    else:
+        bench_rows = load_benchmark(benchmark)
     ranked = ctx.get("ranked_candidates", [])
     result = run_benchmark(
         ranked, bench_rows, k=k,
@@ -151,6 +164,8 @@ def bench(
         known_site=ctx.get("known_binding_site", []),
         target_sequence=ctx.get("target_sequence", ""),
     )
+    if baselines:
+        result["baselines"] = compare_baselines(ranked, bench_rows, k=k)
     if ablation:
         result["ablation_study"] = run_ablation(
             str(config), bench_rows, k=k

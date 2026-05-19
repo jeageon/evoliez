@@ -29,6 +29,99 @@ def load_benchmark(path: Path) -> List[dict]:
     return [r for r in rows if r["mutation"]]
 
 
+def load_external_benchmark(
+    path: Path, fmt: str = "auto",
+    beneficial_q: float = 0.75, deleterious_q: float = 0.25,
+) -> List[dict]:
+    """Load a public benchmark (ProteinGym DMS / FLIP-style) into our rows.
+
+    Maps the mutant column ('mutant'|'mutation') and a continuous fitness
+    column ('DMS_score'|'score'|'fitness'|'target'|'log_fitness'). Multi-
+    mutants use ':' (ProteinGym) -> normalised to ';'. Continuous scores are
+    bucketed into beneficial / neutral / deleterious by quantile so the same
+    metrics apply. The user supplies the file (not bundled) - see
+    docs/BENCHMARKS.md.
+    """
+    with open(path, newline="") as fh:
+        raw = list(csv.DictReader(fh))
+    if not raw:
+        return []
+    cols = raw[0].keys()
+    mut_c = next((c for c in ("mutant", "mutation", "mutations", "variant")
+                  if c in cols), None)
+    sc_c = next((c for c in ("DMS_score", "score", "fitness", "target",
+                             "log_fitness", "activity") if c in cols), None)
+    if mut_c is None:
+        raise ValueError(f"no mutant column in {list(cols)}")
+    vals = []
+    for r in raw:
+        try:
+            vals.append(float(r[sc_c])) if sc_c else None
+        except (TypeError, ValueError):
+            pass
+    vals.sort()
+    if vals:
+        hi = vals[min(len(vals) - 1, int(beneficial_q * len(vals)))]
+        lo = vals[max(0, int(deleterious_q * len(vals)))]
+    rows = []
+    for r in raw:
+        mut = (r.get(mut_c) or "").strip().replace(":", ";")
+        if not mut:
+            continue
+        act = None
+        if sc_c:
+            try:
+                act = float(r[sc_c])
+            except (TypeError, ValueError):
+                act = None
+        if act is None or not vals:
+            label = "neutral"
+        elif act >= hi:
+            label = "beneficial"
+        elif act <= lo:
+            label = "deleterious"
+        else:
+            label = "neutral"
+        rows.append({"mutation": mut, "label": label, "activity": act})
+    return rows
+
+
+def baseline_rankings(candidates):
+    """Alternative orderings from existing per-candidate features (no rerun)
+    so the full model can be compared to simple baselines (expert review)."""
+    import random as _r
+
+    def feat(c, k, d=0.0):
+        return c.details.get("features", {}).get(k, d)
+
+    rng = _r.Random(1234)
+    rand = list(candidates)
+    rng.shuffle(rand)
+    return {
+        "full_model": sorted(candidates,
+                             key=lambda c: -c.scores.get("final_score", 0.0)),
+        "random": rand,
+        "conservation_only": sorted(
+            candidates, key=lambda c: feat(c, "conservation", 1.0)),
+        "msa_only": sorted(
+            candidates, key=lambda c: -feat(c, "msa_permissiveness")),
+        "interaction_only": sorted(
+            candidates, key=lambda c: -feat(c, "interaction_gain")),
+    }
+
+
+def compare_baselines(candidates, bench, *, k: int = 20) -> Dict[str, object]:
+    out = {}
+    for name, ranked in baseline_rankings(candidates).items():
+        r = run_benchmark(ranked, bench, k=k, min_overlap=0)
+        out[name] = {
+            "beneficial_recall_at_k": r["beneficial_recall_at_k"],
+            "auroc_beneficial": r["auroc_beneficial"],
+            "spearman_vs_activity": r["spearman_vs_activity"],
+        }
+    return out
+
+
 def _spearman(xs: List[float], ys: List[float]) -> float:
     n = len(xs)
     if n < 3:
