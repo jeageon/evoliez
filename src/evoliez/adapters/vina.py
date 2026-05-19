@@ -52,9 +52,17 @@ def _redock_real(
     rec_pdb = workdir / f"{candidate_id}_rec.pdb"
     write_min_pdb(rec_pdb, structure)
     rec_q = workdir / f"{candidate_id}_rec.pdbqt"
+    lig_pdb = workdir / f"{candidate_id}_lig.pdb"
     lig_q = workdir / f"{candidate_id}_lig.pdbqt"
     out = workdir / f"{candidate_id}_vina_out.pdbqt"
+    # receptor prep
     run(["obabel", str(rec_pdb), "-O", str(rec_q), "-xr"], dry_run=dry_run)
+    # ligand prep (was MISSING -> vina got a non-existent --ligand file):
+    # write the reference ligand atoms, add H + Gasteiger charges, -> pdbqt
+    write_min_pdb(lig_pdb, ProteinStructure(sequence="", residues=[]),
+                  reference_atoms)
+    run(["obabel", str(lig_pdb), "-O", str(lig_q),
+         "-h", "--partialcharge", "gasteiger"], dry_run=dry_run)
     cx = [sum(a.coord[i] for a in reference_atoms) / max(1, len(reference_atoms))
           for i in range(3)]
     run(
