@@ -29,22 +29,35 @@ class Pipeline:
         from_stage: Optional[str] = None,
         to_stage: Optional[str] = None,
     ) -> RunContext:
+        prev_dry = os.environ.get("EVOLIEZ_DRY_RUN")
         if ctx.dry_run:
             os.environ["EVOLIEZ_DRY_RUN"] = "1"
-        names = self.stage_names()
-        start = names.index(from_stage) if from_stage else 0
-        end = names.index(to_stage) + 1 if to_stage else len(self.stages)
+        try:
+            names = self.stage_names()
+            start = names.index(from_stage) if from_stage else 0
+            end = names.index(to_stage) + 1 if to_stage else len(self.stages)
 
-        for stage in self.stages[start:end]:
-            t0 = time.time()
-            if resume and ctx.is_stage_done(stage.name) and stage.load(ctx):
-                log.info("[skip] %s (already complete, artifacts reloaded)", stage.name)
-                continue
-            log.info("[run ] %s", stage.name)
-            stage.run(ctx)
-            ctx.mark_stage_done(stage.name)
-            log.info("[done] %s (%.1fs)", stage.name, time.time() - t0)
-        return ctx
+            for stage in self.stages[start:end]:
+                t0 = time.time()
+                if resume and ctx.is_stage_done(stage.name) and stage.load(ctx):
+                    log.info(
+                        "[skip] %s (already complete, artifacts reloaded)",
+                        stage.name,
+                    )
+                    continue
+                log.info("[run ] %s", stage.name)
+                stage.run(ctx)
+                ctx.mark_stage_done(stage.name)
+                log.info("[done] %s (%.1fs)", stage.name, time.time() - t0)
+            return ctx
+        finally:
+            # Never leak dry-run permissiveness into a later real run in the
+            # same process: subprocess_utils.require() tolerates missing
+            # tools while EVOLIEZ_DRY_RUN is set.
+            if prev_dry is None:
+                os.environ.pop("EVOLIEZ_DRY_RUN", None)
+            else:
+                os.environ["EVOLIEZ_DRY_RUN"] = prev_dry
 
 
 def run_pipeline(

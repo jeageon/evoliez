@@ -22,9 +22,19 @@ class MSAStage(Stage):
 
         msa = None
         if mcfg.remote_server and self.backend(ctx).value == "real":
-            msa = fetch_msa(seq, ctx.paths.msa)
-            if msa:
-                self.log.info("using remote MSA (%d sequences)", len(msa))
+            if ctx.dry_run:
+                # dry-run must NOT execute anything (incl. network). Preview
+                # the remote-MSA call and fall through to the offline path.
+                self.log.info(
+                    "[dry-run] would POST the query to the remote MSA "
+                    "server (ColabFold/MMseqs2 API) - skipped, no network"
+                )
+            else:
+                msa = fetch_msa(seq, ctx.paths.msa)
+                if msa:
+                    self.log.info(
+                        "using remote MSA (%d sequences)", len(msa)
+                    )
         if msa is None:
             msa = build_msa(
                 ctx.config.input.target_id, seq, homologs, mcfg,

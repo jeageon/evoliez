@@ -116,6 +116,9 @@ class RunContext:
             "evoliez_version": __version__,
             "ranking_formula_version": RANKING_FORMULA_VERSION,
             "backend": self.config.backend.value,
+            # dry-run artifacts must never be reused by a later real
+            # --resume into the same output dir (and vice-versa).
+            "dry_run": "1" if self.dry_run else "0",
             "input_sha1": self._sha1(input_blob),
             "config_sha1": self._sha1(cfg_blob),
         }

@@ -40,7 +40,7 @@ def test_fingerprint_deterministic(tmp_path):
     b = RunContext(cfg, allow_small_disk=True).run_fingerprint()
     assert a == b
     assert set(a) == {"evoliez_version", "ranking_formula_version",
-                      "backend", "input_sha1", "config_sha1"}
+                      "backend", "dry_run", "input_sha1", "config_sha1"}
 
 
 def test_unchanged_config_keeps_resume(tmp_path):
