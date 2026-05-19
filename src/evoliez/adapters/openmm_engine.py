@@ -87,15 +87,13 @@ _STD_RES = {
 }
 
 
-def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
-    """OpenFF Molecule for the ligand AT THE BOLTZ POSE. Read the HETATM +
-    CONECT ligand from the predicted PDB with RDKit (bonds from CONECT),
-    assign bond orders from the SMILES template, add H with coords, hand to
-    OpenFF. Raises on failure - a mis-built/mis-placed ligand must surface
-    as a REAL MD failure, never a silent pass. (The bond-sparse / H-less
-    PDB HETATM cannot graph-match the GAFF template directly, which is why
-    'No template for residue LIG' happened.)"""
-    from openff.toolkit import Molecule
+def _ligand_rdkit_at_pose(pdb_path: Path, smiles: str):
+    """RDKit ligand mol AT THE BOLTZ POSE: read the HETATM + CONECT ligand
+    from the predicted PDB (bonds from CONECT), assign bond orders from the
+    SMILES template, add explicit H with coords. Pure RDKit so it is
+    unit-testable WITHOUT the conda-only openff stack (this is the
+    bug-prone part). Raises on failure - a mis-built/mis-placed ligand
+    must surface as a REAL MD failure, never a silent pass."""
     from rdkit import Chem
     from rdkit.Chem import AllChem
 
@@ -115,7 +113,15 @@ def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
     if tmpl is None:
         raise ValueError(f"unparsable ligand SMILES: {smiles!r}")
     rd = AllChem.AssignBondOrdersFromTemplate(tmpl, rd)  # orders from SMILES
-    rd = Chem.AddHs(rd, addCoords=True)                  # explicit H + coords
+    return Chem.AddHs(rd, addCoords=True)                # explicit H + coords
+
+
+def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
+    """OpenFF Molecule for the ligand at the Boltz pose (thin wrapper over
+    the RDKit builder; OpenFF is conda-only so this line is server-only)."""
+    from openff.toolkit import Molecule
+
+    rd = _ligand_rdkit_at_pose(pdb_path, smiles)
     return Molecule.from_rdkit(rd, allow_undefined_stereo=True)
 
 
