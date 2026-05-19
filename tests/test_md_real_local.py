@@ -80,6 +80,50 @@ def test_ligand_rdkit_at_pose_uses_conect_and_template(tmp_path):
     assert mol.GetNumConformers() == 1            # pose carried
     c0 = mol.GetConformer().GetAtomPosition(0)
     assert (round(c0.x, 3), round(c0.y, 3), round(c0.z, 3)) == (0.0, 0.0, 0.0)
+    # MUST be returned SANITIZED - Molecule.from_rdkit requires it, and an
+    # unsanitized mol is exactly what broke openmmforcefields residue
+    # matching ("No template for residue LIG").
+    assert not mol.NeedsUpdatePropertyCache()
+    assert mol.GetRingInfo().NumRings() >= 0  # ring perception ran
+
+
+_BENZENE_PDB = textwrap.dedent("""\
+    HETATM    1  C1  LIG L   1       1.390   0.000   0.000  1.00  0.00           C
+    HETATM    2  C2  LIG L   1       0.695   1.204   0.000  1.00  0.00           C
+    HETATM    3  C3  LIG L   1      -0.695   1.204   0.000  1.00  0.00           C
+    HETATM    4  C4  LIG L   1      -1.390   0.000   0.000  1.00  0.00           C
+    HETATM    5  C5  LIG L   1      -0.695  -1.204   0.000  1.00  0.00           C
+    HETATM    6  C6  LIG L   1       0.695  -1.204   0.000  1.00  0.00           C
+    CONECT    1    2    6
+    CONECT    2    1    3
+    CONECT    3    2    4
+    CONECT    4    3    5
+    CONECT    5    4    6
+    CONECT    6    5    1
+    END
+""")
+
+
+def test_ligand_rdkit_at_pose_returns_sanitized_aromatic(tmp_path):
+    """The returned mol must be SANITIZED with aromaticity perceived - the
+    actual root cause of the NADP 'No template for residue LIG' failure
+    (unsanitized mol -> bad OpenFF graph -> openmmforcefields can't match).
+    Aromaticity is only set if SanitizeMol ran."""
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+
+    from evoliez.adapters.openmm_engine import _ligand_rdkit_at_pose
+
+    p = tmp_path / "benz.pdb"
+    p.write_text(_BENZENE_PDB)
+    mol = _ligand_rdkit_at_pose(p, "c1ccccc1")
+    assert not mol.NeedsUpdatePropertyCache()              # sanitized
+    assert mol.GetRingInfo().NumRings() >= 0  # ring perception ran
+    arom = [a for a in mol.GetAtoms() if a.GetIsAromatic()]
+    assert len(arom) == 6                                  # ring perceived
+    assert Chem.MolToSmiles(Chem.RemoveHs(mol)) == Chem.CanonSmiles(
+        "c1ccccc1"
+    )
 
 
 def test_ligand_rdkit_at_pose_raises_without_hetatm(tmp_path):

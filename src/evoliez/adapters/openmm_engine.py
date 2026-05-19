@@ -113,7 +113,17 @@ def _ligand_rdkit_at_pose(pdb_path: Path, smiles: str):
     if tmpl is None:
         raise ValueError(f"unparsable ligand SMILES: {smiles!r}")
     rd = AllChem.AssignBondOrdersFromTemplate(tmpl, rd)  # orders from SMILES
-    return Chem.AddHs(rd, addCoords=True)                # explicit H + coords
+    # Molecule.from_rdkit REQUIRES a SANITIZED mol (valence/aromaticity/ring
+    # perception). MolFromPDBBlock used sanitize=False and AddHs leaves the
+    # property cache stale, so an unsanitized mol here yields an OpenFF
+    # graph that won't round-trip through openmmforcefields' residue matcher
+    # -> "No template for residue LIG / did you forget .add_molecules()".
+    Chem.SanitizeMol(rd)
+    rd = Chem.AddHs(rd, addCoords=True)                   # explicit H + coords
+    Chem.SanitizeMol(rd)                                  # AddHs left it stale
+    rd.UpdatePropertyCache(strict=False)
+    Chem.AssignStereochemistryFrom3D(rd)                  # stereo from the pose
+    return rd
 
 
 def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
