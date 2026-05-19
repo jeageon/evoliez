@@ -9,6 +9,18 @@
 #     config defaults to configs/server_fdh_nadp.yaml
 set -euo pipefail
 
+# Shared 48-core server (SERVER_RUNBOOK #2): bound BLAS / numexpr / xgboost
+# thread pools for the whole process tree so the per-pose/per-candidate loops
+# in s06b/s08 don't oversubscribe and thrash (was 5-6 min of pure context
+# switching). Raise with EVOLIEZ_NUM_THREADS=N if you own the box.
+export EVOLIEZ_NUM_THREADS="${EVOLIEZ_NUM_THREADS:-4}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-$EVOLIEZ_NUM_THREADS}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-$EVOLIEZ_NUM_THREADS}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-$EVOLIEZ_NUM_THREADS}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-$EVOLIEZ_NUM_THREADS}"
+export NUMEXPR_MAX_THREADS="${NUMEXPR_MAX_THREADS:-$EVOLIEZ_NUM_THREADS}"
+export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-$EVOLIEZ_NUM_THREADS}"
+
 STEP="${1:?usage: server_smoke.sh <doctor|dryrun|boltz|dock|md|gnn|all> [config]}"
 # doctor validates the REAL intended config; the run steps use a tiny smoke
 # config (seconds-to-minutes, not the 80x15 real-scale grind). Override with

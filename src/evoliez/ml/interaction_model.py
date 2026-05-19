@@ -28,6 +28,22 @@ from evoliez.types import LigandAtom, ProteinStructure
 log = get_logger("evoliez.interaction_model")
 
 
+def _n_threads() -> int:
+    """Shared-server thread cap (see evoliez.__init__._limit_thread_pools).
+
+    xgboost ignores OMP_NUM_THREADS for its own pool unless n_jobs is set, and
+    s08 calls predict_proba on 1 row per candidate (x39) - an unbounded pool
+    there thrashes the shared box just as badly as training does.
+    """
+    import os
+
+    try:
+        n = int(os.environ.get("EVOLIEZ_NUM_THREADS", "") or 0)
+    except ValueError:
+        n = 0
+    return n if n > 0 else min(4, os.cpu_count() or 4)
+
+
 def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
 
@@ -61,7 +77,7 @@ class InteractionModel:
             return False
         m = xgb.XGBClassifier(
             n_estimators=150, max_depth=3, learning_rate=0.08,
-            subsample=0.9, eval_metric="logloss",
+            subsample=0.9, eval_metric="logloss", n_jobs=_n_threads(),
         )
         sw = sel.weights if sel.weights.size == sel.X.shape[0] else None
         m.fit(sel.X, sel.y, sample_weight=sw)
