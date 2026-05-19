@@ -90,3 +90,36 @@ def test_ligand_rdkit_at_pose_raises_without_hetatm(tmp_path):
     p.write_text(_FULL_ATOM)
     with pytest.raises(ValueError):
         _ligand_rdkit_at_pose(p, "CCO")
+
+
+# --- protein-only prep must DROP the ligand (pdbfixer; no openff) -------- #
+_PROT_PLUS_LIG = textwrap.dedent("""\
+    ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N
+    ATOM      2  CA  ALA A   1       1.458   0.000   0.000  1.00  0.00           C
+    ATOM      3  C   ALA A   1       2.009   1.420   0.000  1.00  0.00           C
+    ATOM      4  O   ALA A   1       3.228   1.563   0.000  1.00  0.00           O
+    ATOM      5  CB  ALA A   1       1.988  -0.773  -1.199  1.00  0.00           C
+    HETATM    6  C1  LIG B   1      10.000  10.000  10.000  1.00  0.00           C
+    CONECT    6
+    END
+""")
+
+
+def test_protein_only_pdbfixed_strips_heterogen(tmp_path):
+    """Candidate #1 of the real-MD blocker: the Boltz H-less LIG must NOT
+    survive structure prep into create_system. removeHeterogens(False) must
+    yield a PROTEIN-ONLY topology - locked locally so this can't regress."""
+    pytest.importorskip("pdbfixer")
+    pytest.importorskip("openmm")
+    from evoliez.adapters.openmm_engine import (
+        _STD_RES,
+        _protein_only_pdbfixed,
+    )
+
+    p = tmp_path / "complex.pdb"
+    p.write_text(_PROT_PLUS_LIG)
+    topo, pos = _protein_only_pdbfixed(p)
+    assert topo is not None                       # pdbfixer present here
+    names = {r.name for r in topo.residues()}
+    assert "LIG" not in names                      # heterogen removed
+    assert names and names <= _STD_RES             # protein-only invariant

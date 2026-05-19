@@ -125,6 +125,29 @@ def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
     return Molecule.from_rdkit(rd, allow_undefined_stereo=True)
 
 
+def _protein_only_pdbfixed(pdb_path: Path):
+    """PDBFixer-repaired PROTEIN-ONLY (topology, positions).
+
+    Uses PDBFixer's own removeHeterogens() to drop the ligand/ions/water
+    RELIABLY - the previous residue-name Modeller.delete() let the Boltz
+    H-less LIG survive into create_system ("No template for residue LIG").
+    Then adds missing terminal/heavy atoms (OXT). The real ligand is added
+    back separately from the OpenFF molecule. Returns (None, None) if
+    pdbfixer is unavailable (caller degrades honestly). Needs only pdbfixer
+    (no openff) so it is unit-testable in .venv-md."""
+    try:
+        from pdbfixer import PDBFixer
+    except ImportError:
+        return None, None
+    fx = PDBFixer(filename=str(pdb_path))
+    fx.findMissingResidues()
+    fx.missingResidues = {}                   # don't model unseen loops
+    fx.removeHeterogens(False)                # ligand/ions/water OUT
+    fx.findMissingAtoms()                     # incl. terminal OXT
+    fx.addMissingAtoms()
+    return fx.topology, fx.positions
+
+
 def run_md(
     cx: Complex,
     candidate_id: str,
@@ -328,29 +351,31 @@ def _run_real(
                 "nonbondedMethod": app.CutoffNonPeriodic,
             },
         )
-        try:
-            from pdbfixer import PDBFixer
-
-            fixer = PDBFixer(filename=str(pdb_path))
-            fixer.findMissingResidues()
-            fixer.missingResidues = {}            # don't model unseen loops
-            fixer.findMissingAtoms()              # incl. terminal OXT
-            fixer.addMissingAtoms()
-            topo, posns = fixer.topology, fixer.positions
-        except ImportError:
+        topo, posns = _protein_only_pdbfixed(pdb_path)
+        if topo is None:                          # pdbfixer absent
             log.warning(
                 "pdbfixer not installed - Amber may reject uncapped "
-                "termini for %s. `conda install -c conda-forge pdbfixer`",
-                candidate_id,
+                "termini / leftover heterogens for %s. "
+                "`conda install -c conda-forge pdbfixer`", candidate_id,
             )
             topo, posns = pdb.topology, pdb.positions
         modeller = app.Modeller(topo, posns)
-        drop = [r for r in modeller.topology.residues()
-                if r.name not in _STD_RES]            # strip ligand/ions
-        if drop:
-            modeller.delete(drop)
+        # Invariant: prep MUST be protein-only. A H-less Boltz LIG that
+        # survives here is exactly what produced the confusing "No template
+        # for residue LIG / missing 57 H" - fail honestly and specifically
+        # instead of letting create_system emit that.
+        stray = sorted({r.name for r in modeller.topology.residues()
+                        if r.name not in _STD_RES})
+        if stray:
+            raise RuntimeError(
+                f"non-protein residues survived structure prep {stray[:5]} "
+                "(removeHeterogens unavailable / ineffective); the OpenFF "
+                "ligand is added separately so these must not be present"
+            )
         modeller.addHydrogens(system_generator.forcefield)
-        # Recombine the OpenFF ligand at its Boltz-pose conformer.
+        # Add the ligand SOLELY from the OpenFF molecule at its Boltz-pose
+        # conformer (verified 70 atoms incl. 26 H); the only ligand in the
+        # system is now this one, which create_system matches via GAFF.
         modeller.add(
             off_lig.to_topology().to_openmm(),
             off_lig.conformers[0].to_openmm(),
