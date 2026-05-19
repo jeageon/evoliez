@@ -43,27 +43,40 @@ if [ -x "$BOLTZ_ENV/bin/boltz" ]; then
   echo ">> using isolated Boltz: $BOLTZ_ENV/bin/boltz"
 fi
 
-# Pick a GPU that is ACTUALLY free, not merely idle-but-VRAM-allocated.
-# Delegates to evoliez.utils.gpu.select_gpu (filters by free VRAM, then
-# least-busy / most-free, with logging) instead of the old util-only
-# nvidia-smi sort that could land on a 0%%-util GPU another user has
-# fully VRAM-allocated -> Boltz-2 OOM. Threshold is Boltz-sized and
-# overridable: EVOLIEZ_GPU_MIN_FREE_MIB (default 20000 = ~20 GiB).
+# Pick a GPU that is ACTUALLY free (enough free VRAM), not merely idle.
+# PURE shell + nvidia-smi - NO python/evoliez import: this function runs
+# after `$BOLTZ_ENV/bin` is prepended to PATH, so bare `python` resolves to
+# the isolated Boltz env (no evoliez) and the old `python -c "import
+# evoliez..."` silently ModuleNotFound'd -> false "no free GPU". Filter by
+# free VRAM >= EVOLIEZ_GPU_MIN_FREE_MIB (default 20000), then least-busy /
+# most-free; fall back to the most-free GPU with a warning.
 pin_gpu() {
   [ -n "${CUDA_VISIBLE_DEVICES:-}" ] && {
     echo ">> CUDA_VISIBLE_DEVICES preset to $CUDA_VISIBLE_DEVICES; honoring it"
     return 0; }
   command -v nvidia-smi >/dev/null 2>&1 || return 0
   local minf="${EVOLIEZ_GPU_MIN_FREE_MIB:-20000}"
-  local idx
-  idx="$(python -c "from evoliez.utils.gpu import select_gpu; i=select_gpu($minf); print('' if i is None else i)" 2>/dev/null || true)"
+  local q idx
+  q="$(nvidia-smi --query-gpu=index,memory.free,utilization.gpu \
+       --format=csv,noheader,nounits 2>/dev/null)"
+  # candidates with free >= minf, ordered by util asc then free desc
+  idx="$(echo "$q" | awk -F', *' -v m="$minf" \
+       '($2+0)>=m {print ($3+0), -($2+0), $1}' \
+       | sort -k1,1n -k2,2n | head -1 | awk '{print $3}')"
   if [ -n "$idx" ]; then
     export CUDA_VISIBLE_DEVICES="$idx"
-    echo ">> pinned GPU $idx (selected for >= ${minf} MiB free; see gpu log)"
+    echo ">> pinned GPU $idx (>= ${minf} MiB free)"
+    return 0
+  fi
+  # nothing meets the floor: take the absolute most-free, but warn
+  idx="$(echo "$q" | awk -F', *' '{print ($2+0), $1}' \
+       | sort -k1,1nr | head -1 | awk '{print $2}')"
+  if [ -n "$idx" ]; then
+    export CUDA_VISIBLE_DEVICES="$idx"
+    echo ">> WARNING: no GPU with >= ${minf} MiB free; using most-free GPU" \
+         "$idx (may contend). Lower EVOLIEZ_GPU_MIN_FREE_MIB or wait."
   else
-    echo ">> WARNING: GPU auto-select found none with >= ${minf} MiB free;" \
-         "not pinning - a real stage may OOM or contend. Set" \
-         "CUDA_VISIBLE_DEVICES manually or lower EVOLIEZ_GPU_MIN_FREE_MIB."
+    echo ">> WARNING: nvidia-smi returned no GPUs; not pinning."
   fi
 }
 
