@@ -94,22 +94,55 @@ except Exception as exc:
     print(f"[scout] expected lig  : (could not resolve cofactor: {exc})")
 
 # --- candidate locations ---------------------------------------------------
+# Two-tier scan to keep this fast on hosts with deep homolog libraries:
+#   FAST: only the standard Boltz output path layout (boltz_results_*/...).
+#         Typically 2-4 files; settles within a second.
+#   WIDE: broader patterns + roots. Only fires if FAST found NO candidates,
+#         AND skips obvious junk dirs (Trash, fold_tree, .cache).
 extra = json.loads(os.environ.get("EXTRA_JSON", "[]"))
-roots = [
+EXCLUDE_PARTS = (".local/share/Trash", "fold_tree", ".cache",
+                 "__pycache__", ".git", "site-packages")
+
+def _excluded(p: Path) -> bool:
+    s = str(p)
+    return any(x in s for x in EXCLUDE_PARTS)
+
+def _scan(roots, patterns):
+    out = []
+    for r in roots:
+        if not r.exists():
+            continue
+        for pat in patterns:
+            for p in r.rglob(pat):
+                if not _excluded(p):
+                    out.append(p)
+    return out
+
+# 1) FAST PATH: Boltz output convention exactly.
+fast_roots = [
     Path.home() / "EvoLiEZ" / "runs",
-    Path("/mnt/data2"),
-    Path("/mnt/data") / "jglee",
-    Path.home() / ".cache" / "boltz",
-    Path.home() / "EvoLiEZ" / "tests" / "fixtures",
+    Path("/mnt/data") / "jglee" / "runs",
+    Path("/mnt/data2") / "evoligand" / "runs",
+    Path("/mnt/data2") / os.environ.get("USER", "jglee") / "runs",
     *(Path(p) for p in extra),
 ]
-patterns = ("*model*.pdb", "*boltz*.pdb", "wt*.pdb", "*model*.cif",
-            "*predictions*/*.pdb")
-cands = []
-for r in roots:
-    if not r.exists(): continue
-    for pat in patterns:
-        cands.extend(r.rglob(pat))
+fast_patterns = ("boltz_results_*/predictions/*/*.pdb",
+                 "boltz_results_*/predictions/*/*.cif",
+                 "wt_boltz_input_model_*.pdb")
+cands = _scan(fast_roots, fast_patterns)
+
+if not cands:
+    print("[scout] fast path found 0 candidates; falling back to wide net")
+    wide_roots = fast_roots + [
+        Path("/mnt/data2"),
+        Path("/mnt/data") / "jglee",
+        Path.home() / "EvoLiEZ" / "tests" / "fixtures",
+    ]
+    wide_patterns = ("*model*.pdb", "*boltz*.pdb", "wt*.pdb",
+                     "*model*.cif", "*predictions*/*.pdb")
+    cands = _scan(wide_roots, wide_patterns)
+else:
+    print(f"[scout] fast path: {len(cands)} candidate(s) in standard Boltz dirs")
 
 # --- classify --------------------------------------------------------------
 AA3TO1 = {"ALA":"A","ARG":"R","ASN":"N","ASP":"D","CYS":"C","GLN":"Q",
@@ -118,27 +151,35 @@ AA3TO1 = {"ALA":"A","ARG":"R","ASN":"N","ASP":"D","CYS":"C","GLN":"Q",
           "TYR":"Y","VAL":"V"}
 
 def classify(p: Path):
-    try:
-        text = p.read_text(errors="replace")
-    except Exception as exc:
-        return ("err", 0, 0, "", str(exc)[:80])
+    # Stream the file line by line instead of read_text() so we can break
+    # early once we have enough signal. For a typical full-atom protein
+    # the first ~50 lines already prove FULL (non-CA backbone atoms);
+    # we still walk the whole file to count residues + HETATM accurately.
     n_atom = n_ca = n_het = 0
     ca_only = True
     seq = []
-    for ln in text.splitlines():
-        if ln.startswith("ATOM"):
-            n_atom += 1
-            name = ln[12:16].strip()
-            if name == "CA":
-                n_ca += 1
-                seq.append(AA3TO1.get(ln[17:20].strip(), "X"))
-            elif name:
-                ca_only = False
-        elif ln.startswith("HETATM"):
-            n_het += 1                          # ligand heavy atoms
-    if n_atom == 0: return ("empty", 0, 0, "", "no ATOM records")
-    if ca_only:    return ("CA-only", n_atom, n_het, "".join(seq), f"{n_ca} residues, CA trace only")
-    return ("FULL", n_atom, n_het, "".join(seq), f"{n_atom} atoms / {n_ca} residues")
+    try:
+        with open(p, "r", errors="replace") as fh:
+            for ln in fh:
+                if ln.startswith("ATOM"):
+                    n_atom += 1
+                    name = ln[12:16].strip()
+                    if name == "CA":
+                        n_ca += 1
+                        seq.append(AA3TO1.get(ln[17:20].strip(), "X"))
+                    elif name:
+                        ca_only = False
+                elif ln.startswith("HETATM"):
+                    n_het += 1
+    except Exception as exc:
+        return ("err", 0, 0, "", str(exc)[:80])
+    if n_atom == 0:
+        return ("empty", 0, 0, "", "no ATOM records")
+    if ca_only:
+        return ("CA-only", n_atom, n_het, "".join(seq),
+                f"{n_ca} residues, CA trace only")
+    return ("FULL", n_atom, n_het, "".join(seq),
+            f"{n_atom} atoms / {n_ca} residues")
 
 def identity(a: str, b: str) -> float:
     if not a or not b: return 0.0
