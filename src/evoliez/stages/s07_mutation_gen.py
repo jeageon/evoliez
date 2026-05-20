@@ -7,6 +7,7 @@ sampling, and LigandMPNN ligand-aware design. Outputs deduplicated
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List
 
 from evoliez.adapters.ligandmpnn import design_sequences
@@ -128,14 +129,51 @@ class MutationGenStage(Stage):
                     )
 
         # ---- LigandMPNN -------------------------------------------------- #
+        # P0.4: real-backend default generator. Preflight before invoking
+        # the adapter so a missing precondition is a CLEAR diagnostic instead
+        # of a downstream crash:
+        #   1. Real backend needs a full-atom structure (CA-only -> garbage
+        #      ligand-aware design); skip ligandmpnn honestly if missing.
+        #   2. Ligand must carry atoms (atom-index lock failed = downstream
+        #      ID-keyed features unreliable).
+        #   3. Catalytic / fixed positions must NOT appear in `designable` -
+        #      LigandMPNN would otherwise propose mutations there.
         if "ligandmpnn" in mgcfg.methods:
-            designs = design_sequences(
-                cx, designable, mgcfg, ctx.paths.mutations / "ligandmpnn",
-                backend=ctx.config.backend_for("s07_mutation_gen"),
-                dry_run=ctx.dry_run,
-            )
-            for muts, logp in designs:
-                add(muts, "ligandmpnn", {"ligandmpnn_logp": logp})
+            mpnn_backend = ctx.config.backend_for("s07_mutation_gen")
+            skip_reason = None
+            from evoliez.adapters.receptor_io import is_full_atom_pdb
+            from evoliez.config import Backend
+
+            pdb_path = getattr(cx.structure, "pdb_path", None)
+            is_real = (mpnn_backend is Backend.real)
+            if is_real and (
+                not pdb_path or not is_full_atom_pdb(Path(pdb_path))
+            ):
+                skip_reason = ("real LigandMPNN requires a full-atom protein "
+                               f"(got pdb_path={pdb_path!r}); skipping")
+            elif not cx.ligand.atoms:
+                skip_reason = ("ligand has no parsed atoms; LigandMPNN "
+                               "cannot do ligand-aware design")
+            else:
+                fixed = set(ctx.get("fixed_positions", []) or [])
+                bad = sorted(set(designable) & fixed)
+                if bad:
+                    skip_reason = (
+                        f"designable positions overlap fixed_positions {bad[:8]}"
+                        " - upstream filter regressed; refuse to let LigandMPNN"
+                        " propose catalytic/fixed mutations"
+                    )
+
+            if skip_reason:
+                self.log.warning("LigandMPNN preflight: %s", skip_reason)
+                ctx.persist_meta("ligandmpnn_skipped_reason", skip_reason)
+            else:
+                designs = design_sequences(
+                    cx, designable, mgcfg, ctx.paths.mutations / "ligandmpnn",
+                    backend=mpnn_backend, dry_run=ctx.dry_run,
+                )
+                for muts, logp in designs:
+                    add(muts, "ligandmpnn", {"ligandmpnn_logp": logp})
 
         # attach MSA permissiveness for downstream scoring
         for cand in candidates:
