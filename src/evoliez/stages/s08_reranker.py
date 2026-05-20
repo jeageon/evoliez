@@ -277,8 +277,35 @@ class RerankerStage(Stage):
         X = np.array([[c.details["features"][k] for k in _FEATURE_KEYS]
                       for c, _ in train], dtype=float)
         y = np.array([v for _, v in train], dtype=float)
+        # P0.5: monotone constraints. Higher score must NOT be predicted when
+        # a known-monotonic feature gets worse. Direction per feature:
+        #   +1: higher value -> higher predicted score
+        #    0: no constraint
+        #   -1: higher value -> lower predicted score
+        # Choices reflect domain knowledge:
+        #   - interaction_gain, family_interaction_score, d_ligand_iptm,
+        #     d_complex_iplddt, msa_permissiveness   -> +1 (more = better)
+        #   - n_mutations, dist_to_ligand, conservation, d_complex_ipde,
+        #     d_key_distance, specificity_divergence -> -1 (more = worse)
+        monotone = {
+            "msa_permissiveness":          +1,
+            "interaction_gain":            +1,
+            "conservation":                -1,
+            "n_mutations":                 -1,
+            "buried_fraction":              0,
+            "dist_to_ligand":              -1,
+            "family_interaction_score":    +1,
+            "d_ligand_iptm":               +1,
+            "d_complex_iplddt":            +1,
+            "d_complex_ipde":              -1,
+            "d_key_distance":              -1,
+            "d_pocket_plddt":              +1,
+            "specificity_divergence":      -1,
+        }
+        mono_tuple = tuple(monotone[k] for k in _FEATURE_KEYS)
         model = xgb.XGBRegressor(
-            n_estimators=200, max_depth=3, learning_rate=0.05
+            n_estimators=200, max_depth=3, learning_rate=0.05,
+            monotone_constraints=str(mono_tuple),
         )
         model.fit(X, y)
         allX = np.array(

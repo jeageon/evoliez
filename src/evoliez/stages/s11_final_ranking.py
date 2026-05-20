@@ -12,6 +12,70 @@ from evoliez.stages.base import Stage
 from evoliez.types import Candidate
 
 
+# P0.5: evidence classes for the final library. Mapping a candidate to one
+# of these classes uses ONLY signals we can verify (structure source, MD
+# status, docking method agreement, pose validity); the labels are not
+# decided by `final_score` magnitude alone - the plan explicitly forbids
+# a "proxy-only candidate silently entering the strongest class".
+EVIDENCE_STRONG = "Strong"
+EVIDENCE_PROMISING = "Promising"
+EVIDENCE_UNCERTAIN = "Uncertain"
+EVIDENCE_REJECT = "Reject"
+
+
+def evidence_class(c: Candidate) -> str:
+    """Assign one of {Strong, Promising, Uncertain, Reject} based on the
+    structural / MD / docking signals stored on the candidate.
+
+    Hard rules first (Reject), then anti-promotion (Uncertain), then
+    promotion (Strong if all clean), default Promising.
+    """
+    scores = c.scores
+    details = c.details
+
+    # ---- Reject: hard structural / MD failure (was not filtered earlier)
+    if details.get("nonmd_rejected"):
+        return EVIDENCE_REJECT
+    md_status = scores.get("md_status", "ok")
+    if md_status == "failed":
+        return EVIDENCE_REJECT
+    if scores.get("ligand_escape"):
+        return EVIDENCE_REJECT
+    # All non-skipped docking methods produced invalid poses -> reject.
+    n_valid = scores.get("pose_validity_valid_methods")
+    n_total = scores.get("pose_validity_total_methods")
+    if (n_valid == 0 and n_total and n_total > 0):
+        return EVIDENCE_REJECT
+
+    # ---- Uncertain: proxy-only structure, skipped MD, high disagreement,
+    # missing real Boltz Δ on a top candidate (set by caller).
+    source = details.get("boltz_delta_source", "missing")
+    if source not in ("real",):
+        # proxy / mock / missing -> never Strong; can be Promising at best.
+        # The promotion gate below would otherwise allow Strong on a
+        # purely proxy-derived candidate, which the plan explicitly forbids.
+        if details.get("requires_real_boltz_for_strong", False):
+            return EVIDENCE_UNCERTAIN
+    if md_status.startswith("skipped"):
+        return EVIDENCE_UNCERTAIN
+    disagreement = scores.get("docking_method_disagreement", 0.0)
+    if disagreement and disagreement > 1.5:
+        return EVIDENCE_UNCERTAIN
+    plif_min = scores.get("plif_recovery_min")
+    if plif_min is not None and plif_min < 0.3:
+        return EVIDENCE_UNCERTAIN
+
+    # ---- Strong: every clean signal lines up + real Boltz Δ.
+    md_passed = (md_status == "ok") and scores.get("md_lite_score", 0.0) >= 0.0
+    real_boltz = (source == "real")
+    pose_clean = (scores.get("pose_validity_status", "unknown") == "valid")
+    plif_ok = (plif_min is None) or (plif_min >= 0.5)
+    if md_passed and real_boltz and pose_clean and plif_ok:
+        return EVIDENCE_STRONG
+
+    return EVIDENCE_PROMISING
+
+
 class FinalRankingStage(Stage):
     name = "s11_final"
 
@@ -52,6 +116,10 @@ class FinalRankingStage(Stage):
                 candidate_uncertainty,
                 recommendation,
             )
+        # P0.5: require a real per-mutant Boltz delta to earn Strong evidence
+        # for top-ranked candidates. Below the rank threshold the requirement
+        # is relaxed (a real Boltz delta would have been wasteful there).
+        rank_threshold_for_real = max(1, int(0.25 * n))   # top 25% must be real
         for i, c in enumerate(ranked, 1):
             c.details["rank"] = i
             if adv.calibration:
@@ -60,6 +128,43 @@ class FinalRankingStage(Stage):
                 c.details["recommendation"] = recommendation(
                     c.scores["final_score"], u, i, n
                 )
+            # mark which candidates MUST have real Boltz Δ to be Strong
+            c.details["requires_real_boltz_for_strong"] = (
+                i <= rank_threshold_for_real
+            )
+            # surface structure source onto scores for the report layer
+            c.scores["boltz_delta_source"] = c.details.get(
+                "boltz_delta_source", "missing"
+            )
+            cls = evidence_class(c)
+            c.details["evidence_class"] = cls
+            c.scores["evidence_class"] = cls
+        # P0.5 (final library): exploit/explore split when uncertainty is
+        # available (calibration on) - the strongest "exploit" pool is
+        # capped to Strong/Promising; the "explore" pool brings in higher-
+        # uncertainty candidates so the next DBTL round learns something
+        # new. The split itself is computed in the existing
+        # ml/active_learning helper; here we just record exploit/explore
+        # tags so the report can lay them out separately.
+        if adv.calibration:
+            from evoliez.ml.active_learning import select_focused_library
+            explore_n = min(
+                max(4, n // 10),                  # 10% of the library, min 4
+                ctx.config.output.final_library_size,
+            )
+            try:
+                explore = set(
+                    c.candidate_id for c in select_focused_library(
+                        ranked, size=explore_n,
+                    )
+                )
+            except Exception:
+                explore = set()
+            for c in ranked:
+                c.details["pool"] = (
+                    "explore" if c.candidate_id in explore else "exploit"
+                )
+                c.scores["pool"] = c.details["pool"]
 
         assert ctx.store is not None
         with ctx.store.session() as s:
