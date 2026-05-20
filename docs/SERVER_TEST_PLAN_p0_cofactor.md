@@ -4,6 +4,30 @@ Branch: `feat/p0-cofactor-guard` (parent: `feat/family-interaction-model`,
 plus one cherry-picked commit `46f82a4` adding the cofactor declaration ↔
 ligand-formula guard).
 
+## TL;DR — run the bundled script
+
+```bash
+ssh <server>
+cd ~/EvoLiEZ                            # or /mnt/data2/<you>/EvoLiEZ
+git fetch origin && git checkout feat/p0-cofactor-guard && git pull --ff-only
+conda activate evoliez                  # whichever env has openmm+openff+...
+pip install -e . --quiet
+bash scripts/server_test_p0_cofactor.sh
+```
+
+The script runs Steps 0–5 below, streams a structured log to
+`runs/server_test/p0_cofactor_<ts>.log`, and prints a final **Summary**
+block with exactly the lines to send back. Exit codes: `2` = MD stack
+incomplete, `3` = guard sanity broken, `4` = resolver returned wrong
+NADP+ formula, `0` = all expected outcomes (Step 4 VERDICT decides the
+science direction). The Step-by-step recipe below documents what each
+block does.
+
+> **Convention**: every test branch ships a sibling
+> `scripts/server_test_<topic>.sh`. The server only ever has to `git
+> pull` + `bash` that one file; the per-branch script ages out with the
+> branch.
+
 ## Why this test exists
 
 Parent commit `4f14c82` ("Real MD: ligand-param probe → NADP-class
