@@ -15,8 +15,10 @@ explicit SMILES like always.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from evoliez.logging_utils import get_logger
@@ -42,10 +44,47 @@ class CofactorSpec:
     smiles: str
     formal_charge: int
     formula: Dict[str, int]   # element counts (heavy atoms only, no H)
+    # Curated AMBER parameter pointers (Bryce Lab / Manchester database).
+    # Filenames are RELATIVE to amber_params_root() (env EVOLIEZ_AMBER_PARAMS
+    # or <repo>/amber/cofactors/). When both files exist the curated tleap
+    # path runs instead of GAFF/AM1-BCC - which, on real NADP+, hard-fails
+    # sqm (sqm returns non-zero) in addition to being too slow for a
+    # production per-mutant pipeline. amber_residue_name is the 3-letter
+    # PDB resname inside the .lib (HETATM resname in tleap-built prmtops).
+    amber_lib: Optional[str] = None        # e.g. "NAP.lib"
+    amber_frcmod: Optional[str] = None     # e.g. "NAP.frcmod"
+    amber_residue_name: str = "LIG"
 
     @property
     def n_heavy(self) -> int:
         return sum(v for k, v in self.formula.items() if k != "H")
+
+    def resolved_amber_files(
+        self, base: Optional[Path] = None
+    ) -> Optional[Tuple[Path, Path]]:
+        """``(lib_path, frcmod_path)`` if both curated files exist on disk
+        under ``base`` (defaults to :func:`amber_params_root`), else None.
+        """
+        if not (self.amber_lib and self.amber_frcmod):
+            return None
+        b = Path(base) if base else amber_params_root()
+        lib, fr = b / self.amber_lib, b / self.amber_frcmod
+        if lib.exists() and fr.exists():
+            return (lib, fr)
+        return None
+
+
+def amber_params_root() -> Path:
+    """Where curated AMBER cofactor params live. ``EVOLIEZ_AMBER_PARAMS``
+    wins; otherwise ``<repo>/amber/cofactors``. The directory is created
+    by ``scripts/fetch_amber_cofactors.sh`` (Bryce Lab DB)."""
+    ev = os.environ.get("EVOLIEZ_AMBER_PARAMS")
+    if ev:
+        return Path(ev).expanduser().resolve()
+    # walk up from this file: src/evoliez/features/cofactors.py -> repo root
+    here = Path(__file__).resolve()
+    repo = here.parents[3]
+    return repo / "amber" / "cofactors"
 
 
 # Per-(family, redox_state) canonical species. pH determines protonation;
@@ -62,6 +101,8 @@ _LIB: Dict[Tuple[str, str], CofactorSpec] = {
         ),
         formal_charge=-1,
         formula={"C": 21, "N": 7, "O": 14, "P": 2},
+        amber_lib="NAD.lib", amber_frcmod="NAD.frcmod",
+        amber_residue_name="NAD",          # AMBER convention; Bryce Lab DB
     ),
     ("NAD", "reduced"): CofactorSpec(           # NADH: 1,4-dihydropyridine
         name="NADH", family="NAD", redox_state="reduced",
@@ -72,6 +113,8 @@ _LIB: Dict[Tuple[str, str], CofactorSpec] = {
         ),
         formal_charge=-2,
         formula={"C": 21, "N": 7, "O": 14, "P": 2},
+        amber_lib="NDH.lib", amber_frcmod="NDH.frcmod",
+        amber_residue_name="NDH",
     ),
     ("NADP", "oxidized"): CofactorSpec(         # NADP+: NAD+ + 2'-phosphate
         name="NADP+", family="NADP", redox_state="oxidized",
@@ -82,6 +125,8 @@ _LIB: Dict[Tuple[str, str], CofactorSpec] = {
         ),
         formal_charge=-3,
         formula={"C": 21, "N": 7, "O": 17, "P": 3},
+        amber_lib="NAP.lib", amber_frcmod="NAP.frcmod",
+        amber_residue_name="NAP",
     ),
     ("NADP", "reduced"): CofactorSpec(          # NADPH
         name="NADPH", family="NADP", redox_state="reduced",
@@ -92,6 +137,8 @@ _LIB: Dict[Tuple[str, str], CofactorSpec] = {
         ),
         formal_charge=-4,
         formula={"C": 21, "N": 7, "O": 17, "P": 3},
+        amber_lib="NDP.lib", amber_frcmod="NDP.frcmod",
+        amber_residue_name="NDP",
     ),
 }
 

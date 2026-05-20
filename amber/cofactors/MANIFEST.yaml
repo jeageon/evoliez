@@ -1,0 +1,50 @@
+# Curated AMBER cofactor parameter manifest (Bryce Lab / Manchester DB).
+#
+# Each entry is `<residue_name>.{lib,frcmod}` that scripts/fetch_amber_cofactors.sh
+# downloads into this directory. Filenames are referenced from
+# evoliez.features.cofactors.CofactorSpec (amber_lib / amber_frcmod).
+#
+# The URLs below are the canonical entry points to the Bryce Lab amber
+# parameter database (http://amber.manchester.ac.uk/). The download script
+# will try them in order; the user can override on the server with:
+#
+#   bash scripts/fetch_amber_cofactors.sh --manifest custom_manifest.yaml
+#
+# IMPORTANT: verify the URLs against the current Manchester site - the
+# database has been re-hosted before. The fetch script also accepts paths
+# to LOCAL files you have already downloaded (drop them in this directory
+# manually and the file-existence check on _run_real will pick them up).
+#
+# Citation (acknowledge in any paper using these parameters):
+#   Walker R.C., de Souza M.M., Mercer I.P., Gould I.R., Klein D.R. (2007)
+#   "Large and Fast Relaxations inside a Protein..."  J. Phys. Chem. B
+#   plus the underlying Pavelites/Mackerell parameter derivation papers.
+#   See http://amber.manchester.ac.uk/ for the current bibliography.
+
+base_url: "http://research.bmh.manchester.ac.uk/bryce/amber"
+
+species:
+  - residue: NAD          # NAD+ (oxidized)
+    files:
+      lib:    NAD.lib
+      frcmod: NAD.frcmod
+      mol2:   NAD.mol2     # optional, used by some tleap recipes
+    notes: "nicotinamide N1 pyridinium (+1)"
+  - residue: NDH          # NADH (reduced)
+    files:
+      lib:    NDH.lib
+      frcmod: NDH.frcmod
+      mol2:   NDH.mol2
+    notes: "1,4-dihydropyridine"
+  - residue: NAP          # NADP+ (oxidized)
+    files:
+      lib:    NAP.lib
+      frcmod: NAP.frcmod
+      mol2:   NAP.mol2
+    notes: "NAD+ + 2'-phosphate; FDH cofactor-switching target species"
+  - residue: NDP          # NADPH (reduced)
+    files:
+      lib:    NDP.lib
+      frcmod: NDP.frcmod
+      mol2:   NDP.mol2
+    notes: "NADH + 2'-phosphate"

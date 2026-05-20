@@ -17,6 +17,7 @@ import yaml
 from evoliez.config import InputConfig, LigandInput, load_config, Backend
 from evoliez.diagnostics import collect, BLOCK, WARN, OK
 from evoliez.features.cofactors import (
+    amber_params_root,
     check_cofactor_matches,
     formula_of,
     is_known_cofactor,
@@ -247,6 +248,66 @@ def test_doctor_warns_on_mock_for_cofactor_mismatch(tmp_path):
     rep = collect(str(cfg))
     cof = [c for c in rep.checks if c.name == "config:cofactor"]
     assert cof and cof[0].status == WARN
+
+
+# --------------------------------------------------------------------------- #
+# Curated AMBER parameter pointers (Bryce Lab / Manchester DB).
+# --------------------------------------------------------------------------- #
+def test_curated_spec_carries_amber_filenames():
+    # Every curated species advertises its Bryce Lab residue + filenames.
+    # _run_real uses these to decide whether to take the tleap path.
+    cases = {
+        ("NAD",  "oxidized"): ("NAD", "NAD.lib", "NAD.frcmod"),
+        ("NAD",  "reduced"):  ("NDH", "NDH.lib", "NDH.frcmod"),
+        ("NADP", "oxidized"): ("NAP", "NAP.lib", "NAP.frcmod"),
+        ("NADP", "reduced"):  ("NDP", "NDP.lib", "NDP.frcmod"),
+    }
+    for (family, redox), (res, lib, fr) in cases.items():
+        spec = resolve_cofactor(family, redox_state=redox)
+        assert spec.amber_residue_name == res
+        assert spec.amber_lib == lib
+        assert spec.amber_frcmod == fr
+
+
+def test_resolved_amber_files_returns_none_when_missing(tmp_path):
+    # With no Bryce Lab files dropped, the resolver honestly returns None
+    # -> _run_real falls back to GAFF/espaloma (or skipped_parameterization).
+    spec = resolve_cofactor("NADP", redox_state="oxidized")
+    assert spec.resolved_amber_files(base=tmp_path) is None
+
+
+def test_resolved_amber_files_returns_paths_when_present(tmp_path):
+    # When both files exist, the resolver hands back absolute paths in the
+    # (lib, frcmod) order the tleap dispatcher expects.
+    spec = resolve_cofactor("NADP", redox_state="oxidized")
+    (tmp_path / spec.amber_lib).write_text("!entry.NAP.unit.atoms\n")
+    (tmp_path / spec.amber_frcmod).write_text("# stub frcmod\n")
+    got = spec.resolved_amber_files(base=tmp_path)
+    assert got is not None
+    lib, fr = got
+    assert lib.name == "NAP.lib" and fr.name == "NAP.frcmod"
+    assert lib.exists() and fr.exists()
+
+
+def test_resolved_amber_files_requires_BOTH_files(tmp_path):
+    # Half-present is treated as missing - we don't want a stale lib without
+    # its frcmod silently feeding tleap with mismatched atom types.
+    spec = resolve_cofactor("NADP", redox_state="oxidized")
+    (tmp_path / spec.amber_lib).write_text("!entry.NAP.unit.atoms\n")
+    assert spec.resolved_amber_files(base=tmp_path) is None
+
+
+def test_amber_params_root_honours_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("EVOLIEZ_AMBER_PARAMS", str(tmp_path / "elsewhere"))
+    assert amber_params_root() == (tmp_path / "elsewhere").resolve()
+
+
+def test_amber_params_root_defaults_to_repo_subdir(monkeypatch):
+    # No env override -> <repo>/amber/cofactors (this dir is created by
+    # scripts/fetch_amber_cofactors.sh; existence is irrelevant to the path).
+    monkeypatch.delenv("EVOLIEZ_AMBER_PARAMS", raising=False)
+    p = amber_params_root()
+    assert p.name == "cofactors" and p.parent.name == "amber"
 
 
 # --------------------------------------------------------------------------- #

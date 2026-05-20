@@ -1,0 +1,14 @@
+# Bryce Lab parameter files (frcmod / lib / mol2) - fetched on the server
+# via scripts/fetch_amber_cofactors.sh. Not bundled into the repo because
+# licensing / hosting is on the Manchester side; the fetch script is the
+# single source of truth + provenance.
+*.frcmod
+*.lib
+*.mol2
+*.prep
+*.off
+*.amberparm
+# but keep the docs/manifest committed
+!README.md
+!.gitignore
+!MANIFEST.yaml
