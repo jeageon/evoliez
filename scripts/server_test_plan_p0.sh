@@ -45,20 +45,59 @@ say "[plan-p0] env:       ${CONDA_DEFAULT_ENV:-?} (python $(python --version 2>&
 say "[plan-p0] cfg:       $CFG"
 say "[plan-p0] log:       $LOG"
 
-# ----- Step 0: light pytest sanity ----------------------------------------
-banner "Step 0: light pytest sanity (mock pipeline must stay green)"
-set +e
-python -m pytest -q 2>&1 | tail -10 | tee -a "$LOG"
-RC=${PIPESTATUS[0]}
-set -e
-if [ $RC -ne 0 ]; then
-    say "[plan-p0] FAIL Step 0: pytest red; do not proceed to server checks"
-    exit 2
+# ----- Step 0: light pytest sanity (dev-time gate; SKIP on server envs) ----
+# Production conda envs don't carry pytest (and shouldn't). Skip with a
+# clear note instead of failing - the actual server-side checks below are
+# what matter here, and the light pytest is for the dev/CI loop.
+banner "Step 0: light pytest sanity (optional on server)"
+if ! python -c "import pytest" 2>/dev/null; then
+    say "[plan-p0]   pytest not in this env (normal for a production conda)."
+    say "[plan-p0]   Light suite stays a DEV-time check; skipping. Run it on"
+    say "[plan-p0]   your dev box:  pip install pytest && pytest -q"
+else
+    set +e
+    python -m pytest -q 2>&1 | tail -10 | tee -a "$LOG"
+    RC=${PIPESTATUS[0]}
+    set -e
+    if [ $RC -ne 0 ]; then
+        say "[plan-p0] FAIL Step 0: pytest red; do not proceed to server checks"
+        exit 2
+    fi
 fi
 
 # ----- Step 1: P0.2 Boltz pocket steering contract -------------------------
 banner "Step 1: P0.2 Boltz pocket-steering YAML contract"
-python -m pytest -q tests/test_boltz_pocket_contract.py 2>&1 | tail -5 | tee -a "$LOG"
+if python -c "import pytest" 2>/dev/null; then
+    python -m pytest -q tests/test_boltz_pocket_contract.py 2>&1 | tail -5 | tee -a "$LOG"
+else
+    # No pytest in this env -> exercise the contract directly. Same
+    # invariant: `pocket_constraints: true` + residues must emit a real
+    # constraints block in the Boltz input YAML.
+    python - <<'PY' 2>&1 | tee -a "$LOG"
+import tempfile, yaml
+from pathlib import Path
+from evoliez.adapters.boltz import _predict_real
+from evoliez.config import ComplexPredictionConfig
+from evoliez.types import Ligand
+
+cfg = ComplexPredictionConfig(
+    primary_method="boltz2", use_msa_server=True, representative_homologs=4,
+    use_templates=True, pocket_constraints=True, predict_affinity=True,
+    diffusion_samples=3, use_kernels=False,
+)
+work = Path(tempfile.mkdtemp(prefix="p0_contract_"))
+_predict_real(
+    "wt", "A" * 30, Ligand(id="L", smiles="CCO"), cfg, work,
+    dry_run=True, msa_path=None, pocket_residues=[15, 154, 285],
+)
+y = yaml.safe_load((work / "wt_boltz_input.yaml").read_text())
+ok = ("constraints" in y
+      and y["constraints"][0]["pocket"]["binder"] == "B"
+      and y["constraints"][0]["pocket"]["contacts"] == [["A", 15], ["A", 154], ["A", 285]])
+print(">> Boltz pocket contract:", "OK" if ok else "FAIL")
+print(">>   constraints:", y.get("constraints", "<MISSING>"))
+PY
+fi
 
 # ----- Step 2: cofactor + curated MD verdict ------------------------------
 banner "Step 2: cofactor guard + curated/Gasteiger MD (P0/P0.6)"
