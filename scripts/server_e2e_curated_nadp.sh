@@ -55,9 +55,12 @@ say "[e2e] log:        $LOG"
 # Extract the recommended PDB path from the find script's output. The
 # scout only prints the "bash scripts/server_test_curated_nadp.sh <path>"
 # line when WT identity is >= 95%, so this naturally gates out homologs.
+# `|| true` on the grep keeps the pipe exit 0 when the scout reported
+# STALE / nothing - otherwise `pipefail` + `set -e` would silently kill
+# the whole driver before Phase 2 (Boltz regen) ever fires.
 recommended_pdb() {
-    grep -E '^\s+bash scripts/server_test_curated_nadp\.sh ' "$LOG" \
-        | tail -1 | awk '{print $NF}'
+    (grep -E '^\s+bash scripts/server_test_curated_nadp\.sh ' "$LOG" \
+        || true) | tail -1 | awk '{print $NF}'
 }
 
 # ----- Phase 1: scout -----------------------------------------------------
@@ -82,7 +85,10 @@ fi
 # regen, since the cached prediction predates the P0 SMILES fix.
 NEED_BOLTZ=0
 if [ -z "$WT_PDB" ]; then NEED_BOLTZ=1; fi
-if [ $SCOUT_RC -eq 2 ]; then NEED_BOLTZ=1; fi
+if [ $SCOUT_RC -eq 2 ]; then
+    NEED_BOLTZ=1
+    say "[e2e] Phase 1 returned exit=2 (STALE Boltz output); auto-regen will fire"
+fi
 
 if [ $NEED_BOLTZ -eq 1 ]; then
     if [ $SKIP_BOLTZ -eq 1 ]; then
