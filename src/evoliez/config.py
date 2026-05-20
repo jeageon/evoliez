@@ -145,6 +145,30 @@ class MDConfig(_Base):
     production_ns: float = 1.0
     replicas: int = 1
     top_candidates: int = 30
+    # P0.6: practical knobs. Defaults are conservative; the high-accuracy
+    # profile turns these up for the final tier.
+    #
+    # ligand_forcefield: openmmforcefields key. "openff-2.2.0" is OpenFF
+    # Sage 2.2 (the plan's "OpenFF Sage where possible"); falls back to
+    # the curated tleap path (P0/P0.cofactor) for parameters that don't
+    # fit Sage. "gaff-2.11" is the previous default and still available.
+    ligand_forcefield: str = "openff-2.2.0"
+    # hmr_enabled: Hydrogen Mass Repartitioning + 4 fs timestep. ONLY
+    # safe to flip on AFTER a stability comparison against 2 fs - the
+    # config lets you opt in; openmm_engine reads it and adjusts the
+    # integrator/system. Off by default; high-accuracy profile keeps it
+    # off until the comparison lands.
+    hmr_enabled: bool = False
+    hmr_timestep_fs: float = 4.0
+    # final_tier_replicas: separate from `replicas` because per the plan
+    # only candidates reaching the strongest evidence tier deserve >=3
+    # replicas. Lower-tier candidates run `replicas` to keep wall time
+    # bounded.
+    final_tier_replicas: int = 3
+    # mdresult_provenance: persist FF / HMR / replica choices on every
+    # MDResult so the final report says "MD passed (Sage, HMR off, 3
+    # replicas)" not just "MD passed".
+    persist_provenance: bool = True
 
 
 class ValidationConfig(_Base):

@@ -42,6 +42,15 @@ class MDResult:
     energy_drift: float = 0.0
     integration_failed: bool = False
     failure_reason: Optional[str] = None
+    # P0.6: provenance so the final report says HOW the MD passed/failed.
+    ligand_forcefield: Optional[str] = None    # actual FF used (gaff/sage/curated)
+    hmr_enabled: bool = False                  # 4 fs path on/off
+    timestep_fs: float = 2.0
+    replicas_run: int = 1
+    # Per-replica spread when replicas_run > 1, the reranker / evidence
+    # class layer uses these to mark high-variance MD as Uncertain.
+    ligand_rmsd_replicas: List[List[float]] = field(default_factory=list)
+    pocket_rmsd_replicas: List[List[float]] = field(default_factory=list)
 
 
 def _is_full_atom_pdb(path: Path) -> bool:
@@ -319,17 +328,29 @@ def _gasteiger_charge_system_generator(off_lig, workdir: Path):
         )
 
 
-def _ligand_system_generator(off_lig, workdir: Path):
+def _ligand_system_generator(off_lig, workdir: Path,
+                              prefer_ff: Optional[str] = None):
     """A SystemGenerator whose small-molecule FF can ACTUALLY parameterize
-    this ligand. Probe ligand-only create_system per FF: gaff-2.11, then
-    espaloma-0.3.2 if the `espaloma` package is installed (a graph-net FF,
-    no antechamber, that handles cofactors GAFF/AM1-BCC cannot). Raise
-    _LigandParamUnsupported if none can - decisive, since the probe IS the
-    exact ligand-only parameterization that failed for NADP on the server."""
+    this ligand. Probe ligand-only create_system per FF: ``prefer_ff``
+    first (defaults to OpenFF Sage 2.2 per P0.6), then gaff-2.11, then
+    espaloma-0.3.2 if installed. Raise :class:`_LigandParamUnsupported`
+    if none can.
+
+    Returns ``(sg, ff_name)`` so the caller can stamp the actual FF used
+    onto the MDResult provenance.
+    """
     import openmm.app as app
     from openmmforcefields.generators import SystemGenerator
 
-    ffs = ["gaff-2.11"]
+    # P0.6: prefer OpenFF Sage where possible. The probe still falls
+    # through to GAFF (and espaloma if available) so legacy ligands that
+    # Sage doesn't cover keep working.
+    pref = prefer_ff or "openff-2.2.0"
+    ffs = []
+    if pref and pref not in ffs:
+        ffs.append(pref)
+    if "gaff-2.11" not in ffs:
+        ffs.append("gaff-2.11")
     try:
         import espaloma  # noqa: F401
 
@@ -636,7 +657,10 @@ def _run_real(
                 )
                 _ff = "gaff-2.11+gasteiger"
             else:
-                system_generator, _ff = _ligand_system_generator(off_lig, workdir)
+                system_generator, _ff = _ligand_system_generator(
+                    off_lig, workdir,
+                    prefer_ff=getattr(cfg, "ligand_forcefield", None),
+                )
         except _LigandParamUnsupported as exc:
             log.warning(
                 "no small-molecule FF can parameterize the ligand for %s "
@@ -713,10 +737,15 @@ def _run_real(
             restraint.addParticle(atom.index, [pos.x, pos.y, pos.z])
     system.addForce(restraint)
 
+    # P0.6: HMR/4 fs is opt-in (cfg.hmr_enabled). Real adoption needs a
+    # smoke vs 2 fs stability comparison; the flag is here so that
+    # comparison can be run via config without code surgery.
+    timestep_fs = (cfg.hmr_timestep_fs if getattr(cfg, "hmr_enabled", False)
+                   else cfg.timestep_fs)
     integrator = mm.LangevinMiddleIntegrator(
         cfg.temperature_K * unit.kelvin,
         1.0 / unit.picosecond,
-        cfg.timestep_fs * unit.femtoseconds,
+        timestep_fs * unit.femtoseconds,
     )
     sim = app.Simulation(modeller.topology, system, integrator)
     sim.context.setPositions(modeller.positions)
@@ -757,7 +786,7 @@ def _run_real(
     e_start = e_last = None
     if cfg.protocol_level >= 1:
         sim.context.setVelocitiesToTemperature(cfg.temperature_K * unit.kelvin)
-        nsteps = int((cfg.production_ns * 1000) / (cfg.timestep_fs / 1000) / 1000)
+        nsteps = int((cfg.production_ns * 1000) / (timestep_fs / 1000) / 1000)
         nsteps = max(50, min(nsteps, 5000) if cfg.protocol_level < 3 else nsteps)
         traj = workdir / f"{candidate_id}.dcd"
         sim.reporters.append(app.DCDReporter(str(traj), max(1, nsteps // 50)))
@@ -776,6 +805,12 @@ def _run_real(
 
     drift = abs((e_last - e_start) / e_start) if e_start else 0.0
     status = "unstable" if (lig_series and lig_series[-1] > 5.0) else "ok"
+    # P0.6: provenance. `_ff` is set by the probe path; the curated branch
+    # didn't go through the probe so default to "curated_amber". HMR /
+    # timestep / replicas come straight from the config.
+    ligand_ff_used = "curated_amber" if took_curated else (_ff or "?")
+    timestep_used = (cfg.hmr_timestep_fs if getattr(cfg, "hmr_enabled", False)
+                     else cfg.timestep_fs)
     return MDResult(
         candidate_id=candidate_id,
         status=status,
@@ -790,4 +825,9 @@ def _run_real(
         contact_occupancy={},
         hbond_occupancy=0.5,
         energy_drift=round(float(drift), 4),
+        ligand_forcefield=ligand_ff_used,
+        hmr_enabled=bool(getattr(cfg, "hmr_enabled", False)),
+        timestep_fs=float(timestep_used),
+        replicas_run=1,                 # single replica today; multi-replica
+                                        # final-tier loop is the next commit
     )

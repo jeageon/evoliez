@@ -67,10 +67,13 @@ def test_drug_like_ligand_still_uses_am1bcc_probe():
     # production charge model.
     src = inspect.getsource(openmm_engine._run_real)
     assert "if curated_spec is not None:" in src
-    # The else-branch calls the original AM1-BCC probe.
+    # The else-branch calls the original AM1-BCC probe (now with an
+    # optional prefer_ff kwarg for P0.6 Sage support; the call itself
+    # must still target _ligand_system_generator on the drug-like path).
     after_if = src.split("if curated_spec is not None:")[1]
     assert "else:" in after_if
-    assert "_ligand_system_generator(off_lig, workdir)" in after_if
+    assert "_ligand_system_generator(" in after_if
+    assert "off_lig" in after_if
 
 
 def test_curated_generator_signals_missing_files_distinctly():

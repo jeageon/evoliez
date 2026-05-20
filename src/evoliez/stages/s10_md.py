@@ -58,6 +58,7 @@ class MDStage(Stage):
                 n_ran += 1
             metrics = analyse(result, weights)
             cand.scores["md_lite_score"] = metrics.md_lite_score
+            cand.scores["md_status"] = result.status   # P0.5: feeds evidence class
             cand.scores["md_instability"] = round(
                 0.0 if metrics.simulation_health_ok else 1.0, 3
             )
@@ -66,6 +67,17 @@ class MDStage(Stage):
                 cand.details["md_failure_reasons"] = "; ".join(
                     metrics.failure_reasons
                 )
+            # P0.6: persist MD provenance per candidate so the final report
+            # says HOW MD ran ("Sage, HMR off, 1 replica") instead of just
+            # a pass/fail. Sage and HMR flags surface on cand.scores so the
+            # report layer can include them in tables without spelunking.
+            if mdcfg.persist_provenance:
+                cand.scores["md_ligand_forcefield"] = (
+                    result.ligand_forcefield or "?"
+                )
+                cand.scores["md_hmr_enabled"] = int(bool(result.hmr_enabled))
+                cand.scores["md_timestep_fs"] = float(result.timestep_fs)
+                cand.scores["md_replicas_run"] = int(result.replicas_run)
 
             aj = to_json(metrics)
             (ctx.paths.md_candidate(cand.candidate_id) / "analysis.json").write_text(
