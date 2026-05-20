@@ -124,55 +124,74 @@ fi
 
 # ----- Step 4: HEADLINE - GAFF/espaloma probe on REAL NADP+ ---------------
 banner "Step 4: GAFF/espaloma probe on REAL NADP+ (VERDICT)"
+# v2: skip the synthetic-PDB roundtrip (flavor=4 wrote CONECT in both
+# directions -> RDKit re-read it as duplicate bonds -> AssignBondOrders
+# blew up at valence-5 carbons; the bug was in the probe SCAFFOLDING,
+# not in _ligand_rdkit_at_pose). Go straight: SMILES -> OpenFF Molecule
+# -> generate_conformers (RDKit ETKDG under the hood) -> the real
+# _ligand_system_generator probe. That IS the parameterization question.
 python - <<'PY' 2>&1 | tee -a "$LOG"
 import tempfile, traceback
 from pathlib import Path
-from rdkit import Chem
-from rdkit.Chem import AllChem
 from evoliez.features.cofactors import resolve_cofactor
 from evoliez.adapters.openmm_engine import (
-    _ligand_offmol_at_pose, _ligand_system_generator, _LigandParamUnsupported,
+    _ligand_system_generator, _LigandParamUnsupported,
 )
 
 smi = resolve_cofactor("NADP", redox_state="oxidized").smiles
-m = Chem.AddHs(Chem.MolFromSmiles(smi))
-assert AllChem.EmbedMolecule(m, randomSeed=0xC0FFEE) == 0
-AllChem.MMFFOptimizeMolecule(m)
-pdb = Chem.MolToPDBBlock(m, flavor=4)             # HETATM + CONECT (both dirs)
-work = Path(tempfile.mkdtemp(prefix="probe_")); pdb_path = work / "nadp.pdb"
-out = []
-for ln in pdb.splitlines():
-    if ln.startswith(("ATOM  ", "HETATM")):
-        ln = "HETATM" + ln[6:17] + "LIG" + ln[20:]
-    out.append(ln)
-pdb_path.write_text("\n".join(out) + "\n")
-print(">> NADP+ pose PDB:", pdb_path)
+print(">> SMILES (resolved real NADP+):", smi[:90] + "...")
 
-off = _ligand_offmol_at_pose(pdb_path, smi)
-print(">> OpenFF mol  :", off.n_atoms, "atoms (incl. H), charge=", off.total_charge)
+from openff.toolkit import Molecule
+off = Molecule.from_smiles(smi, allow_undefined_stereo=True)
+off.name = "LIG"
+off.generate_conformers(n_conformers=1)
+print(">> OpenFF mol  :", off.n_atoms, "atoms (incl. H), formal_charge =",
+      sum(a.formal_charge.m_as("elementary_charge") for a in off.atoms))
 
+work = Path(tempfile.mkdtemp(prefix="probe_"))
 try:
     sg = _ligand_system_generator(off, work)
-    print(">> VERDICT     : PARAMETERIZED OK ({})".format(type(sg).__name__))
+    fname = getattr(sg, "small_molecule_forcefield", "?")
+    print(">> VERDICT     : PARAMETERIZED OK  (small_molecule_forcefield={})"
+          .format(fname))
     print("   'NADP unparameterizable' was a wrong-SMILES artifact (NAD+).")
+    print("   Next: lift the NADP-class neutral skip on parent's MD path.")
 except _LigandParamUnsupported as exc:
     print(">> VERDICT     : STILL UNPARAMETERIZABLE on real NADP+")
     print(">>   reason   :", exc)
-    print("   genuine GAFF/espaloma limit -> curated parameter / tleap is next.")
+    print("   genuine GAFF/espaloma limit -> curated parameter / tleap next.")
 except Exception:
-    print(">> VERDICT     : PROBE CRASHED")
+    print(">> VERDICT     : PROBE CRASHED (not a parameterization verdict)")
     traceback.print_exc()
 PY
 
 # ----- Step 5: end-to-end check_real_md.py --------------------------------
-banner "Step 5: check_real_md.py on captured WT Boltz PDB"
+banner "Step 5: check_real_md.py on a real full-atom WT Boltz PDB"
 if [ ! -f "$WT_PDB" ]; then
     say "[server_test] SKIP Step 5: WT PDB not found at $WT_PDB"
     say "[server_test]   (pass an absolute path as the first arg to override)"
 else
-    # Don't propagate non-zero from check_real_md.py (status=skipped* returns
-    # non-zero by design); we only care about the printed status/failure
-    # lines for the summary.
+    # The bundled captured fixture is CA-only on the protein side, which is
+    # honestly recorded as skipped_no_full_atom_structure - it is NOT a fake
+    # pass, and check_real_md.py returns non-zero. We surface that as a note
+    # rather than a failure (Step 5's purpose is to read the status line,
+    # not to assert success).
+    if python -c "
+import sys
+from pathlib import Path
+ok = False
+for ln in Path('$WT_PDB').read_text().splitlines():
+    if ln.startswith('ATOM') and ln[12:16].strip() not in ('CA', ''):
+        ok = True; break
+sys.exit(0 if ok else 1)
+"; then
+        say "[server_test]   wt_pdb is full-atom; running real MD end-to-end"
+    else
+        say "[server_test]   NOTE: $WT_PDB is CA-only on the protein side"
+        say "[server_test]   -> expect status=skipped_no_full_atom_structure (honest)"
+        say "[server_test]   For a real end-to-end read, pass a full-atom"
+        say "[server_test]   Boltz prediction as the first arg."
+    fi
     python scripts/check_real_md.py "$WT_PDB" configs/smoke.yaml 2>&1 | tee -a "$LOG" || true
 fi
 
