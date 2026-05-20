@@ -36,7 +36,17 @@ class MutantBoltzStage(Stage):
 
     def run(self, ctx: RunContext) -> None:
         rcfg = ctx.config.reranking
-        candidates: List[Candidate] = ctx.get("redock_candidates", [])
+        # PIPELINE-ORDER fix: s08b now runs AFTER s09 (see stages/__init__.py
+        # ALL_STAGES). Prefer `md_candidates` (set by s09) so real per-mutant
+        # Boltz runs on the candidates that ACTUALLY reach MD - eliminates
+        # the s08b-top-N vs s10-top-N set mismatch that caused 3/4 honest
+        # skips on smoke. Falls back to `redock_candidates` for backwards
+        # compatibility (e.g., when MD is disabled and s09 didn't run).
+        candidates: List[Candidate] = (
+            ctx.get("md_candidates")
+            or ctx.get("redock_candidates", [])
+            or []
+        )
         if not rcfg.mutant_boltz_enabled or not candidates:
             self.log.info("mutant Boltz re-eval disabled; Δ stays proxy")
             return
@@ -49,6 +59,9 @@ class MutantBoltzStage(Stage):
         cp_cfg = ctx.config.complex_prediction.model_copy(
             update={"diffusion_samples": rcfg.mutant_boltz_diffusion_samples}
         )
+        # When the input is md_candidates (post-s09), top_for_md already
+        # capped the size. mutant_boltz_top_n still caps it further if the
+        # user wants Boltz on only a subset of MD candidates (config knob).
         top = candidates[: rcfg.mutant_boltz_top_n]
         outdir = ctx.paths.complexes / "mutant_boltz"
 
@@ -78,7 +91,10 @@ class MutantBoltzStage(Stage):
             n_done += 1
 
         ctx.put("mutant_complexes", mut_complexes)
-        ctx.put("redock_candidates", candidates)
+        # Don't overwrite redock_candidates with the (possibly smaller)
+        # md_candidates list - keep the full s09 output intact for s11
+        # final ranking, while md_candidates is updated below for s10.
+        ctx.put("md_candidates", candidates)
         ctx.persist_meta("n_mutant_boltz_evaluated", n_done)
         ctx.persist_meta(
             "mutant_boltz_backend",

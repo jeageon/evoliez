@@ -42,11 +42,27 @@ def test_top_n_get_real_delta_rest_proxy(tmp_path):
         "top_for_redocking": 10, "top_for_md": 3,
         "mutant_boltz_enabled": True, "mutant_boltz_top_n": 3,
     })
+    # PIPELINE-ORDER fix: s08b now runs AFTER s09, so the 3 candidates
+    # that get real per-mutant Boltz are the SAME 3 that reach s10_md
+    # (md_candidates) - not the s08-rerank-top-3 of redock_candidates.
+    # This is the architectural property the fix establishes: every md
+    # candidate has a real mutant structure, no s08b/s10 set mismatch.
     assert ctx.meta("n_mutant_boltz_evaluated") == 3
-    cands = ctx.get("redock_candidates", [])
-    srcs = [c.details.get("boltz_delta_source") for c in cands]
-    assert srcs[:3] == ["mock", "mock", "mock"]      # re-evaluated
-    assert "proxy" in srcs[3:]                        # remainder untouched
+    md_cands = ctx.get("md_candidates", [])
+    assert len(md_cands) == 3
+    md_srcs = [c.details.get("boltz_delta_source") for c in md_cands]
+    assert md_srcs == ["mock", "mock", "mock"], (
+        "every md_candidate must carry real (mock-in-this-test) ΔBoltz"
+    )
+    # Candidates that reached redocking but NOT MD keep proxy ΔBoltz.
+    redock = ctx.get("redock_candidates", [])
+    md_ids = {c.candidate_id for c in md_cands}
+    non_md = [c for c in redock if c.candidate_id not in md_ids]
+    assert non_md, "redock pool should be larger than md pool"
+    assert all(c.details.get("boltz_delta_source") == "proxy"
+               for c in non_md), (
+        "non-MD candidates must keep proxy ΔBoltz (s08b only updates MD set)"
+    )
 
 
 def test_disabled_keeps_proxy(tmp_path):

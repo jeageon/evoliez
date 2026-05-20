@@ -25,8 +25,16 @@ ALL_STAGES = [
     InteractionModelStage,
     MutationGenStage,
     RerankerStage,
-    MutantBoltzStage,
+    # s08b moved AFTER s09 so real per-mutant Boltz runs on the
+    # candidates that ACTUALLY reach MD (s09 reorder filters / promotes
+    # candidates based on redocking + ddg, so s08b's previous "top-N of
+    # rerank" set diverged from s10's "top-N of post-s09" set). The
+    # server smoke caught this as `MD real-execution: 1/4 actually ran`
+    # despite 4/4 mutant Boltz running upstream. New order: s09 ->
+    # s08b -> s10 ensures every md_candidate has a real mutant
+    # structure (no honest skip via the sequence guard).
     NonMDValidationStage,
+    MutantBoltzStage,
     MDStage,
     FinalRankingStage,
 ]
