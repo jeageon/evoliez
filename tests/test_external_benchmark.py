@@ -48,7 +48,9 @@ def test_baselines_distinct_and_scored():
 
 
 def test_pose_sanity_flags_clash_and_escape():
-    good = [LigandAtom(id=f"C{i}", element="C", coord=(i * 2.0, 0, 0))
+    # Ligand sits offset from the protein backbone so the new receptor-clash
+    # check (lig-atom <-> CA < 0.9 A) doesn't trip on a degenerate overlap.
+    good = [LigandAtom(id=f"C{i}", element="C", coord=(i * 2.0, 2.0, 0))
             for i in range(4)]
     struct = ProteinStructure(
         sequence="AAAA",
@@ -56,9 +58,22 @@ def test_pose_sanity_flags_clash_and_escape():
     )
     s = pose_sanity(good, struct)
     assert s["clash_free"] and s["valid"]
+    assert s["receptor_clashes"] == 0
+    assert s["status"] == "valid"
 
-    clash = [LigandAtom(id="C0", element="C", coord=(0, 0, 0)),
-             LigandAtom(id="C1", element="C", coord=(0.05, 0, 0)),
-             LigandAtom(id="C2", element="C", coord=(0.06, 0, 0))]
+    clash = [LigandAtom(id="C0", element="C", coord=(0, 2.0, 0)),
+             LigandAtom(id="C1", element="C", coord=(0.05, 2.0, 0)),
+             LigandAtom(id="C2", element="C", coord=(0.06, 2.0, 0))]
     s2 = pose_sanity(clash, struct)
     assert s2["internal_clashes"] >= 1 and not s2["valid"]
+    assert s2["status"] == "invalid"
+    assert any("internal" in r for r in s2["reasons"])
+
+    # New: protein-ligand collision is flagged (ligand atom on top of a CA).
+    on_top = [LigandAtom(id="C0", element="C", coord=(0, 0, 0))] + [
+        LigandAtom(id=f"C{i}", element="C", coord=(i * 3.0, 5.0, 0))
+        for i in range(1, 4)
+    ]
+    s3 = pose_sanity(on_top, struct)
+    assert s3["receptor_clashes"] >= 1 and not s3["valid"]
+    assert any("protein-ligand" in r for r in s3["reasons"])

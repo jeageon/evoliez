@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Sequence
 
 from evoliez.adapters.base import mock_redock, write_min_pdb
+from evoliez.adapters.receptor_io import (
+    NotFullAtomReceptor, resolve_real_receptor_pdb,
+)
 from evoliez.config import Backend, DockingConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import LigandAtom, Pose, ProteinStructure
@@ -46,11 +49,23 @@ def _redock_real(
     *,
     dry_run: bool,
 ) -> Pose:
+    # P0.1: refuse CA-only receptors BEFORE requiring the vina binary -
+    # a CA stick figure can't honestly dock no matter what tools are
+    # installed, so the skip path runs even on a host without vina/obabel.
+    try:
+        rec_pdb = resolve_real_receptor_pdb(structure, candidate_id=candidate_id)
+    except NotFullAtomReceptor as exc:
+        log.warning("vina: %s", exc)
+        return Pose(
+            candidate_id=candidate_id, method=METHOD, score=0.0,
+            ligand_atoms=list(reference_atoms),
+            skipped="skipped_no_full_atom_structure",
+            pose_validity_status="unknown",
+            pose_validity_reasons=[str(exc)],
+        )
     require("vina")
     require("obabel")
     workdir.mkdir(parents=True, exist_ok=True)
-    rec_pdb = workdir / f"{candidate_id}_rec.pdb"
-    write_min_pdb(rec_pdb, structure)
     rec_q = workdir / f"{candidate_id}_rec.pdbqt"
     lig_pdb = workdir / f"{candidate_id}_lig.pdb"
     lig_q = workdir / f"{candidate_id}_lig.pdbqt"

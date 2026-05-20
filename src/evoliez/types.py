@@ -97,6 +97,19 @@ class Pose:
     ligand_atoms: List[LigandAtom] = field(default_factory=list)
     rmsd_to_reference: Optional[float] = None
     cluster: int = 0
+    # P0.1: physical-validity surface (PoseBusters / PLIF / clash). When a
+    # real docker can't honestly produce a pose - e.g. receptor is CA-only -
+    # ``skipped`` carries the reason and the caller treats this as "did not
+    # dock", never silently scoring it as a passing pose. Default None means
+    # "no signal" (mock path leaves these alone).
+    skipped: Optional[str] = None
+    pose_validity_status: Optional[str] = None        # "valid"|"invalid"|"unknown"
+    pose_validity_reasons: List[str] = field(default_factory=list)
+    receptor_clashes: int = 0                          # protein-ligand atoms < 0.9 A
+    plif_recovery: Optional[float] = None              # fraction of WT/ref contacts kept
+    cnn_score: Optional[float] = None                  # GNINA 1.3 CNNscore
+    cnn_vs: Optional[float] = None                     # GNINA 1.3 CNN_VS
+    cnn_affinity: Optional[float] = None               # GNINA 1.3 CNN_affinity
 
 
 @dataclass

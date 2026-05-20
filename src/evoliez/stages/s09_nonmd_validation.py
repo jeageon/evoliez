@@ -11,10 +11,11 @@ from typing import List
 
 from evoliez.adapters import foldx, rosetta
 from evoliez.context import RunContext
-from evoliez.features.geometry import catalytic_distances, rmsd
+from evoliez.features.geometry import catalytic_distances, dist, rmsd
+from evoliez.ml.pose_validity import pose_sanity
 from evoliez.stages.base import Stage
 from evoliez.stages.s05_docking import redock_with
-from evoliez.types import Candidate, Complex
+from evoliez.types import Candidate, Complex, LigandAtom, Pose, ProteinStructure
 
 
 def _mutant_complex(wt: Complex, cand: Candidate) -> Complex:
@@ -41,6 +42,33 @@ def _instability(cand: Candidate) -> float:
     cons = cand.details.get("features", {}).get("conservation", 0.5)
     val = 0.12 * max(0.0, ddg) + 0.25 * clash + 0.4 * cons
     return float(max(0.0, min(1.0, val)))
+
+
+_PLIF_CONTACT_RADIUS = 5.0       # heavy atom <-> CA contact threshold in Angstrom
+
+
+def _contact_set(
+    ligand_atoms, structure: ProteinStructure,
+    radius: float = _PLIF_CONTACT_RADIUS,
+) -> set:
+    """Cheap PLIF stand-in: (residue_index, ligand_atom_id) pairs within
+    ``radius`` Å. Used for `plif_recovery` = |pred ∩ ref| / |ref|, so a
+    docking method that loses key cofactor/catalytic contacts can't quietly
+    win on score alone."""
+    out = set()
+    for la in ligand_atoms or []:
+        for r in structure.residues:
+            if dist(la.coord, r.ca) <= radius:
+                out.add((r.index, la.id))
+    return out
+
+
+def _plif_recovery(pose: Pose, ref_atoms, structure: ProteinStructure) -> float:
+    ref = _contact_set(ref_atoms, structure)
+    if not ref:
+        return 0.0
+    pred = _contact_set(pose.ligand_atoms or ref_atoms, structure)
+    return round(len(ref & pred) / len(ref), 4)
 
 
 class NonMDValidationStage(Stage):
@@ -87,11 +115,32 @@ class NonMDValidationStage(Stage):
             )
 
             inst = _instability(cand)
-            pose = redock_with(
-                dcfg.methods[0], ctx, cand.candidate_id, mc.structure,
-                ref_atoms, dcfg, ctx.paths.validation / "redock", inst,
-                wt.ligand.smiles,
-            )
+            # P0.3: redock with EVERY configured method, not just the first.
+            # Method-level disagreement on score / RMSD / PLIF is itself a
+            # candidate-quality signal (Strong = all methods agree on a
+            # physically valid pose; Uncertain = methods disagree on contacts).
+            poses_by_method = {}
+            for method in (dcfg.methods or ["vina"]):
+                p = redock_with(
+                    method, ctx, cand.candidate_id, mc.structure,
+                    ref_atoms, dcfg, ctx.paths.validation / "redock", inst,
+                    wt.ligand.smiles,
+                )
+                poses_by_method[method] = p
+            # Primary pose = first configured method (preserves legacy
+            # docking_score / redocking_consistency semantics).
+            pose = poses_by_method[(dcfg.methods or ["vina"])[0]]
+
+            # Honest skip if real docking refused (CA-only receptor etc.).
+            # The candidate proceeds (other layers still inform it) but its
+            # docking signal is marked unreliable - the final ranker treats
+            # this as "proxy" evidence (see s11 evidence class).
+            skipped_methods = [m for m, p in poses_by_method.items() if p.skipped]
+            if skipped_methods:
+                cand.details["docking_skipped"] = {
+                    m: poses_by_method[m].skipped for m in skipped_methods
+                }
+
             cand.scores["docking_score"] = pose.score
             consistency = max(
                 0.0, 1.0 - (pose.rmsd_to_reference or 0.0) / 4.0
@@ -99,6 +148,51 @@ class NonMDValidationStage(Stage):
             cand.scores["redocking_consistency"] = round(consistency, 4)
             cand.scores["docking_uncertainty"] = round(1.0 - consistency, 4)
             ligand_escape = (pose.rmsd_to_reference or 0.0) > 4.5
+
+            # Pose-quality surface: physical-validity stand-in + PLIF recovery
+            # vs the WT reference pose. Stored per pose; primary fields copied
+            # onto cand.scores so the reranker / final report can use them.
+            valid_count = 0
+            plifs = []
+            method_scores = []
+            for m, p in poses_by_method.items():
+                if p.skipped:                    # honest skip, no validity verdict
+                    continue
+                v = pose_sanity(p.ligand_atoms or ref_atoms, mc.structure)
+                p.pose_validity_status = v["status"]
+                p.pose_validity_reasons = list(v["reasons"])
+                p.receptor_clashes = int(v["receptor_clashes"])
+                p.plif_recovery = _plif_recovery(p, ref_atoms, mc.structure)
+                plifs.append(p.plif_recovery)
+                method_scores.append(p.score)
+                if v["valid"]:
+                    valid_count += 1
+            cand.scores["pose_validity_valid_methods"] = valid_count
+            cand.scores["pose_validity_total_methods"] = (
+                len(poses_by_method) - len(skipped_methods)
+            )
+            cand.scores["plif_recovery_mean"] = (
+                round(sum(plifs) / len(plifs), 4) if plifs else 0.0
+            )
+            cand.scores["plif_recovery_min"] = (
+                round(min(plifs), 4) if plifs else 0.0
+            )
+            # Cross-method disagreement (>=2 methods); 0 when only one method.
+            if len(method_scores) >= 2:
+                mean = sum(method_scores) / len(method_scores)
+                spread = (sum((s - mean) ** 2 for s in method_scores)
+                          / len(method_scores)) ** 0.5
+                cand.scores["docking_method_disagreement"] = round(spread, 4)
+            # Primary pose's PLIF on cand.scores (legacy column for s11/score)
+            if pose.plif_recovery is not None:
+                cand.scores["plif_recovery"] = pose.plif_recovery
+            cand.scores["pose_validity_status"] = (
+                pose.pose_validity_status or "unknown"
+            )
+            if pose.pose_validity_reasons:
+                cand.details["pose_validity_reasons"] = list(
+                    pose.pose_validity_reasons
+                )
 
             mut_cat = catalytic_distances(mc.structure, ref_atoms, catalytic)
             geom_pen = 0.0

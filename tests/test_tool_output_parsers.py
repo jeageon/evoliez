@@ -105,8 +105,11 @@ def test_vina_real_pdbqt_heavy_atom_lock_and_rmsd():
 
 
 def test_gnina_sdf_tag_on_next_line():
-    # value is on the line AFTER `> <minimizedAffinity>`; best (lowest) = -7.85
-    assert _parse_gnina(FX / "gnina" / "out.sdf") == -7.85
+    # value is on the line AFTER `> <minimizedAffinity>`; best (lowest) = -7.85.
+    # _parse_gnina now also collects GNINA 1.3 CNN tags from the best pose.
+    score, cnn = _parse_gnina(FX / "gnina" / "out.sdf")
+    assert score == -7.85
+    assert isinstance(cnn, dict)
 
 
 def test_diffdock_confidence_from_filename():

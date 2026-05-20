@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Sequence
 
 from evoliez.adapters.base import mock_redock, write_min_pdb
+from evoliez.adapters.receptor_io import (
+    NotFullAtomReceptor, resolve_real_receptor_pdb,
+)
 from evoliez.config import Backend, DockingConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import LigandAtom, Pose, ProteinStructure
@@ -53,11 +56,22 @@ def _redock_real(
     *,
     dry_run: bool,
 ) -> Pose:
+    # P0.1: real DiffDock refuses CA-only receptors - its diffusion model
+    # was trained on full-atom PDB inputs; CA-only triggers garbage poses.
+    try:
+        rec = resolve_real_receptor_pdb(structure, candidate_id=candidate_id)
+    except NotFullAtomReceptor as exc:
+        log.warning("diffdock: %s", exc)
+        return Pose(
+            candidate_id=candidate_id, method=METHOD, score=0.0,
+            ligand_atoms=list(reference_atoms),
+            skipped="skipped_no_full_atom_structure",
+            pose_validity_status="unknown",
+            pose_validity_reasons=[str(exc)],
+        )
     require("python")
     apply_gpu_selection()
     workdir.mkdir(parents=True, exist_ok=True)
-    rec = workdir / f"{candidate_id}_rec.pdb"
-    write_min_pdb(rec, structure)
     csv = workdir / f"{candidate_id}_input.csv"
     csv.write_text(
         "complex_name,protein_path,ligand_description,protein_sequence\n"
