@@ -24,10 +24,12 @@ cd "$(dirname "$0")/.."
 
 CFG="configs/smoke.yaml"
 SKIP_BOLTZ=0
+REGEN_BOLTZ=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --skip-boltz) SKIP_BOLTZ=1; shift ;;
-        -h|--help)    sed -n '2,18p' "$0"; exit 0 ;;
+        --skip-boltz)  SKIP_BOLTZ=1;  shift ;;
+        --regen-boltz) REGEN_BOLTZ=1; shift ;;
+        -h|--help)     sed -n '2,18p' "$0"; exit 0 ;;
         *)
             if [ -f "$1" ]; then CFG="$1"; shift
             else echo "unknown arg: $1" >&2; exit 2; fi ;;
@@ -45,9 +47,10 @@ banner() { printf '\n========== %s ==========\n' "$*" | tee -a "$LOG" ; }
 say "[e2e] branch:    $(git rev-parse --abbrev-ref HEAD)"
 say "[e2e] HEAD:      $(git rev-parse --short HEAD)"
 say "[e2e] env:       ${CONDA_DEFAULT_ENV:-?} (python $(python --version 2>&1 | awk '{print $2}'))"
-say "[e2e] cfg:       $CFG"
+say "[e2e] cfg:        $CFG"
 say "[e2e] skip-boltz: $SKIP_BOLTZ"
-say "[e2e] log:       $LOG"
+say "[e2e] regen-boltz: $REGEN_BOLTZ"
+say "[e2e] log:        $LOG"
 
 # Extract the recommended PDB path from the find script's output. The
 # scout only prints the "bash scripts/server_test_curated_nadp.sh <path>"
@@ -59,23 +62,49 @@ recommended_pdb() {
 
 # ----- Phase 1: scout -----------------------------------------------------
 banner "Phase 1: scout for existing full-atom WT PDB"
-set +e
-bash scripts/find_full_atom_wt_pdb.sh "$CFG" 2>&1 | tee -a "$LOG"
-SCOUT_RC=${PIPESTATUS[0]}
-set -e
+if [ $REGEN_BOLTZ -eq 1 ]; then
+    say "[e2e] --regen-boltz set; skipping Phase 1 scout"
+    SCOUT_RC=2          # synthesize "stale, must regen" so Phase 2 fires
+else
+    set +e
+    bash scripts/find_full_atom_wt_pdb.sh "$CFG" 2>&1 | tee -a "$LOG"
+    SCOUT_RC=${PIPESTATUS[0]}
+    set -e
+fi
 WT_PDB="$(recommended_pdb)"
 if [ -n "$WT_PDB" ]; then
     say "[e2e] Phase 1 OK: using existing full-atom WT $WT_PDB"
 fi
 
 # ----- Phase 2: run Boltz if needed --------------------------------------
-if [ -z "$WT_PDB" ]; then
+# scout exit codes: 0=usable, 1=nothing/homolog, 2=STALE Boltz output (WT
+# match but ligand heavy count != resolved cofactor) - the latter MUST
+# regen, since the cached prediction predates the P0 SMILES fix.
+NEED_BOLTZ=0
+if [ -z "$WT_PDB" ]; then NEED_BOLTZ=1; fi
+if [ $SCOUT_RC -eq 2 ]; then NEED_BOLTZ=1; fi
+
+if [ $NEED_BOLTZ -eq 1 ]; then
     if [ $SKIP_BOLTZ -eq 1 ]; then
-        say "[e2e] FAIL Phase 1: no full-atom WT located and --skip-boltz set"
+        say "[e2e] FAIL: no usable WT PDB and --skip-boltz set (scout=$SCOUT_RC)"
         exit 3
     fi
+    # Stale output detected -> nuke the cached Boltz dir BEFORE regenerating
+    # (evoliez run is idempotent and would otherwise skip the stale dir).
+    if [ $SCOUT_RC -eq 2 ] || [ $REGEN_BOLTZ -eq 1 ]; then
+        STALE_DIR="${EVOLIEZ_ROOT:-/mnt/data2/${USER}}/runs/smoke/boltz"
+        # Also try the more-common ~/runs/... layout used on this server.
+        for cand in "$STALE_DIR" \
+                    "/mnt/data/${USER}/runs/smoke/boltz" \
+                    "${HOME}/EvoLiEZ/runs/smoke/boltz"; do
+            if [ -d "$cand/complexes" ]; then
+                say "[e2e] removing stale Boltz outputs at $cand/complexes"
+                rm -rf "$cand/complexes"
+            fi
+        done
+    fi
     banner "Phase 2: run Boltz to produce a full-atom WT (10-20 min GPU)"
-    say "[e2e] no usable PDB on disk -> bash scripts/server_smoke.sh boltz $CFG"
+    say "[e2e] -> bash scripts/server_smoke.sh boltz $CFG"
     set +e
     bash scripts/server_smoke.sh boltz "$CFG" 2>&1 | tee -a "$LOG"
     BOLTZ_RC=${PIPESTATUS[0]}

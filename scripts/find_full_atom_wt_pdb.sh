@@ -76,6 +76,23 @@ except Exception as exc:
 print(f"[scout] WT seq source : {wt_src}")
 print(f"[scout] WT length     : {len(wt_seq)} aa")
 
+# Resolve the expected ligand heavy-atom count from the config's cofactor
+# (P0 resolver). A candidate WT PDB whose HETATM ligand count differs is
+# almost certainly STALE - generated before the SMILES fix - and routing
+# real MD onto it raises "AssignBondOrdersFromTemplate: No matching found"
+# downstream (verified on the server). Reject at scout time so the e2e
+# driver naturally falls through to re-running Boltz.
+expected_lig_heavy = None
+try:
+    from evoliez.features.cofactors import resolve_ligand_spec, formula_of
+    eff = resolve_ligand_spec(cfg.input)
+    if eff.type == "smiles":
+        f = formula_of(eff.value)
+        expected_lig_heavy = sum(f.values())
+        print(f"[scout] expected lig  : {expected_lig_heavy} heavy ({f})")
+except Exception as exc:
+    print(f"[scout] expected lig  : (could not resolve cofactor: {exc})")
+
 # --- candidate locations ---------------------------------------------------
 extra = json.loads(os.environ.get("EXTRA_JSON", "[]"))
 roots = [
@@ -104,8 +121,8 @@ def classify(p: Path):
     try:
         text = p.read_text(errors="replace")
     except Exception as exc:
-        return ("err", 0, "", str(exc)[:80])
-    n_atom = n_ca = 0
+        return ("err", 0, 0, "", str(exc)[:80])
+    n_atom = n_ca = n_het = 0
     ca_only = True
     seq = []
     for ln in text.splitlines():
@@ -117,9 +134,11 @@ def classify(p: Path):
                 seq.append(AA3TO1.get(ln[17:20].strip(), "X"))
             elif name:
                 ca_only = False
-    if n_atom == 0: return ("empty", 0, "", "no ATOM records")
-    if ca_only:    return ("CA-only", n_atom, "".join(seq), f"{n_ca} residues, CA trace only")
-    return ("FULL", n_atom, "".join(seq), f"{n_atom} atoms / {n_ca} residues")
+        elif ln.startswith("HETATM"):
+            n_het += 1                          # ligand heavy atoms
+    if n_atom == 0: return ("empty", 0, 0, "", "no ATOM records")
+    if ca_only:    return ("CA-only", n_atom, n_het, "".join(seq), f"{n_ca} residues, CA trace only")
+    return ("FULL", n_atom, n_het, "".join(seq), f"{n_atom} atoms / {n_ca} residues")
 
 def identity(a: str, b: str) -> float:
     if not a or not b: return 0.0
@@ -134,47 +153,82 @@ for p in cands:
     rp = p.resolve()
     if rp in seen or not p.is_file(): continue
     seen.add(rp)
-    label, n_atom, seq, why = classify(p)
+    label, n_atom, n_het, seq, why = classify(p)
     ident = identity(wt_seq, seq) if (label == "FULL" and wt_seq) else 0.0
-    rows.append((label, ident, n_atom, p, seq, why))
+    # Ligand-side staleness: HETATM count must match the resolved cofactor
+    # heavy count (e.g. NADP+ -> 48). A 44-heavy HETATM block under a
+    # NADP+ config is the classic "Boltz output predates the SMILES fix"
+    # situation - reject so the e2e driver re-runs Boltz instead of
+    # silently MD'ing the wrong species.
+    lig_ok = (expected_lig_heavy is None or n_het == 0
+              or n_het == expected_lig_heavy)
+    rows.append((label, ident, lig_ok, n_atom, n_het, p, seq, why))
 
-# FULL first, then by sequence identity desc, then by atom count desc
+# Pass-everything (FULL + WT match + ligand-OK) FIRST, then FULL+WT but
+# stale ligand (so user sees them flagged), then everything else.
 rows.sort(key=lambda r: (
-    0 if r[0] == "FULL" else (1 if r[0] == "CA-only" else 2),
-    -r[1], -r[2],
+    0 if (r[0] == "FULL" and r[1] >= 95 and r[2]) else
+    1 if (r[0] == "FULL" and r[1] >= 95)           else
+    2 if r[0] == "FULL"                            else
+    3 if r[0] == "CA-only"                         else 4,
+    -r[1], -r[3],
 ))
 
 print()
-print(f"  {'label':<10}{'wt%':>6}  {'atoms':>7}  path")
-print("  " + "-" * 90)
-for label, ident, n_atom, p, _seq, _why in rows[:30]:
-    print(f"  {label:<10}{ident:6.1f}  {n_atom:>7}  {p}")
+print(f"  {'label':<10}{'wt%':>6}  {'lig':>10}  {'atoms':>7}  path")
+print("  " + "-" * 96)
+for label, ident, lig_ok, n_atom, n_het, p, _seq, _why in rows[:30]:
+    lig_tag = (f"{n_het}/{expected_lig_heavy}" if expected_lig_heavy
+               else f"{n_het}")
+    if expected_lig_heavy and n_het and not lig_ok:
+        lig_tag += " STALE"
+    print(f"  {label:<10}{ident:6.1f}  {lig_tag:>10}  {n_atom:>7}  {p}")
 print(f"\n  total candidates: {len(rows)}")
 
-# --- recommend the best FULL candidate ------------------------------------
-full = [r for r in rows if r[0] == "FULL"]
+# --- recommend the best FULL+WT+ligand-OK candidate ------------------------
+ok = [r for r in rows if r[0] == "FULL" and r[1] >= 95.0 and r[2]]
+stale = [r for r in rows if r[0] == "FULL" and r[1] >= 95.0 and not r[2]]
 print()
-if full:
-    best = full[0]
-    label, ident, n_atom, p, seq, why = best
-    print(f"[scout] BEST full-atom candidate:")
+if ok:
+    label, ident, lig_ok, n_atom, n_het, p, seq, why = ok[0]
+    print(f"[scout] BEST full-atom candidate (WT + ligand OK):")
     print(f"        {p}")
-    print(f"        {why}; wt identity = {ident:.1f}%")
+    print(f"        {why}; wt identity = {ident:.1f}%; "
+          f"lig heavy = {n_het} (expected {expected_lig_heavy or '?'})")
     print(f"        seq[:60]  = {seq[:60]}")
     print(f"        seq[-60:] = {seq[-60:]}")
     print()
-    if ident >= 95.0:
-        print("[scout] WT match -> next:")
-        print(f"        bash scripts/server_test_curated_nadp.sh {p}")
-    elif ident >= 30.0:
-        print(f"[scout] Sequence identity is only {ident:.1f}% - this looks like")
-        print( "        a homolog, NOT the WT. Pointing real MD at it would")
-        print( "        validate the wrong protein. Either find the actual WT")
-        print( "        prediction or re-run s04_complex on the WT config.")
-    else:
-        print(f"[scout] Sequence identity {ident:.1f}% - not WT. Re-run Boltz on")
-        print( "        the WT config to produce a fresh full-atom prediction.")
+    print("[scout] WT match + ligand match -> next:")
+    print(f"        bash scripts/server_test_curated_nadp.sh {p}")
     sys.exit(0)
+elif stale:
+    label, ident, lig_ok, n_atom, n_het, p, seq, why = stale[0]
+    print(f"[scout] STALE Boltz output detected (WT match but wrong ligand):")
+    print(f"        {p}")
+    print(f"        ligand heavy = {n_het}, expected = {expected_lig_heavy}")
+    print(f"        (44 = NAD+, 48 = NADP+; this output predates the P0 fix)")
+    print("[scout] Re-run Boltz so the new prediction uses the corrected")
+    print("        NADP+ SMILES. The e2e driver does this automatically:")
+    print("        bash scripts/server_e2e_curated_nadp.sh --regen-boltz")
+    sys.exit(2)                                  # distinct exit code
+else:
+    full = [r for r in rows if r[0] == "FULL"]
+    if full:
+        label, ident, lig_ok, n_atom, n_het, p, seq, why = full[0]
+        print(f"[scout] BEST full-atom candidate (NOT WT):")
+        print(f"        {p}")
+        print(f"        {why}; wt identity = {ident:.1f}%")
+        print(f"        seq[:60]  = {seq[:60]}")
+        print(f"        seq[-60:] = {seq[-60:]}")
+        print()
+        if ident >= 30.0:
+            print(f"[scout] Sequence identity {ident:.1f}% - looks like a")
+            print( "        homolog, NOT the WT. Re-run Boltz on the WT")
+            print( "        config or supply the actual WT prediction.")
+        else:
+            print(f"[scout] Sequence identity {ident:.1f}% - not WT. Re-run")
+            print( "        Boltz on the WT config to produce a fresh PDB.")
+        sys.exit(1)
 
 print("[scout] no full-atom PDB found anywhere in the scanned roots.")
 print("[scout] Run Boltz to produce one (config picks the protein + ligand):")
