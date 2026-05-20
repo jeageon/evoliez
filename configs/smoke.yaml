@@ -63,7 +63,11 @@ reranking:
   top_for_redocking: 12
   top_for_md: 4
   mutant_boltz_enabled: true
-  mutant_boltz_top_n: 3
+  # P0 lesson: mutant_boltz_top_n MUST be >= top_for_md, else s10_md hits
+  # the sequence guard ("MD input ... is the shared WT structure, not the
+  # mutant") for any md_candidate that's outside s08b's top-N. Server
+  # config already has 50 vs 30 (-> safe); smoke now lines up too.
+  mutant_boltz_top_n: 4
   mutant_boltz_diffusion_samples: 2
 
 validation:

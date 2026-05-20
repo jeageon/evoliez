@@ -33,19 +33,56 @@ def write_reports(
 
 def _write_candidates_csv(paths: ProjectPaths, ranked: Sequence[Candidate]) -> Path:
     p = paths.reports / "final_candidates.csv"
+    # P0.5 / P0.6: the report carries the new evidence/provenance columns
+    # so a server check (`grep has-col ...`) can confirm they reached
+    # disk; without this the data lived only on cand.scores in memory
+    # and never appeared in the user-facing CSV.
+    cols = [
+        "rank", "candidate_id", "mutations", "generator",
+        "final_score", "ml_score", "stability_ddg", "docking_score",
+        "md_lite_score",
+        # P0.5 — evidence class + Boltz delta source + pool tag
+        "evidence_class", "pool", "boltz_delta_source",
+        "uncertainty",
+        # P0.1 / P0.3 — pose validity + PLIF recovery + method disagreement
+        "pose_validity_status", "plif_recovery", "plif_recovery_min",
+        "docking_method_disagreement",
+        # P0.6 — MD provenance (FF / HMR / replicas / did-run)
+        "md_did_run", "md_passed", "md_status",
+        "md_ligand_forcefield", "md_hmr_enabled",
+        "md_timestep_fs", "md_replicas_run",
+    ]
     with p.open("w", newline="") as fh:
         wri = csv.writer(fh)
-        wri.writerow(
-            ["rank", "candidate_id", "mutations", "generator", "final_score",
-             "ml_score", "stability_ddg", "docking_score", "md_lite_score"]
-        )
+        wri.writerow(cols)
         for i, c in enumerate(ranked, 1):
-            wri.writerow(
-                [i, c.candidate_id, c.mutation_str, c.generator,
-                 c.scores.get("final_score", 0.0), c.scores.get("ml_score", 0.0),
-                 c.scores.get("ddg_fold", 0.0), c.scores.get("docking_score", 0.0),
-                 c.scores.get("md_lite_score", 0.0)]
-            )
+            wri.writerow([
+                i, c.candidate_id, c.mutation_str, c.generator,
+                c.scores.get("final_score", 0.0),
+                c.scores.get("ml_score", 0.0),
+                c.scores.get("ddg_fold", 0.0),
+                c.scores.get("docking_score", 0.0),
+                c.scores.get("md_lite_score", 0.0),
+                # P0.5
+                c.scores.get("evidence_class", c.details.get("evidence_class", "")),
+                c.scores.get("pool", c.details.get("pool", "")),
+                c.scores.get("boltz_delta_source",
+                             c.details.get("boltz_delta_source", "")),
+                c.scores.get("uncertainty", ""),
+                # P0.1 / P0.3
+                c.scores.get("pose_validity_status", ""),
+                c.scores.get("plif_recovery", ""),
+                c.scores.get("plif_recovery_min", ""),
+                c.scores.get("docking_method_disagreement", ""),
+                # P0.6
+                c.scores.get("md_did_run", ""),
+                int(bool(c.details.get("md_passed"))) if "md_passed" in c.details else "",
+                c.scores.get("md_status", ""),
+                c.scores.get("md_ligand_forcefield", ""),
+                c.scores.get("md_hmr_enabled", ""),
+                c.scores.get("md_timestep_fs", ""),
+                c.scores.get("md_replicas_run", ""),
+            ])
     return p
 
 
