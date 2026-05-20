@@ -22,12 +22,19 @@ input:
   target_id: fdh
   target_fasta: examples/fdh/target.fasta
   ligand:
+    # type='cofactor' lets the curated library resolve the SMILES from
+    # (name, target_ph, cofactor_redox) - so we never again ship a NAD+
+    # SMILES labelled NADP (44 vs 48 heavy). For an explicit override,
+    # switch type to 'smiles' and paste the SMILES; the s01_input + doctor
+    # guards will still verify it matches the declared cofactor.
     id: NADP_cofactor
-    type: smiles
-    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
+    type: cofactor
+    value: NADP
   catalytic_residues: ["H155", "R285"]
   fixed_residues: ["G10", "G12", "H155", "R285"]
   cofactor: NADP
+  cofactor_redox: oxidized     # NADP+ binding/transition proxy for FDH
+  target_ph: 7.4
   ec_number: "1.2.1.2"
 
 homologs:

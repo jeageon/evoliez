@@ -21,6 +21,7 @@ from pathlib import Path
 from evoliez.adapters.boltz import _parse_real_structure
 from evoliez.adapters.openmm_engine import run_md
 from evoliez.config import Backend, load_config
+from evoliez.features.cofactors import resolve_ligand_spec
 from evoliez.features.ligand import parse_ligand
 from evoliez.md.analysis import analyse
 
@@ -43,7 +44,7 @@ def main() -> int:
             l.strip() for l in Path(ic.target_fasta).read_text().splitlines()
             if l and not l.startswith(">")
         ).upper()
-    ligand = parse_ligand(ic.ligand)
+    ligand = parse_ligand(resolve_ligand_spec(ic))
 
     # Build the WT complex straight from the real Boltz output, then point
     # its structure at that same full-atom PDB so the MD adapter uses it.

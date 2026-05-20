@@ -182,6 +182,38 @@ def _check_config(r: Report, config_path: str) -> None:
         r.add("config:gnn", WARN,
               "gnn.enabled but torch missing -> heuristic fallback")
 
+    # cofactor vs ligand-formula guard (curated NAD/NADP/...): catches
+    # 'cofactor: NADP' + NAD+ SMILES at preflight so MD never sees the
+    # wrong species. BLOCK on real, WARN on mock (mock is allowed to
+    # iterate on placeholder ligands).
+    from evoliez.features.cofactors import (
+        check_cofactor_matches, formula_of, is_known_cofactor,
+        resolve_ligand_spec,
+    )
+
+    if is_known_cofactor(cfg.input.cofactor):
+        try:
+            eff = resolve_ligand_spec(cfg.input)
+            actual = (formula_of(eff.value) if eff.type == "smiles"
+                      else formula_of(cfg.input.ligand.value))
+            g = check_cofactor_matches(
+                cfg.input.cofactor, actual,
+                pH=cfg.input.target_ph,
+                redox_state=cfg.input.cofactor_redox,
+            )
+        except Exception as exc:
+            r.add("config:cofactor", BLOCK,
+                  f"could not resolve cofactor guard: {exc}")
+        else:
+            if g.ok:
+                r.add("config:cofactor", OK, g.message)
+            else:
+                r.add(
+                    "config:cofactor",
+                    BLOCK if cfg.backend is Backend.real else WARN,
+                    g.message,
+                )
+
     # A real run must NOT proceed on the bundled illustrative placeholder or
     # with catalytic/fixed tokens that disagree with the target sequence -
     # both silently corrupt the science (active-site protection + scoring).

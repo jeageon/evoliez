@@ -31,8 +31,16 @@ class _Base(BaseModel):
 # --------------------------------------------------------------------------- #
 class LigandInput(_Base):
     id: str = "ligand_X"
-    type: str = Field("smiles", description="smiles | sdf | mol2 | pdb | inchi | ccd")
-    value: str = Field(..., description="SMILES string or path to a structure file")
+    type: str = Field(
+        "smiles",
+        description="smiles | sdf | mol2 | pdb | inchi | ccd | cofactor",
+    )
+    # For type='cofactor', `value` is the cofactor family name (e.g. 'NADP')
+    # and InputConfig.target_ph / cofactor_redox resolve it to a curated
+    # canonical SMILES at run time (see evoliez.features.cofactors).
+    value: str = Field(
+        ..., description="SMILES string, structure path, or cofactor name"
+    )
 
 
 class InputConfig(_Base):
@@ -48,6 +56,11 @@ class InputConfig(_Base):
     known_binding_site: List[str] = Field(default_factory=list)
     cofactor: Optional[str] = None
     target_ph: float = 7.4
+    # Redox state for curated cofactors (NAD/NADP/...). If left None the
+    # resolver picks 'oxidized' (NAD(P)+ - the standard binding/transition
+    # proxy) and WARNs. Names that already encode redox ('NADPH', 'NADH')
+    # win over this field.
+    cofactor_redox: Optional[str] = None
     organism: Optional[str] = None
     ec_number: Optional[str] = None
     experimental_dataset: Optional[str] = None
@@ -106,7 +119,7 @@ class DockingConfig(_Base):
     poses_per_candidate: int = 10
     pose_rmsd_cluster: float = 2.0
     # AutoDock Vina is O(exhaustiveness x ligand flexibility). A big flexible
-    # cofactor like NADP (44 heavy, ~11 rotatable) at the default
+    # cofactor like NADP+ (48 heavy, ~13 rotatable) at the default
     # exhaustiveness=8 with no time bound can run for hours and, with
     # captured stdout, *looks* hung. Bound it; smoke configs drop it further.
     exhaustiveness: int = 8

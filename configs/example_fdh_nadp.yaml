@@ -15,9 +15,13 @@ input:
   target_id: fdh
   target_fasta: examples/fdh/target.fasta
   ligand:
+    # type='cofactor' lets evoliez.features.cofactors resolve the SMILES
+    # from (cofactor, target_ph, cofactor_redox). Previously this config
+    # hard-coded an NAD+ SMILES under id NADP_cofactor (44 vs 48 heavy) -
+    # the s01_input + doctor guards now refuse that exact mismatch.
     id: NADP_cofactor
-    type: smiles
-    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
+    type: cofactor
+    value: NADP
   # NOTE: examples/fdh/target.fasta is an ILLUSTRATIVE placeholder. Tokens
   # are self-consistent with that sequence (His@154, Arg@285, Gly@15/33) so
   # the mock example is coherent - NOT a verified FDH active site. Replace
@@ -26,6 +30,7 @@ input:
   catalytic_residues: ["H154", "R285"]
   fixed_residues: ["G15", "G33", "H154", "R285"]
   cofactor: NADP
+  cofactor_redox: oxidized     # NADP+ binding/transition proxy for FDH
   target_ph: 7.5
   organism: "Cupriavidus necator"
   ec_number: "1.2.1.2"

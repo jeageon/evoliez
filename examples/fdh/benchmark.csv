@@ -1,11 +1,10 @@
 mutation,label,activity
-E85S,beneficial,2.3
-E85N,beneficial,1.9
-E85T,beneficial,1.6
-F84L,beneficial,1.7
-F84M,beneficial,1.4
-E85Y,neutral,1.0
-F84I,neutral,0.95
+E85L,beneficial,2.3
+F84Y,beneficial,1.9
+F84W,beneficial,1.7
+E87Q,beneficial,1.6
+E85V,neutral,1.0
+E87N,neutral,0.95
 V155A,deleterious,0.04
 R285E,deleterious,0.06
 V155G,deleterious,0.08

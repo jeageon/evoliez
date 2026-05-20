@@ -12,7 +12,11 @@ def test_example_config_loads():
     assert cfg.project.objective == "cofactor_switching"
     assert cfg.backend is Backend.mock
     assert "ligandmpnn" in cfg.mutation_generation.methods
-    assert cfg.input.ligand.type == "smiles"
+    # Curated cofactor declaration (resolved to canonical NADP+ at run
+    # time by evoliez.features.cofactors); was hard-coded as a 'smiles'
+    # that actually carried NAD+ - the bug this whole layer prevents.
+    assert cfg.input.ligand.type == "cofactor"
+    assert cfg.input.ligand.value.upper() == "NADP"
 
 
 def test_default_config_loads():

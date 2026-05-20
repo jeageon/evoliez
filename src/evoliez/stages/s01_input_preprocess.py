@@ -6,6 +6,11 @@ import re
 
 from evoliez.context import RunContext
 from evoliez.db.schema import Sequence
+from evoliez.features.cofactors import (
+    check_cofactor_matches,
+    formula_of,
+    resolve_ligand_spec,
+)
 from evoliez.features.ligand import parse_ligand
 from evoliez.stages.base import Stage
 
@@ -75,7 +80,30 @@ class InputPreprocessStage(Stage):
         (ctx.paths.inputs / "target.fasta").write_text(
             f">{cfg.target_id}\n{seq}\n"
         )
-        ligand = parse_ligand(cfg.ligand)
+        # Resolve ligand.type='cofactor' to a curated SMILES (pH + redox
+        # driven) BEFORE parsing, then run the formula guard. A declared
+        # cofactor whose SMILES doesn't match the curated species is a
+        # silent data-integrity bug (the original "GAFF can't parameterise
+        # NADP" was actually NAD+ in NADP's clothing) - fail loudly here so
+        # MD never sees the wrong molecule.
+        eff_spec = resolve_ligand_spec(cfg)
+        ligand = parse_ligand(eff_spec)
+        # Use the SMILES (the source of truth) for the formula guard so
+        # this works identically with or without RDKit; parse_ligand's
+        # synthetic fallback samples elements stochastically and would
+        # falsely trip the guard otherwise.
+        guard = check_cofactor_matches(
+            cfg.cofactor,
+            formula_of(eff_spec.value) if eff_spec.type == "smiles"
+            else formula_of(cfg.ligand.value),
+            pH=cfg.target_ph, redox_state=cfg.cofactor_redox,
+        )
+        if not guard.ok:
+            raise ValueError(
+                "input.cofactor / input.ligand mismatch: " + guard.message
+            )
+        if guard.expected is not None:
+            self.log.info("cofactor guard: %s", guard.message)
         (ctx.paths.inputs / "ligand.smi").write_text(
             f"{ligand.smiles}\t{ligand.id}\n"
         )
@@ -125,7 +153,7 @@ class InputPreprocessStage(Stage):
             return False
         seq = _read_fasta(str(fa))
         ctx.put("target_sequence", seq)
-        ctx.put("ligand", parse_ligand(ctx.config.input.ligand))
+        ctx.put("ligand", parse_ligand(resolve_ligand_spec(ctx.config.input)))
         ctx.put("catalytic_positions", ctx.meta("catalytic_positions", []))
         ctx.put(
             "fixed_positions",

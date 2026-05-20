@@ -12,9 +12,13 @@ input:
   target_id: fdh
   target_fasta: examples/fdh/target.fasta
   ligand:
+    # Resolved by evoliez.features.cofactors from (cofactor, target_ph,
+    # cofactor_redox). Smoke runs the SAME species as the server config so
+    # 'smoke passed, server broke' on the ligand can't happen; flip
+    # cofactor_redox below or override with type='smiles' for variants.
     id: NADP_cofactor
-    type: smiles
-    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
+    type: cofactor
+    value: NADP
   # NOTE: examples/fdh/target.fasta is an ILLUSTRATIVE placeholder. These
   # tokens are chosen to be self-consistent with that sequence (His@154,
   # Arg@285, Gly@15/33) so the wiring smoke is clean - they are NOT a
@@ -23,6 +27,8 @@ input:
   catalytic_residues: ["H154", "R285"]
   fixed_residues: ["G15", "G33", "H154", "R285"]
   cofactor: NADP
+  cofactor_redox: oxidized     # NADP+ binding/transition proxy for FDH
+  target_ph: 7.4
   ec_number: "1.2.1.2"
 
 homologs:
