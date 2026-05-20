@@ -135,7 +135,126 @@ def _ligand_rdkit_at_pose(pdb_path: Path, smiles: str):
     return rd
 
 
+def _graph_match_pose_to_smiles(pose_rd, ref_rd):
+    """Heavy-atom graph isomorphism between a pose-derived RDKit mol and
+    the SMILES-canonical OFF mol's RDKit form.
+
+    Returns a list ``ref_heavy_index_for_pose_heavy[i]`` so the caller
+    can copy `pose_rd`'s heavy-atom coordinates onto OFF atom order.
+    Bonds are made generic in the query so aromatic/Kekule perception
+    differences between the PDB-derived and SMILES-derived mols don't
+    break the isomorphism. Raises on count or connectivity mismatch.
+    """
+    from rdkit import Chem
+
+    # Strip H from BOTH so the match is purely on the heavy-atom skeleton.
+    # The PDB-derived pose can have an inconsistent H count (NADP+ AddHs
+    # in particular adds only 1 H to the multiply-charged species - that
+    # is the server-observed bug); the SMILES-canonical OFF mol has the
+    # right H count via Molecule.from_smiles, so we use SMILES for H.
+    pose_heavy = Chem.RemoveHs(Chem.Mol(pose_rd))
+    ref_heavy = Chem.RemoveHs(Chem.Mol(ref_rd))
+    if pose_heavy.GetNumAtoms() != ref_heavy.GetNumAtoms():
+        raise ValueError(
+            f"heavy-atom count mismatch: pose has "
+            f"{pose_heavy.GetNumAtoms()}, SMILES expects "
+            f"{ref_heavy.GetNumAtoms()}"
+        )
+    qp = Chem.AdjustQueryParameters.NoAdjustments()
+    qp.makeBondsGeneric = True
+    query = Chem.AdjustQueryProperties(Chem.Mol(pose_heavy), qp)
+    match = ref_heavy.GetSubstructMatch(query, useChirality=False)
+    if len(match) != pose_heavy.GetNumAtoms():
+        raise ValueError(
+            "heavy-atom graph match failed: pose connectivity doesn't "
+            "match the SMILES skeleton (only "
+            f"{len(match)}/{pose_heavy.GetNumAtoms()} atoms mapped)"
+        )
+    return match, pose_heavy, ref_heavy
+
+
 def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
+    """OpenFF Molecule whose CHEMISTRY is the authoritative SMILES (canonical
+    OpenFF atom order, all explicit H) and whose conformer carries the
+    BOLTZ POSE heavy-atom coordinates transferred via graph isomorphism.
+
+    Why this exists: the previous `_ligand_rdkit_at_pose` + `from_rdkit`
+    path was server-verified to drop H atoms on multiply-charged species
+    (NADP+ at -3: AddHs added only 1 H out of the expected ~25). The
+    resulting OFF mol had 49 atoms not 73, and `system_generator.create_
+    system` then failed with "No template for residue LIG ... similar to
+    DLPS, missing 57 H atoms". This rewrite uses `Molecule.from_smiles`
+    as the chemistry/atom-count source of truth and only transfers HEAVY
+    atom coordinates from the Boltz pose (H positions come from an RDKit
+    embed - MD minimization relaxes them).
+    """
+    import numpy as np
+    from openff.toolkit import Molecule
+    from openff.units import unit as offunit
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    # 1. SMILES-canonical OFF chemistry (73 atoms for NADP+: heavy 48 + H 25).
+    offmol = Molecule.from_smiles(smiles, allow_undefined_stereo=True)
+    offmol.name = "LIG"
+    ref_rd = offmol.to_rdkit()
+
+    # 2. Pose-only RDKit mol (heavy-atom positions only).
+    het = [
+        ln for ln in Path(pdb_path).read_text().splitlines()
+        if ln.startswith(("HETATM", "CONECT"))
+    ]
+    if not any(ln.startswith("HETATM") for ln in het):
+        raise ValueError("no ligand HETATM records in the predicted PDB")
+    pose_rd = Chem.MolFromPDBBlock(
+        "\n".join(het) + "\nEND\n",
+        removeHs=False, sanitize=False, proximityBonding=True,
+    )
+    if pose_rd is None:
+        raise ValueError("RDKit could not read the ligand PDB block")
+    tmpl = Chem.MolFromSmiles(smiles)
+    if tmpl is None:
+        raise ValueError(f"unparsable ligand SMILES: {smiles!r}")
+    pose_rd = AllChem.AssignBondOrdersFromTemplate(tmpl, pose_rd)
+    Chem.SanitizeMol(pose_rd)
+
+    # 3. Heavy-atom graph isomorphism: pose -> SMILES (OFF) order.
+    match, pose_heavy, ref_heavy = _graph_match_pose_to_smiles(
+        pose_rd, ref_rd,
+    )
+
+    # 4. Embed `ref_rd` to seed H positions; overwrite heavy-atom
+    #    coordinates with the pose. MD minimization later relaxes Hs.
+    ref_em = Chem.Mol(ref_rd)
+    if AllChem.EmbedMolecule(ref_em, randomSeed=0xC0FFEE) != 0:
+        AllChem.EmbedMolecule(ref_em, useRandomCoords=True)
+    try:
+        AllChem.MMFFOptimizeMolecule(ref_em)
+    except Exception:
+        pass
+
+    # Heavy atoms in ref_rd (and ref_em, same atom order). RemoveHs preserves
+    # heavy-atom relative ordering, so the i-th heavy atom in ref_heavy is
+    # the i-th heavy atom we encounter when iterating ref_rd's atoms.
+    heavy_in_ref = [i for i, a in enumerate(ref_rd.GetAtoms())
+                    if a.GetAtomicNum() != 1]
+
+    em_conf = ref_em.GetConformer()
+    pose_heavy_conf = pose_heavy.GetConformer()
+    for pose_i, ref_heavy_idx in enumerate(match):
+        ref_atom = heavy_in_ref[ref_heavy_idx]
+        p = pose_heavy_conf.GetAtomPosition(pose_i)
+        em_conf.SetAtomPosition(ref_atom, (p.x, p.y, p.z))
+
+    coords = np.zeros((offmol.n_atoms, 3), dtype=float)
+    for i in range(offmol.n_atoms):
+        p = em_conf.GetAtomPosition(i)
+        coords[i] = (p.x, p.y, p.z)
+    offmol.add_conformer(coords * offunit.angstrom)
+    return offmol
+
+
+def _ligand_offmol_at_pose_LEGACY(pdb_path: Path, smiles: str):
     """OpenFF Molecule for the ligand at the Boltz pose (thin wrapper over
     the RDKit builder; OpenFF is conda-only so this line is server-only)."""
     from openff.toolkit import Molecule
