@@ -109,16 +109,24 @@ def _intended_seq_for(label: str) -> str:
     # check: discovered structure file MUST be under boltz_results_<label>_*.
     return wt_seq  # any seq works for the discovery check
 
-# Patch the binary run so predict_complex skips the boltz GPU invocation
-# but still walks the discovery + parsing path. dry_run=False keeps the
-# real discovery branch active.
+# Patch the binary run + tool-presence check so predict_complex skips the
+# boltz GPU invocation AND the PATH guard (production envs may not have
+# boltz on PATH while still having the per-mutant outputs on disk from a
+# previous run). dry_run=False keeps the real discovery branch active.
 calls = []
 def noop_run(cmd, *args, **kwargs):
     calls.append(list(cmd) if isinstance(cmd, (list, tuple)) else [cmd])
     return None
 
+def noop_require(executable, *args, **kwargs):
+    return executable
+
 results = []
-with patch.object(boltz, "run", side_effect=noop_run):
+# `require` is imported from evoliez.utils.subprocess_utils inside boltz,
+# so patch the symbol in boltz's namespace too.
+with patch.object(boltz, "run", side_effect=noop_run), \
+        patch.object(boltz, "require", side_effect=noop_require), \
+        patch("evoliez.utils.gpu.apply_gpu_selection", lambda *a, **k: None):
     for label in labels:
         try:
             cx = boltz.predict_complex(
