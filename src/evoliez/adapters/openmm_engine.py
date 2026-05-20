@@ -271,6 +271,54 @@ class _LigandParamUnsupported(Exception):
     skip)."""
 
 
+def _gasteiger_charge_system_generator(off_lig, workdir: Path):
+    """A SystemGenerator that uses RDKit Gasteiger partial charges instead
+    of antechamber AM1-BCC. For NADP-class cofactors where sqm hard-fails
+    on AM1-BCC (server-verified: 'antechamber: Fatal Error! Cannot
+    properly run sqm ...') this gives a working - if less rigorous -
+    parameterization that completes in SECONDS. The hierarchy in
+    _run_real puts the curated Bryce Lab path above this; this tier is
+    the self-contained fallback when curated files aren't on disk yet.
+
+    Raises :class:`_LigandParamUnsupported` if even Gasteiger fails (so
+    the dispatcher in _run_real classifies as skipped_parameterization,
+    consistent with the AM1-BCC probe's failure mode).
+    """
+    import openmm.app as app
+    from openff.toolkit.utils.toolkits import RDKitToolkitWrapper
+    from openmmforcefields.generators import SystemGenerator
+
+    try:
+        # Pre-assign charges on the OFF molecule; openmmforcefields'
+        # GAFFTemplateGenerator skips its own charge calc when
+        # mol.partial_charges is already set, so AM1-BCC / sqm never run.
+        off_lig.assign_partial_charges(
+            "gasteiger", toolkit_registry=RDKitToolkitWrapper(),
+        )
+        sg = SystemGenerator(
+            forcefields=["amber14-all.xml", "implicit/obc2.xml"],
+            small_molecule_forcefield="gaff-2.11",
+            molecules=[off_lig],
+            cache=str(workdir / "ff_cache_gasteiger.json"),
+            forcefield_kwargs={"constraints": app.HBonds},
+            nonperiodic_forcefield_kwargs={
+                "nonbondedMethod": app.CutoffNonPeriodic,
+            },
+        )
+        sg.create_system(                       # PROBE: ligand alone
+            off_lig.to_topology().to_openmm(), molecules=[off_lig]
+        )
+        log.info(
+            "ligand parameterized with gaff-2.11 + Gasteiger charges "
+            "(AM1-BCC bypassed)"
+        )
+        return sg
+    except Exception as exc:
+        raise _LigandParamUnsupported(
+            f"Gasteiger-charge GAFF probe failed: {str(exc)[:200]}"
+        )
+
+
 def _ligand_system_generator(off_lig, workdir: Path):
     """A SystemGenerator whose small-molecule FF can ACTUALLY parameterize
     this ligand. Probe ligand-only create_system per FF: gaff-2.11, then
@@ -561,13 +609,34 @@ def _run_real(
             )
 
     if not took_curated:
-        # Ligand parameterization PROBE -> classify precisely: a ligand the
-        # small-molecule FFs can't handle (NADP-class cofactor) is the
-        # NEUTRAL skipped_parameterization (candidate judged on the other
-        # layers), NOT a hard failure. Only protein/assembly failures below
-        # are `failed`.
+        # 3-tier hierarchy for the (Tier 1 missed) cofactor / drug-like
+        # ligand cases:
+        #   Tier 2 (NEW): known cofactor without curated files -> GAFF +
+        #     Gasteiger charges. Server-verified: AM1-BCC sqm hard-fails on
+        #     real NADP+, so for a known cofactor we SKIP the AM1-BCC probe
+        #     entirely and go straight to Gasteiger (no QM, finishes in
+        #     seconds, slightly lower charge fidelity than AM1-BCC). This
+        #     keeps the pipeline UNBLOCKED while the Bryce Lab files are
+        #     being sourced for Tier 1.
+        #   Tier 3 (existing): drug-like ligand -> AM1-BCC probe per FF
+        #     (gaff-2.11 then espaloma-0.3.2 if installed) - the standard
+        #     production charge model for non-cofactor ligands.
+        # Either tier raising _LigandParamUnsupported -> NEUTRAL
+        # skipped_parameterization (the candidate is judged on the other
+        # layers; same status as the existing AM1-BCC-only path).
         try:
-            system_generator, _ff = _ligand_system_generator(off_lig, workdir)
+            if curated_spec is not None:
+                log.info(
+                    "known cofactor %s without curated AMBER files -> "
+                    "Gasteiger-charge GAFF (skips AM1-BCC which hard-fails "
+                    "for this class)", curated_spec.name,
+                )
+                system_generator = _gasteiger_charge_system_generator(
+                    off_lig, workdir,
+                )
+                _ff = "gaff-2.11+gasteiger"
+            else:
+                system_generator, _ff = _ligand_system_generator(off_lig, workdir)
         except _LigandParamUnsupported as exc:
             log.warning(
                 "no small-molecule FF can parameterize the ligand for %s "

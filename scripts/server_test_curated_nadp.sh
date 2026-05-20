@@ -76,70 +76,100 @@ if [ ${PIPESTATUS[0]} -ne 0 ]; then
     exit 2
 fi
 
-# ----- Step 1: fetch hint -------------------------------------------------
-banner "Step 1: Bryce Lab files (fetch if missing)"
-if ! ls amber/cofactors/*.frcmod >/dev/null 2>&1; then
-    say "[server_test]   amber/cofactors/ has no .frcmod files."
-    say "[server_test]   run: bash scripts/fetch_amber_cofactors.sh"
-    say "[server_test]   or:  drop NAD/NDH/NAP/NDP {.lib,.frcmod,.mol2} manually"
-    say "[server_test]   then re-run this script. Aborting Step 2+."
-    exit 3
+# ----- Step 1: tier-1 files (Bryce Lab) inventory --------------------------
+banner "Step 1: Bryce Lab files for Tier 1 (optional)"
+if ls amber/cofactors/*.frcmod >/dev/null 2>&1; then
+    say "[server_test]   amber/cofactors/ has files -> Tier 1 (curated) will be tried"
+    ls -la amber/cofactors/ | tee -a "$LOG"
+    HAVE_CURATED=1
+else
+    say "[server_test]   amber/cofactors/ empty -> Tier 1 will be skipped"
+    say "[server_test]   Tier 2 (Gasteiger-charge GAFF) is the fallback for known"
+    say "[server_test]   cofactors and gets exercised below. To enable Tier 1:"
+    say "[server_test]     bash scripts/fetch_amber_cofactors.sh   # may need URL"
+    say "[server_test]     OR drop Bryce Lab .lib/.frcmod manually into amber/cofactors/"
+    HAVE_CURATED=0
 fi
-ls -la amber/cofactors/ | tee -a "$LOG"
 
-# ----- Step 2: curated probe (the headline) -------------------------------
-banner "Step 2: curated tleap probe on REAL NADP+ (VERDICT)"
+# ----- Step 2: VERDICT - whichever tier actually parameterizes real NADP+ -
+banner "Step 2: parameterization VERDICT on REAL NADP+"
 python - <<'PY' 2>&1 | tee -a "$LOG"
 import tempfile, traceback
 from pathlib import Path
 from openff.toolkit import Molecule
-from evoliez.features.cofactors import resolve_cofactor, lookup_by_smiles
+from evoliez.features.cofactors import resolve_cofactor
 from evoliez.adapters.openmm_engine import (
-    _ligand_offmol_at_pose, _curated_param_system_generator,
-    _CuratedParamUnavailable, _write_ligand_pdb,
+    _curated_param_system_generator, _CuratedParamUnavailable,
+    _gasteiger_charge_system_generator, _LigandParamUnsupported,
 )
 
 spec = resolve_cofactor("NADP", redox_state="oxidized")
 print(">> spec      :", spec.name, "  res:", spec.amber_residue_name)
 files = spec.resolved_amber_files()
 print(">> files     :", files)
-if files is None:
-    print(">> VERDICT   : NO BRYCE LAB FILES -> curated dispatch can't run")
-    raise SystemExit(0)
 
-# Build OFF mol with a conformer (no Boltz PDB needed for the probe).
+# Real OFF mol w/ conformer (no Boltz PDB needed for ligand-only probe).
 off = Molecule.from_smiles(spec.smiles, allow_undefined_stereo=True)
 off.name = "LIG"
 off.generate_conformers(n_conformers=1)
 print(">> OFF mol   :", off.n_atoms, "atoms incl. H")
 
-# A protein-only PDB is required - use a captured Boltz output (CA-only is
-# fine here because the curated probe runs PDBFixer; we only need SOMETHING
-# protein-like). If user has a real full-atom PDB, pass it as $1 to this
-# script and we'll use that path; otherwise fall back to the captured one.
-import sys, os
-protein_pdb = Path(os.environ.get("WT_PDB", "tests/fixtures/tool_outputs/captured/boltz_real.pdb"))
-print(">> protein   :", protein_pdb, "exists =", protein_pdb.exists())
+import os
+protein_pdb = Path(os.environ.get(
+    "WT_PDB", "tests/fixtures/tool_outputs/captured/boltz_real.pdb",
+))
+work = Path(tempfile.mkdtemp(prefix="probe_"))
+verdict = None
 
-work = Path(tempfile.mkdtemp(prefix="curated_probe_"))
+# Tier 1: curated AMBER (tleap) ---------------------------------------------
+if files is not None:
+    try:
+        system, topology, positions = _curated_param_system_generator(
+            off, protein_pdb, spec, work,
+        )
+        n_lig = sum(1 for a in topology.atoms()
+                    if a.residue.name == spec.amber_residue_name)
+        print(">> Tier 1    : CURATED (tleap)  OK")
+        print(f">>   system  : {system.getNumParticles()} particles")
+        print(f">>   ligand  : {n_lig} atoms (resname {spec.amber_residue_name})")
+        verdict = "TIER1_CURATED_OK"
+    except _CuratedParamUnavailable as exc:
+        print(">> Tier 1    : FILES MISSING ->", exc)
+    except Exception:
+        print(">> Tier 1    : tleap FAILED (real MD failure, not param)")
+        traceback.print_exc()
+        verdict = "TIER1_CURATED_FAILED"
+else:
+    print(">> Tier 1    : SKIPPED (no curated files)")
+
+# Tier 2: Gasteiger-charge GAFF ---------------------------------------------
+# Always exercise this so the fallback is verified independently, even if
+# Tier 1 succeeded. (Production dispatch picks Tier 1 first.)
 try:
-    system, topology, positions = _curated_param_system_generator(
-        off, protein_pdb, spec, work,
-    )
-    n_lig = sum(1 for a in topology.atoms()
-                if a.residue.name == spec.amber_residue_name)
-    print(f">> VERDICT   : CURATED PARAMETERIZATION OK")
-    print(f">>   system  : {system.getNumParticles()} particles")
-    print(f">>   ligand  : {n_lig} atoms (resname {spec.amber_residue_name})")
-    print(">>   tleap files: prmtop +", str(work / "complex.inpcrd"))
-    print("   The curated AMBER path produces a working OpenMM System on")
-    print("   real NADP+ - the production bypass of GAFF/AM1-BCC works.")
-except _CuratedParamUnavailable as exc:
-    print(">> VERDICT   : FILES MISSING (re-check amber/cofactors/)")
-    print(">>   reason :", exc)
+    sg = _gasteiger_charge_system_generator(off, work)
+    print(">> Tier 2    : GASTEIGER GAFF      OK  (sg={})".format(
+        type(sg).__name__))
+    if verdict is None:
+        verdict = "TIER2_GASTEIGER_OK"
+except _LigandParamUnsupported as exc:
+    print(">> Tier 2    : Gasteiger FALLBACK FAILED ->", str(exc)[:200])
+    if verdict is None:
+        verdict = "TIER2_GASTEIGER_FAILED"
 except Exception:
-    print(">> VERDICT   : CURATED PROBE FAILED (real MD failure, not param)")
+    print(">> Tier 2    : Gasteiger PROBE CRASHED")
     traceback.print_exc()
+    if verdict is None:
+        verdict = "TIER2_GASTEIGER_CRASHED"
+
+print()
+print(">> VERDICT   :", verdict or "UNKNOWN")
+if verdict == "TIER2_GASTEIGER_OK":
+    print("   With Bryce Lab files missing, the Tier-2 self-contained")
+    print("   Gasteiger-charge GAFF path parameterizes real NADP+ in")
+    print("   seconds - pipeline is unblocked. When Bryce Lab files are")
+    print("   added later, Tier 1 will take over automatically.")
+elif verdict == "TIER1_CURATED_OK":
+    print("   Curated AMBER path is operational - best-in-class params.")
 PY
 
 # ----- Step 3: dispatch lookup sanity -------------------------------------
@@ -174,8 +204,8 @@ banner "Summary (paste back)"
     echo "env:    ${CONDA_DEFAULT_ENV:-?}"
     echo "--- Step 0 (bryce files)"
     grep -E "bryce:" "$LOG" | head -8
-    echo "--- Step 2 (VERDICT)"
-    grep -E ">> VERDICT|>>   system|>>   ligand|>>   reason" "$LOG"
+    echo "--- Step 2 (tier verdicts)"
+    grep -E "^>> Tier [12]|^>> VERDICT|^>>   system|^>>   ligand" "$LOG"
     echo "--- Step 3 (dispatch lookup)"
     grep -E "OK|WRONG" "$LOG" | grep -v "config:" | tail -4
     echo "--- Step 4 (end-to-end)"

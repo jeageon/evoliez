@@ -34,6 +34,45 @@ def test_run_real_dispatches_to_curated_before_gaff_probe():
     assert 'failure_reason=f"curated tleap' in src
 
 
+def test_gasteiger_tier_is_wired_between_curated_and_am1bcc():
+    src = inspect.getsource(openmm_engine._run_real)
+    gas = inspect.getsource(openmm_engine._gasteiger_charge_system_generator)
+
+    # Tier 2 exists and gates on a known cofactor without curated files.
+    assert "_gasteiger_charge_system_generator" in src
+    assert 'gaff-2.11+gasteiger' in src
+    # Order is curated -> Gasteiger -> AM1-BCC: curated branch appears in
+    # the source BEFORE Gasteiger, which appears BEFORE _ligand_system_generator.
+    pos_curated  = src.index("_curated_param_system_generator(")
+    pos_gas      = src.index("_gasteiger_charge_system_generator(")
+    pos_am1bcc   = src.index("_ligand_system_generator(")
+    assert pos_curated < pos_gas < pos_am1bcc, (
+        "tier order regressed: must be curated -> Gasteiger -> AM1-BCC probe"
+    )
+
+    # Gasteiger generator uses RDKit Gasteiger charges (not am1bcc) and
+    # converts a probe failure into _LigandParamUnsupported so the
+    # dispatcher uniformly maps it to skipped_parameterization.
+    assert "gasteiger" in gas.lower()
+    assert "RDKitToolkitWrapper" in gas
+    assert "assign_partial_charges" in gas
+    assert "_LigandParamUnsupported" in gas
+    # ligand-alone probe so a failure surfaces here, not later
+    assert "create_system" in gas
+
+
+def test_drug_like_ligand_still_uses_am1bcc_probe():
+    # A non-cofactor (curated_spec is None) must NOT short-circuit into
+    # the Gasteiger tier - drug-like ligands keep the standard AM1-BCC
+    # production charge model.
+    src = inspect.getsource(openmm_engine._run_real)
+    assert "if curated_spec is not None:" in src
+    # The else-branch calls the original AM1-BCC probe.
+    after_if = src.split("if curated_spec is not None:")[1]
+    assert "else:" in after_if
+    assert "_ligand_system_generator(off_lig, workdir)" in after_if
+
+
 def test_curated_generator_signals_missing_files_distinctly():
     # _CuratedParamUnavailable is the missing-files-on-disk signal; only the
     # dispatcher catches it (-> fall back to probe). A REAL tleap failure
