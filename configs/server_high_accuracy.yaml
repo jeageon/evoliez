@@ -1,0 +1,133 @@
+# Server-grade HIGH-ACCURACY profile (PROGRAM_IMPROVEMENT_PLAN P0.3).
+#
+# Adds:
+#  - diffusion docking for pose SAMPLING (DiffDock)
+#  - GNINA 1.3 CNN rescoring (CNNscore / CNN_VS / CNN_affinity persisted)
+#  - Vina as the physics anchor
+#  - all configured methods are exercised in s09 (P0.1 commit), so any
+#    method disagreement on key catalytic/cofactor contacts surfaces in
+#    the final report rather than being hidden behind the first method.
+#
+# Use this profile when you have a known binding site / catalytic
+# residues and want the redocking pipeline to disagree LOUDLY when one
+# method places the ligand somewhere the others don't agree on.
+#
+# Pre-requisites on the host:
+#  - gnina >= 1.3 (CNN scoring), vina, obabel, DiffDock checkpoint + env
+#  - the same MD / cofactor stack used by configs/server_fdh_nadp.yaml
+#
+# Usage:
+#   evoliez run -c configs/server_high_accuracy.yaml
+#   bash scripts/server_smoke.sh dock configs/server_high_accuracy.yaml
+
+project:
+  name: fdh_nadp_high_accuracy
+  objective: cofactor_switching
+  output_dir: /mnt/data2/evoligand/runs/fdh_nadp_hi
+
+input:
+  target_id: fdh
+  target_fasta: examples/fdh/target.fasta
+  ligand:
+    id: NADP_cofactor
+    type: cofactor
+    value: NADP
+  catalytic_residues: ["H155", "R285"]
+  fixed_residues: ["G10", "G12", "H155", "R285"]
+  known_binding_site: ["H155", "R285", "I122", "C254"]   # steers Boltz + s09 PLIF
+  cofactor: NADP
+  cofactor_redox: oxidized
+  target_ph: 7.4
+  ec_number: "1.2.1.2"
+
+homologs:
+  method: mmseqs2
+  database: /mnt/data2/evoligand/db/uniref30_2302/uniref30_2302_db
+  max_sequences: 20000
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 80
+  # P0.2: deep WT ensemble so per-sample disagreement is a meaningful signal
+  diffusion_samples: 30
+  pocket_constraints: true                # uses input.known_binding_site
+  predict_affinity: true
+
+interaction_model:
+  enabled: true
+  representative_homologs: 80
+  poses_per_homolog: 15
+  # P0.3: docking method used to BUILD the interaction-graph training set;
+  # diffdock samples diverse poses, then GNINA 1.3 rescores.
+  docking_method: diffdock
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: true
+  build_dataset: true
+  checkpoint: checkpoints/evoligand_gnn.pt
+  hidden_dim: 256
+  layers: 6
+  radius_lr: 6.0
+  radius_rr: 9.0
+  lr: 0.001
+  epochs: 60
+  amp: true
+  ddp: false
+
+mutation_generation:
+  # P0.4 (next commit): LigandMPNN will be primary on real GPU profiles;
+  # kept here to indicate the intended default.
+  methods: [chemistry_rules, msa_sampler, ligandmpnn]
+  max_candidates: 8000
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 500
+  top_for_md: 30
+  mutant_boltz_enabled: true
+  mutant_boltz_top_n: 50
+  mutant_boltz_diffusion_samples: 10
+
+validation:
+  redocking:
+    # P0.3: ALL configured methods are exercised by s09_nonmd_validation
+    # (the loop over dcfg.methods, not dcfg.methods[0]). Method-level
+    # disagreement on score / RMSD / PLIF becomes a candidate-quality
+    # signal in the reranker and the final evidence class.
+    methods: [diffdock, gnina, vina]
+    poses_per_candidate: 10
+    exhaustiveness: 8
+    cpu: 8
+    timeout_s: 1800
+  stability:
+    method: foldx
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    protocol_level: 2
+    solvent: implicit
+    production_ns: 2.0
+    top_candidates: 30
+
+scoring:
+  gnn: 1.5
+  family_interaction: 1.0
+
+output:
+  final_library_size: 96
+  top_single_mutants: 50
+  report_format: [markdown, csv, pymol_session]
+
+backend: real
+seed: 1234
