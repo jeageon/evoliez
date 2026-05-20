@@ -201,14 +201,15 @@ banner "Summary (paste this block back)"
     echo "branch: $(git rev-parse --abbrev-ref HEAD)  HEAD: $(git rev-parse --short HEAD)"
     echo "env:    ${CONDA_DEFAULT_ENV:-?}"
     echo "--- Step 1 (config:cofactor on shipped configs)"
-    grep -E "config:cofactor" "$LOG" | head -6
+    # Only doctor row lines (start with [OK]/[WARN]/[BLOCK]); skip banners.
+    grep -E "^\[(OK|WARN|BLOCK)\][[:space:]]+config:cofactor" "$LOG" | head -6
     echo "--- Step 2 (deliberate mismatch)"
-    grep -E "config:cofactor.*mismatch|looks like NAD" "$LOG" | head -2
+    grep -E "looks like NAD\+" "$LOG" | head -1
     echo "--- Step 3 (resolver formula)"
     grep -E "n_heavy=|formula=" "$LOG"
     echo "--- Step 4 (VERDICT)"
-    grep -E ">> VERDICT|>>   reason" "$LOG"
+    grep -E "^>> VERDICT|^>>   reason" "$LOG"
     echo "--- Step 5 (end-to-end)"
-    grep -E ">> status|>> failure|>> REAL OpenMM MD path:" "$LOG"
+    grep -E "^>> status|^>> failure|^>> REAL OpenMM MD path:" "$LOG"
 } | tee -a "$LOG"
 say "[server_test] full log: $LOG"
