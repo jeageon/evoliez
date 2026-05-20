@@ -308,15 +308,39 @@ def _predict_real(
     if dry_run:
         return _predict_mock(label, sequence, ligand, cfg, outdir)
 
-    # Boltz writes predictions ONLY under boltz_results_*/ (predictions/...).
-    # Scope discovery there and exclude our own mock fallback (*_complex.pdb)
-    # so a stale/mock file is never mis-read as a real Boltz structure
-    # (previously a leftover wt_complex.pdb was stamped method=boltz2).
-    roots = sorted(outdir.glob("boltz_results_*"))
+    # Boltz writes predictions ONLY under boltz_results_<label>_boltz_input/
+    # (predictions/<label>_boltz_input/...). Scope discovery to THIS label's
+    # directory only - when multiple Boltz calls share the same out_dir
+    # (e.g., s08b runs per-mutant Boltz for several candidates into the
+    # same `complexes/mutant_boltz/`), an unscoped glob picks the
+    # alphabetically-first result and silently returns it for every
+    # candidate. The sequence guard then fires for the OTHERS because
+    # `_pdb_one_letter_seq` of the wrong PDB doesn't match their intended
+    # mutant sequence - server-verified bug.
+    label_results = outdir / f"boltz_results_{label}_boltz_input"
+    roots = [label_results] if label_results.exists() else sorted(
+        # Backwards-compat path: some Boltz versions/CLI flags emit
+        # boltz_results_<label>/ without the _boltz_input suffix. Match
+        # only THIS label so the cross-contamination above can't happen.
+        outdir.glob(f"boltz_results_{label}*")
+    )
     found: List[Path] = []
     for root in roots:
         found += sorted(root.rglob("*.cif")) + sorted(root.rglob("*.pdb"))
     found = [p for p in found if not p.name.endswith("_complex.pdb")]
+    if not found:
+        # Last-resort fallback: an unscoped glob, but emit a loud warning
+        # so the cross-contamination case is visible if it ever recurs
+        # with a fresh Boltz version using yet another naming convention.
+        log.warning(
+            "Boltz produced no scoped output for %s under "
+            "boltz_results_%s_boltz_input/; falling back to wide glob "
+            "(cross-mutant contamination possible)", label, label,
+        )
+        roots = sorted(outdir.glob("boltz_results_*"))
+        for root in roots:
+            found += sorted(root.rglob("*.cif")) + sorted(root.rglob("*.pdb"))
+        found = [p for p in found if not p.name.endswith("_complex.pdb")]
     if not found:
         log.warning(
             "Boltz produced no prediction for %s "
@@ -325,12 +349,16 @@ def _predict_real(
         return _predict_mock(label, sequence, ligand, cfg, outdir)
 
     structure_file = found[0]
+    # Sample/affinity/plddt files are SCOPED to this candidate's boltz_results
+    # directory; sharing the parent out_dir across mutants would otherwise
+    # pull in the alphabetically-first mutant's metrics for every candidate.
+    sample_scope = roots[0] if roots else outdir
     cx = _parse_real_structure(structure_file, sequence, ligand)
     cx.method = cfg.primary_method
     cx.path = str(structure_file)
-    cx.samples = _parse_real_samples(outdir, cx.ligand.atoms)
+    cx.samples = _parse_real_samples(sample_scope, cx.ligand.atoms)
     if not cx.samples:  # at least one sample from aggregate scores
-        m = _parse_one_confidence(outdir) or {}
+        m = _parse_one_confidence(sample_scope) or {}
         cx.samples = [BoltzSample(idx=0, ligand_atoms=cx.ligand.atoms, metrics=m)]
     return _finalize(cx)
 
