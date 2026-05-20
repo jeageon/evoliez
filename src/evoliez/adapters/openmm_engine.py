@@ -158,6 +158,110 @@ def _protein_only_pdbfixed(pdb_path: Path):
     return fx.topology, fx.positions
 
 
+class _CuratedParamUnavailable(Exception):
+    """Curated AMBER files for this cofactor are not present on disk
+    (Bryce Lab .lib / .frcmod missing). Dispatcher falls back to the
+    GAFF/espaloma probe; this is NOT itself a candidate failure."""
+
+
+def _write_ligand_pdb(off_lig, out_path: Path, residue_name: str) -> None:
+    """Write the OpenFF ligand at its conformer as a single-residue PDB
+    whose residue name matches the curated AMBER .lib entry (so tleap
+    loadpdb finds the matching unit)."""
+    import openmm.app as app
+
+    topo = off_lig.to_topology().to_openmm()
+    for res in topo.residues():
+        res.name = residue_name
+    positions = off_lig.conformers[0].to_openmm()
+    with out_path.open("w") as fh:
+        app.PDBFile.writeFile(topo, positions, fh)
+
+
+def _curated_param_system_generator(
+    off_lig, protein_pdb_path: Path, spec, workdir: Path,
+):
+    """Build ``(system, topology, positions)`` for a curated cofactor via
+    tleap + AMBER params (Bryce Lab .lib / .frcmod), bypassing GAFF /
+    AM1-BCC entirely. This is the production path for cofactors that
+    sqm hard-fails on (NADP+ at -3 charge - verified by
+    scripts/server_test_p0_cofactor.sh Step 4).
+
+    Raises :class:`_CuratedParamUnavailable` if the curated files are not
+    present (dispatcher then falls back to the probe path), or a generic
+    Exception if tleap actually fails (real MD failure -> ``failed``).
+    """
+    import shutil
+    import subprocess
+
+    import openmm.app as app
+
+    files = spec.resolved_amber_files()
+    if files is None:
+        raise _CuratedParamUnavailable(
+            f"Bryce Lab files for {spec.name} not in "
+            f"{spec.amber_lib!r} / {spec.amber_frcmod!r} under "
+            "evoliez.features.cofactors.amber_params_root(); run "
+            "scripts/fetch_amber_cofactors.sh on the server"
+        )
+    lib_path, frcmod_path = files
+    if not shutil.which("tleap"):
+        raise RuntimeError(
+            "tleap binary not found in PATH (conda install -c conda-forge "
+            "ambertools)"
+        )
+
+    # Ligand PDB at the curated 3-letter residue name (matches .lib).
+    lig_pdb = workdir / f"ligand_{spec.amber_residue_name}.pdb"
+    _write_ligand_pdb(off_lig, lig_pdb, spec.amber_residue_name)
+
+    # Protein-only PDB (PDBFixer-repaired termini, heterogens stripped).
+    prot_topo, prot_posns = _protein_only_pdbfixed(protein_pdb_path)
+    if prot_topo is None:
+        raise RuntimeError(
+            "pdbfixer unavailable - curated path needs a clean protein-only "
+            "PDB; `conda install -c conda-forge pdbfixer`"
+        )
+    prot_pdb = workdir / "protein_only.pdb"
+    with prot_pdb.open("w") as fh:
+        app.PDBFile.writeFile(prot_topo, prot_posns, fh)
+
+    leap_in = workdir / "leap.in"
+    prmtop = workdir / "complex.prmtop"
+    inpcrd = workdir / "complex.inpcrd"
+    leap_in.write_text(
+        f"source leaprc.protein.ff14SB\n"
+        f"source leaprc.gaff2\n"
+        f"loadamberparams {frcmod_path}\n"
+        f"loadoff {lib_path}\n"
+        f"prot = loadpdb {prot_pdb}\n"
+        f"lig  = loadpdb {lig_pdb}\n"
+        f"complex = combine {{prot lig}}\n"
+        f"saveamberparm complex {prmtop} {inpcrd}\n"
+        f"quit\n"
+    )
+    proc = subprocess.run(
+        ["tleap", "-f", str(leap_in)],
+        cwd=str(workdir), capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not prmtop.exists() or not inpcrd.exists():
+        tail = (proc.stdout + proc.stderr)[-800:]
+        raise RuntimeError(f"tleap failed (rc={proc.returncode}): {tail}")
+
+    prm = app.AmberPrmtopFile(str(prmtop))
+    crd = app.AmberInpcrdFile(str(inpcrd))
+    system = prm.createSystem(
+        nonbondedMethod=app.CutoffNonPeriodic,
+        constraints=app.HBonds,
+        implicitSolvent=app.OBC2,
+    )
+    log.info(
+        "curated AMBER path: %s -> tleap prmtop (%d atoms, lig resname %s)",
+        spec.name, system.getNumParticles(), spec.amber_residue_name,
+    )
+    return system, prm.topology, crd.positions
+
+
 class _LigandParamUnsupported(Exception):
     """No available small-molecule FF can parameterize this ligand (e.g.
     GAFF/AM1-BCC on a large multiply-phosphorylated cofactor like NADP -
@@ -413,71 +517,117 @@ def _run_real(
             failure_reason=f"ligand build: {exc}",
         )
 
-    # Ligand parameterization PROBE -> classify precisely: a ligand the
-    # small-molecule FFs can't handle (NADP-class cofactor) is the NEUTRAL
-    # skipped_parameterization (candidate judged on the other layers), NOT
-    # a hard failure. Only protein/assembly failures below are `failed`.
-    try:
-        system_generator, _ff = _ligand_system_generator(off_lig, workdir)
-    except _LigandParamUnsupported as exc:
-        log.warning(
-            "no small-molecule FF can parameterize the ligand for %s "
-            "(large/charged cofactor e.g. NADP); recording "
-            "skipped_parameterization (NEUTRAL - judged on other layers): "
-            "%s", candidate_id, str(exc)[:200],
-        )
-        return MDResult(
-            candidate_id=candidate_id, status="skipped_parameterization",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
-            simulation_time_ns=0.0,
-            failure_reason=f"ligand FF unsupported (cofactor): {exc}",
-        )
+    # Curated cofactor path: when the ligand is a known cofactor (canonical
+    # SMILES matches a CofactorSpec) AND the Bryce Lab .lib / .frcmod files
+    # are present on disk, build the complex via tleap and skip the GAFF /
+    # AM1-BCC probe entirely - that probe HARD-FAILS on real NADP+ (sqm
+    # returns non-zero; confirmed by server_test_p0_cofactor.sh Step 4).
+    # When files are missing OR the molecule isn't a curated cofactor, fall
+    # through to the existing probe + Modeller flow unchanged.
+    from evoliez.features.cofactors import lookup_by_smiles
 
-    try:
-        topo, posns = _protein_only_pdbfixed(pdb_path)
-        if topo is None:                          # pdbfixer absent
+    class _MaybeModeller:                       # facade for the curated path
+        def __init__(self, topology, positions):
+            self.topology = topology
+            self.positions = positions
+
+    curated_spec = lookup_by_smiles(cx.ligand.smiles)
+    took_curated = False
+    system = modeller = None
+    if curated_spec and curated_spec.resolved_amber_files() is not None:
+        try:
+            system, topology, positions = _curated_param_system_generator(
+                off_lig, pdb_path, curated_spec, workdir,
+            )
+            modeller = _MaybeModeller(topology, positions)
+            took_curated = True
+        except _CuratedParamUnavailable as exc:
+            log.info(
+                "curated path unavailable for %s (%s); falling back to "
+                "GAFF/espaloma probe", candidate_id, exc,
+            )
+        except Exception as exc:
+            # The curated branch is supposed to bypass GAFF entirely, so a
+            # real failure here is a real MD failure - NOT parameterization.
             log.warning(
-                "pdbfixer not installed - Amber may reject uncapped "
-                "termini / leftover heterogens for %s. "
-                "`conda install -c conda-forge pdbfixer`", candidate_id,
+                "curated tleap path FAILED for %s (%s); recording failed",
+                candidate_id, exc,
             )
-            topo, posns = pdb.topology, pdb.positions
-        modeller = app.Modeller(topo, posns)
-        # Invariant: prep MUST be protein-only. A H-less Boltz LIG that
-        # survives here is exactly what produced the confusing "No template
-        # for residue LIG / missing 57 H" - fail honestly and specifically
-        # instead of letting create_system emit that.
-        stray = sorted({r.name for r in modeller.topology.residues()
-                        if r.name not in _STD_RES})
-        if stray:
-            raise RuntimeError(
-                f"non-protein residues survived structure prep {stray[:5]} "
-                "(removeHeterogens unavailable / ineffective); the OpenFF "
-                "ligand is added separately so these must not be present"
+            return MDResult(
+                candidate_id=candidate_id, status="failed",
+                protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+                simulation_time_ns=0.0, integration_failed=True,
+                failure_reason=f"curated tleap: {str(exc)[:300]}",
             )
-        modeller.addHydrogens(system_generator.forcefield)
-        # Add the ligand SOLELY from the OpenFF molecule at its Boltz-pose
-        # conformer (verified 70 atoms incl. 26 H); the only ligand in the
-        # system is now this one, which create_system matches via GAFF.
-        modeller.add(
-            off_lig.to_topology().to_openmm(),
-            off_lig.conformers[0].to_openmm(),
-        )
-        system = system_generator.create_system(
-            modeller.topology, molecules=[off_lig]
-        )
-    except Exception as exc:
-        log.warning(
-            "MD protein+ligand assembly / system creation failed for "
-            "%s (%s)", candidate_id, exc,
-        )
-        return MDResult(
-            candidate_id=candidate_id, status="failed",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
-            simulation_time_ns=0.0, integration_failed=True,
-            failure_reason=f"protein+ligand assembly / system "
-                           f"creation: {exc}",
-        )
+
+    if not took_curated:
+        # Ligand parameterization PROBE -> classify precisely: a ligand the
+        # small-molecule FFs can't handle (NADP-class cofactor) is the
+        # NEUTRAL skipped_parameterization (candidate judged on the other
+        # layers), NOT a hard failure. Only protein/assembly failures below
+        # are `failed`.
+        try:
+            system_generator, _ff = _ligand_system_generator(off_lig, workdir)
+        except _LigandParamUnsupported as exc:
+            log.warning(
+                "no small-molecule FF can parameterize the ligand for %s "
+                "(large/charged cofactor e.g. NADP); recording "
+                "skipped_parameterization (NEUTRAL - judged on other "
+                "layers): %s", candidate_id, str(exc)[:200],
+            )
+            return MDResult(
+                candidate_id=candidate_id, status="skipped_parameterization",
+                protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+                simulation_time_ns=0.0,
+                failure_reason=f"ligand FF unsupported (cofactor): {exc}",
+            )
+
+        try:
+            topo, posns = _protein_only_pdbfixed(pdb_path)
+            if topo is None:                       # pdbfixer absent
+                log.warning(
+                    "pdbfixer not installed - Amber may reject uncapped "
+                    "termini / leftover heterogens for %s. "
+                    "`conda install -c conda-forge pdbfixer`", candidate_id,
+                )
+                topo, posns = pdb.topology, pdb.positions
+            modeller = app.Modeller(topo, posns)
+            # Invariant: prep MUST be protein-only. A H-less Boltz LIG that
+            # survives here is exactly what produced the confusing "No
+            # template for residue LIG / missing 57 H" - fail honestly and
+            # specifically instead of letting create_system emit that.
+            stray = sorted({r.name for r in modeller.topology.residues()
+                            if r.name not in _STD_RES})
+            if stray:
+                raise RuntimeError(
+                    f"non-protein residues survived structure prep "
+                    f"{stray[:5]} (removeHeterogens unavailable / "
+                    "ineffective); the OpenFF ligand is added separately "
+                    "so these must not be present"
+                )
+            modeller.addHydrogens(system_generator.forcefield)
+            # Add the ligand SOLELY from the OpenFF molecule at its
+            # Boltz-pose conformer; the only ligand in the system is now
+            # this one, which create_system matches via GAFF.
+            modeller.add(
+                off_lig.to_topology().to_openmm(),
+                off_lig.conformers[0].to_openmm(),
+            )
+            system = system_generator.create_system(
+                modeller.topology, molecules=[off_lig]
+            )
+        except Exception as exc:
+            log.warning(
+                "MD protein+ligand assembly / system creation failed for "
+                "%s (%s)", candidate_id, exc,
+            )
+            return MDResult(
+                candidate_id=candidate_id, status="failed",
+                protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+                simulation_time_ns=0.0, integration_failed=True,
+                failure_reason=f"protein+ligand assembly / system "
+                               f"creation: {exc}",
+            )
 
     # Restraint schedule (spec 15.5): strongly restrain distant backbone.
     restraint = mm.CustomExternalForce(
@@ -509,9 +659,12 @@ def _run_real(
             sim.topology, sim.context.getState(getPositions=True).getPositions(), fh
         )
 
-    # ligand-specific + pocket-specific atom indices (was whole-system RMSD)
+    # ligand-specific + pocket-specific atom indices (was whole-system RMSD).
+    # Includes the curated AMBER 3-letter cofactor residue codes (Bryce Lab
+    # NAD/NDH/NAP/NDP) so the curated tleap path also picks the ligand out.
+    _LIG_RES = ("LIG", "UNL", "UNK", "NAD", "NDH", "NAP", "NDP")
     lig_idx = [a.index for a in modeller.topology.atoms()
-               if a.residue.name in ("LIG", "UNL", "UNK")]
+               if a.residue.name in _LIG_RES]
     init = np.array([[p.x, p.y, p.z] for p in
                      sim.context.getState(getPositions=True).getPositions()])
     if lig_idx:

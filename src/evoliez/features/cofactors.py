@@ -74,6 +74,38 @@ class CofactorSpec:
         return None
 
 
+def lookup_by_smiles(smiles: str) -> Optional[CofactorSpec]:
+    """Reverse-lookup a curated species from a ligand SMILES.
+
+    Canonical SMILES match (RDKit if available, exact byte match
+    otherwise; with the resolver path the byte match always holds). The
+    MD curated dispatcher uses this to decide whether the incoming
+    ligand is a known cofactor without needing extra wiring through
+    Complex/Ligand. NAD+/NADH and NADP+/NADPH share heavy-atom formulas
+    but differ in pyridinium vs 1,4-dihydropyridine SMILES, which the
+    canonical form distinguishes.
+    """
+    if not smiles:
+        return None
+    try:
+        from rdkit import Chem                       # type: ignore
+
+        target = Chem.MolToSmiles(Chem.MolFromSmiles(smiles))
+        ref_canon = {
+            Chem.MolToSmiles(Chem.MolFromSmiles(spec.smiles)): spec
+            for spec in _LIB.values()
+        }
+        return ref_canon.get(target)
+    except Exception:
+        # Light env / unparseable SMILES: fall back to byte match (the
+        # cofactor resolver writes the curated SMILES verbatim, so it
+        # round-trips identically).
+        for spec in _LIB.values():
+            if spec.smiles == smiles:
+                return spec
+        return None
+
+
 def amber_params_root() -> Path:
     """Where curated AMBER cofactor params live. ``EVOLIEZ_AMBER_PARAMS``
     wins; otherwise ``<repo>/amber/cofactors``. The directory is created
