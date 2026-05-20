@@ -10,9 +10,9 @@ dist/
 htmlcov/
 .mypy_cache/
 
-# Virtual environments
-.venv/
-venv/
+# Virtual environments (greedy: matches .venv/, .venv-light/, .venv-test/, ...)
+.venv*/
+venv*/
 env/
 
 # Pipeline run outputs (never commit large artifacts)
