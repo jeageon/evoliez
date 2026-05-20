@@ -49,9 +49,18 @@ complex_prediction:
   use_msa_server: true
   representative_homologs: 20
   use_templates: true
+  # P0.2: when true AND input.catalytic_residues or input.known_binding_site
+  # is set, the adapter emits a Boltz `constraints` block steering the
+  # ligand toward those residues. The flag was metadata-only before; a
+  # contract test now asserts the emitted YAML contains a real pocket
+  # section whenever this is on.
   pocket_constraints: true
   predict_affinity: true
-  diffusion_samples: 5                     # Boltz pose ensemble (features, NOT labels)
+  # P0.2: real-backend WT samples bumped 5 -> 25. Used as a Boltz pose
+  # ENSEMBLE (features, weights, weak ranking signals; NEVER supervised
+  # labels - see docs/ML_DATA_POLICY.md). Smoke configs explicitly
+  # override this to 2; server config is at 30.
+  diffusion_samples: 25
 
 interaction_model:                         # self-supervised family geometry model (spec 9.2 + 13.3)
   enabled: true

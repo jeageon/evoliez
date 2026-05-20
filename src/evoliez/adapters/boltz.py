@@ -49,11 +49,14 @@ def predict_complex(
     backend: Backend,
     dry_run: bool = False,
     msa_path: Optional[Path] = None,
+    pocket_residues: Optional[List[int]] = None,
 ) -> Complex:
     outdir.mkdir(parents=True, exist_ok=True)
     if backend is Backend.real:
         return _predict_real(
-            label, sequence, ligand, cfg, outdir, dry_run=dry_run, msa_path=msa_path
+            label, sequence, ligand, cfg, outdir,
+            dry_run=dry_run, msa_path=msa_path,
+            pocket_residues=pocket_residues,
         )
     return _predict_mock(label, sequence, ligand, cfg, outdir)
 
@@ -94,10 +97,46 @@ def _finalize(cx: Complex) -> Complex:
     if cx.samples:
         best = cx.samples[0]
         cx.metrics = dict(best.metrics)
+
+        def _std(xs):
+            if len(xs) < 2:
+                return 0.0
+            mu = sum(xs) / len(xs)
+            return (sum((x - mu) ** 2 for x in xs) / len(xs)) ** 0.5
+
+        # Per-sample ensemble disagreement (P0.2). For real Boltz this is the
+        # std across the diffusion-sample affinity / confidence; for mock it
+        # collapses to the affinity_pred_value1 vs ..2 gap. Either way the
+        # output is a single number the reranker / final report can use to
+        # mark candidates as `Uncertain` when the prediction is internally
+        # noisy.
+        aff_per_sample = [
+            s.metrics.get("affinity_pred_value")
+            for s in cx.samples
+            if s.metrics.get("affinity_pred_value") is not None
+        ]
+        conf_per_sample = [
+            s.metrics.get("confidence_score")
+            for s in cx.samples
+            if s.metrics.get("confidence_score") is not None
+        ]
+        if aff_per_sample:
+            cx.metrics["affinity_ensemble_std"] = round(_std(aff_per_sample), 4)
+            cx.metrics["affinity_ensemble_mean"] = round(
+                sum(aff_per_sample) / len(aff_per_sample), 4
+            )
+        if conf_per_sample:
+            cx.metrics["confidence_ensemble_std"] = round(_std(conf_per_sample), 4)
+        # Legacy single-pair gap (mock path provides v1/v2 stubs); keep it
+        # for downstream code that already keys on it.
         v1 = cx.metrics.get("affinity_pred_value1")
         v2 = cx.metrics.get("affinity_pred_value2")
         if v1 is not None and v2 is not None:
             cx.metrics["ensemble_disagreement"] = round(abs(v1 - v2), 4)
+        elif aff_per_sample and len(aff_per_sample) >= 2:
+            # Real path with no v1/v2: define disagreement as the affinity std.
+            cx.metrics["ensemble_disagreement"] = cx.metrics["affinity_ensemble_std"]
+
         cx.confidence = cx.metrics.get("confidence_score", cx.confidence)
         cx.affinity_score = cx.metrics.get("affinity_pred_value", cx.affinity_score)
     return cx
@@ -198,6 +237,7 @@ def _predict_real(
     *,
     dry_run: bool,
     msa_path: Optional[Path],
+    pocket_residues: Optional[List[int]] = None,
 ) -> Complex:
     # dry-run previews the FULL command set (like Vina) without the tool
     # installed, writes the exact Boltz input YAML so the contract can be
@@ -217,6 +257,22 @@ def _predict_real(
     }
     if cfg.predict_affinity:
         spec["properties"] = [{"affinity": {"binder": "B"}}]
+    # P0.2: pocket steering contract. When the config asks for pocket
+    # constraints AND we have residues to point at, emit Boltz's
+    # `constraints` block so the diffusion model actively steers the
+    # ligand toward those residues - instead of `pocket_constraints` being
+    # a no-op metadata flag (the original behaviour). Format per Boltz-2
+    # YAML schema: each pocket constraint binds a binder chain id to a
+    # list of [chain, residue_index] contact residues.
+    if cfg.pocket_constraints and pocket_residues:
+        spec["constraints"] = [
+            {
+                "pocket": {
+                    "binder": "B",
+                    "contacts": [["A", int(i)] for i in pocket_residues],
+                }
+            }
+        ]
     if msa_path is not None:
         mp = Path(msa_path)
         if mp.suffix.lower() in (".a3m", ".csv"):
