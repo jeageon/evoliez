@@ -67,17 +67,24 @@ def _redock_real(
     require("obabel")
     workdir.mkdir(parents=True, exist_ok=True)
     rec_q = workdir / f"{candidate_id}_rec.pdbqt"
-    lig_pdb = workdir / f"{candidate_id}_lig.pdb"
-    lig_q = workdir / f"{candidate_id}_lig.pdbqt"
     out = workdir / f"{candidate_id}_vina_out.pdbqt"
-    # receptor prep
+    # receptor prep - PER CANDIDATE: each candidate's PDB encodes its own
+    # mutated side-chain coordinates, so the receptor pdbqt is genuinely
+    # different per candidate and must be re-converted.
     run(["obabel", str(rec_pdb), "-O", str(rec_q), "-xr"], dry_run=dry_run)
-    # ligand prep (was MISSING -> vina got a non-existent --ligand file):
-    # write the reference ligand atoms, add H + Gasteiger charges, -> pdbqt
-    write_min_pdb(lig_pdb, ProteinStructure(sequence="", residues=[]),
-                  reference_atoms)
-    run(["obabel", str(lig_pdb), "-O", str(lig_q),
-         "-h", "--partialcharge", "gasteiger"], dry_run=dry_run)
+    # ligand prep - SHARED ACROSS CANDIDATES: reference_atoms is the same
+    # ligand pose for every candidate in a run, so the gasteiger pdbqt is
+    # bit-identical from one candidate to the next. obabel + gasteiger is
+    # ~0.5-1s per candidate; cache once in `workdir/_shared_lig.pdbqt` and
+    # reuse, so a 30-candidate run does it once instead of 30 times.
+    # Numerically equivalent (Vina reads the same file).
+    lig_q = workdir / "_shared_lig.pdbqt"
+    lig_pdb = workdir / "_shared_lig.pdb"
+    if not lig_q.exists():
+        write_min_pdb(lig_pdb, ProteinStructure(sequence="", residues=[]),
+                      reference_atoms)
+        run(["obabel", str(lig_pdb), "-O", str(lig_q),
+             "-h", "--partialcharge", "gasteiger"], dry_run=dry_run)
     cx = [sum(a.coord[i] for a in reference_atoms) / max(1, len(reference_atoms))
           for i in range(3)]
     vina_cmd = [

@@ -68,11 +68,15 @@ def _redock_real(
     require("gnina")
     apply_gpu_selection()
     workdir.mkdir(parents=True, exist_ok=True)
-    lig = workdir / f"{candidate_id}_ref_lig.pdb"
+    # Ligand-only temp PDB: shared across candidates because reference_atoms
+    # is the same reference ligand pose for every candidate in a run. Write
+    # once and gnina re-reads the same file (~30x fewer disk writes on a
+    # 30-candidate run; output is bit-identical because the file content
+    # is the same).
+    lig = workdir / "_shared_ref_lig.pdb"
     out = workdir / f"{candidate_id}_gnina_out.sdf"
-    # Ligand-only temp PDB: write_min_pdb is fine because the ligand atoms
-    # are the dock target, not the receptor.
-    write_min_pdb(lig, structure.__class__(sequence="", residues=[]), reference_atoms)
+    if not lig.exists():
+        write_min_pdb(lig, structure.__class__(sequence="", residues=[]), reference_atoms)
     run(
         ["gnina", "-r", str(rec), "-l", str(lig), "--autobox_ligand", str(lig),
          "--num_modes", str(cfg.poses_per_candidate),

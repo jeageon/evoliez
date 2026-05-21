@@ -16,7 +16,7 @@ from typing import List, Optional
 
 from evoliez.adapters.boltz import predict_complex
 from evoliez.context import RunContext
-from evoliez.features.delta import boltz_delta_features
+from evoliez.features.delta import WTDeltaCache, boltz_delta_features
 from evoliez.stages.base import Stage
 from evoliez.types import Candidate
 
@@ -89,6 +89,15 @@ class MutantBoltzStage(Stage):
         # context map (Complex isn't JSON-persisted); MD-candidates not in
         # this top-N fall back to the WT-derived proxy and honestly skip.
         mut_complexes = ctx.get("mutant_complexes", {}) or {}
+        # Reuse the WT-side delta cache built in s08 if it's still in
+        # context; otherwise build one here. Identical numerical result
+        # to the old per-candidate path because the cache is a pure
+        # function of (wt, catalytic_positions, contact_cutoff).
+        wt_delta_cache = ctx.get("wt_delta_cache")
+        if wt_delta_cache is None:
+            wt_delta_cache = WTDeltaCache.build(
+                wt, catalytic_positions=catalytic,
+            )
         for cand in top:
             mut_cx = predict_complex(
                 cand.candidate_id, _mutant_sequence(seq, cand), ligand,
@@ -97,7 +106,8 @@ class MutantBoltzStage(Stage):
             )
             mut_complexes[cand.candidate_id] = mut_cx
             delta = boltz_delta_features(
-                mut_cx, wt, catalytic_positions=catalytic
+                mut_cx, wt, catalytic_positions=catalytic,
+                wt_cache=wt_delta_cache,
             )
             cand.details["delta"] = delta
             cand.details["boltz_delta_source"] = backend.value  # mock | real

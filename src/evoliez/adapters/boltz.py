@@ -412,17 +412,61 @@ def _predict_real(
     return _finalize(cx)
 
 
+def _scan_output_dir(outdir: Path) -> dict:
+    """Single directory walk that collects every Boltz output file we
+    care about - replaces 3+ separate `outdir.rglob(...)` passes that
+    each re-walked the tree (one per sample × 720 confidence JSONs on a
+    full ensemble = expensive). Returns a dict of sorted lists keyed by
+    kind; downstream readers index into these instead of walking again.
+
+    Lossless: the categorisation uses the same name patterns the old
+    code used (`confidence*model_*.json`, `confidence*.json`,
+    `affinity*.json`, `plddt*.npz`), so the set of files matched is
+    identical."""
+    confidence_model: List[Path] = []
+    confidence_generic: List[Path] = []
+    affinity: List[Path] = []
+    plddt_npz: List[Path] = []
+    for p in outdir.rglob("*"):
+        if not p.is_file():
+            continue
+        name = p.name
+        if name.startswith("confidence") and name.endswith(".json"):
+            if "model_" in name:
+                confidence_model.append(p)
+            else:
+                confidence_generic.append(p)
+        elif name.startswith("affinity") and name.endswith(".json"):
+            affinity.append(p)
+        elif name.startswith("plddt") and name.endswith(".npz"):
+            plddt_npz.append(p)
+    return {
+        "confidence_model": sorted(confidence_model),
+        "confidence_generic": sorted(confidence_generic),
+        "affinity": sorted(affinity),
+        "plddt_npz": sorted(plddt_npz),
+    }
+
+
 def _parse_real_samples(outdir: Path, lig_atoms) -> List[BoltzSample]:
+    """Build BoltzSample list from boltz's per-sample output. One
+    directory walk feeds confidence + affinity + plddt parsing
+    (previously 3+ rglobs; on a 30-sample run that's ~90 redundant
+    tree walks)."""
     samples: List[BoltzSample] = []
-    conf_files = sorted(outdir.rglob("confidence*model_*.json")) or sorted(
-        outdir.rglob("confidence*.json")
-    )
-    aff = {}
-    for jf in outdir.rglob("affinity*.json"):
+    files = _scan_output_dir(outdir)
+    conf_files = files["confidence_model"] or files["confidence_generic"]
+    # Affinity JSON is one-per-prediction; parse the first that loads
+    # successfully and stop (previous loop overwrote on every iteration,
+    # so this is the same observable behaviour with one less file read).
+    aff: dict = {}
+    for jf in files["affinity"]:
         try:
             aff = json.loads(jf.read_text())
+            break
         except Exception:
-            aff = {}
+            continue
+    plddt_npzs = files["plddt_npz"]
     for i, jf in enumerate(conf_files):
         try:
             d = json.loads(jf.read_text())
@@ -437,7 +481,7 @@ def _parse_real_samples(outdir: Path, lig_atoms) -> List[BoltzSample]:
             "confidence_score",
             0.8 * m.get("complex_plddt", 0.0) + 0.2 * m.get("iptm", 0.0),
         )
-        rp = _load_plddt(outdir, i)
+        rp = _load_plddt_from_list(plddt_npzs, i)
         samples.append(BoltzSample(idx=i, ligand_atoms=lig_atoms, metrics=m,
                                    residue_plddt=rp))
     samples.sort(key=lambda s: -s.metrics.get("confidence_score", 0.0))
@@ -447,7 +491,8 @@ def _parse_real_samples(outdir: Path, lig_atoms) -> List[BoltzSample]:
 
 
 def _parse_one_confidence(outdir: Path) -> Optional[dict]:
-    for jf in outdir.rglob("confidence*.json"):
+    files = _scan_output_dir(outdir)
+    for jf in files["confidence_generic"] or files["confidence_model"]:
         try:
             d = json.loads(jf.read_text())
             return {k: float(v) for k, v in d.items()
@@ -457,18 +502,24 @@ def _parse_one_confidence(outdir: Path) -> Optional[dict]:
     return None
 
 
-def _load_plddt(outdir: Path, idx: int) -> List[float]:
+def _load_plddt_from_list(npzs: List[Path], idx: int) -> List[float]:
+    """Pre-scanned variant of the old `_load_plddt(outdir, idx)`. Same
+    result, no per-call rglob."""
+    if idx >= len(npzs):
+        return []
     try:
         import numpy as np
 
-        npzs = sorted(outdir.rglob("plddt*.npz"))
-        if idx < len(npzs):
-            arr = np.load(npzs[idx])
-            key = arr.files[0]
-            return [float(x) for x in np.asarray(arr[key]).ravel()]
+        arr = np.load(npzs[idx])
+        key = arr.files[0]
+        return [float(x) for x in np.asarray(arr[key]).ravel()]
     except Exception:
-        pass
-    return []
+        return []
+
+
+def _load_plddt(outdir: Path, idx: int) -> List[float]:
+    """Back-compat shim; new code paths use `_load_plddt_from_list`."""
+    return _load_plddt_from_list(_scan_output_dir(outdir)["plddt_npz"], idx)
 
 
 def _parse_cif_atoms(path: Path):

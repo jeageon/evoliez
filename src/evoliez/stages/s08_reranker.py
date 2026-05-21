@@ -13,7 +13,7 @@ import csv
 from typing import Dict, List
 
 from evoliez.context import RunContext
-from evoliez.features.delta import boltz_delta_features
+from evoliez.features.delta import WTDeltaCache, boltz_delta_features
 from evoliez.ml.labels import assert_supervised_label_allowed
 from evoliez.stages.base import Stage
 from evoliez.stages.s07_mutation_gen import _RULE_POOL, _ligand_role
@@ -138,6 +138,17 @@ class RerankerStage(Stage):
         econ = ctx.get("ensemble_contacts", [])
         lig_imp = ctx.get("ligand_importance", {})
 
+        # WT-side terms in boltz_delta_features (pocket pLDDT, contact
+        # count, catalytic distances) are pure functions of the WT
+        # complex - hoist them out of the candidate loop. Saves ~30
+        # redundant pocket_plddt + contact-walk recomputations here, and
+        # we hand the same cache to s08b too. Numerically identical to
+        # the per-candidate path (same wt_cx, same cutoff).
+        wt_delta_cache = WTDeltaCache.build(
+            cx, catalytic_positions=catalytic
+        )
+        ctx.put("wt_delta_cache", wt_delta_cache)
+
         for cand in candidates:
             feat = self._features(cand, res_by_pos, pf_by_pos, nearest, atom_by_id)
 
@@ -160,6 +171,7 @@ class RerankerStage(Stage):
             # WT - mutant Boltz delta features (proxy; FEATURES, not labels)
             delta = boltz_delta_features(
                 amc, cx, catalytic_positions=catalytic,
+                wt_cache=wt_delta_cache,
             )
             cand.details["delta"] = delta
             cand.details["boltz_delta_source"] = "proxy"  # s08b may upgrade
