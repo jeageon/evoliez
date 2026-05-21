@@ -11,7 +11,8 @@ Inserted between s08 (fast rerank) and s09 (non-MD validation).
 
 from __future__ import annotations
 
-from typing import List
+from pathlib import Path
+from typing import List, Optional
 
 from evoliez.adapters.boltz import predict_complex
 from evoliez.context import RunContext
@@ -59,6 +60,22 @@ class MutantBoltzStage(Stage):
         cp_cfg = ctx.config.complex_prediction.model_copy(
             update={"diffusion_samples": rcfg.mutant_boltz_diffusion_samples}
         )
+        # Reuse the WT MSA built by s03 for every mutant prediction. A point
+        # mutation doesn't change the MSA - the homologs were retrieved
+        # using WT as the query and are unchanged regardless of our 1-2
+        # residue substitution. Skipping --use_msa_server eliminates a
+        # ~15-18 min HTTP round-trip per mutant (server-observed: mutant
+        # Boltz with --use_msa_server takes ~20 min for 3 samples;
+        # pure inference is ~2 min - the rest is the MSA fetch). Standard
+        # practice in MSA-conditioned structure prediction (e.g.
+        # Tishkov-style mutant analyses).
+        msa_path = ctx.paths.msa / "alignment.fasta"
+        wt_msa: Optional[Path] = msa_path if msa_path.exists() else None
+        if wt_msa is None:
+            self.log.warning(
+                "no WT MSA at %s; per-mutant Boltz will fall back to "
+                "--use_msa_server (slow). Run s03 first.", msa_path,
+            )
         # When the input is md_candidates (post-s09), top_for_md already
         # capped the size. mutant_boltz_top_n still caps it further if the
         # user wants Boltz on only a subset of MD candidates (config knob).
@@ -76,6 +93,7 @@ class MutantBoltzStage(Stage):
             mut_cx = predict_complex(
                 cand.candidate_id, _mutant_sequence(seq, cand), ligand,
                 cp_cfg, outdir, backend=backend, dry_run=ctx.dry_run,
+                msa_path=wt_msa,           # reuse WT MSA: skip HTTP fetch
             )
             mut_complexes[cand.candidate_id] = mut_cx
             delta = boltz_delta_features(

@@ -50,15 +50,64 @@ def predict_complex(
     dry_run: bool = False,
     msa_path: Optional[Path] = None,
     pocket_residues: Optional[List[int]] = None,
+    reuse_existing: bool = True,
 ) -> Complex:
+    """Predict a protein-ligand complex.
+
+    `reuse_existing=True` (default): if a previous real Boltz call already
+    wrote `outdir/boltz_results_<label>_boltz_input/predictions/.../*.pdb`,
+    parse and return that cached output instead of invoking `boltz predict`
+    again. This is the architectural complement to the s08b reorder fix:
+    a partial production run that gets interrupted mid-s08b can resume
+    without re-running the mutants that already finished (~20 min each
+    on production scale).
+    """
     outdir.mkdir(parents=True, exist_ok=True)
     if backend is Backend.real:
+        if reuse_existing and not dry_run:
+            cached = _load_existing_real(label, sequence, ligand, cfg, outdir)
+            if cached is not None:
+                log.info(
+                    "predict_complex(%s): reusing cached Boltz output "
+                    "(skip boltz invocation)", label,
+                )
+                return cached
         return _predict_real(
             label, sequence, ligand, cfg, outdir,
             dry_run=dry_run, msa_path=msa_path,
             pocket_residues=pocket_residues,
         )
     return _predict_mock(label, sequence, ligand, cfg, outdir)
+
+
+def _load_existing_real(
+    label: str, sequence: str, ligand: Ligand,
+    cfg: ComplexPredictionConfig, outdir: Path,
+) -> Optional[Complex]:
+    """Parse a previously-written `boltz_results_<label>_boltz_input/`
+    directory into a Complex. Returns None if no usable output is on
+    disk yet (caller falls back to running Boltz). Same scoping rule as
+    the structure-discovery fix: ONLY look under this label's results
+    dir so multi-mutant runs don't cross-contaminate.
+    """
+    label_results = outdir / f"boltz_results_{label}_boltz_input"
+    if not label_results.exists():
+        return None
+    found = sorted(label_results.rglob("*.cif")) + sorted(
+        label_results.rglob("*.pdb")
+    )
+    found = [p for p in found if not p.name.endswith("_complex.pdb")]
+    if not found:
+        return None
+    structure_file = found[0]
+    cx = _parse_real_structure(structure_file, sequence, ligand)
+    cx.method = cfg.primary_method
+    cx.path = str(structure_file)
+    cx.samples = _parse_real_samples(label_results, cx.ligand.atoms)
+    if not cx.samples:
+        m = _parse_one_confidence(label_results) or {}
+        cx.samples = [BoltzSample(idx=0, ligand_atoms=cx.ligand.atoms, metrics=m)]
+    return _finalize(cx)
 
 
 # --------------------------------------------------------------------------- #
