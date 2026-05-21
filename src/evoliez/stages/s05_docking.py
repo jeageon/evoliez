@@ -48,6 +48,15 @@ class DockingStage(Stage):
 
         assert ctx.store is not None
         with ctx.store.session() as s:
+            # Idempotency on resume (and on re-runs in the same dir):
+            # delete any prior WT poses for this project before inserting
+            # fresh ones. Otherwise re-running the pipeline accumulates
+            # DockingPose rows (1 -> 2 -> 3 ...). Same intent as s04's
+            # `if not s.query(...).first()` guard, expressed as
+            # delete-then-add so fresh results always win.
+            s.query(DockingPose).filter_by(
+                project_id=ctx.project_id, candidate_id="wt",
+            ).delete(synchronize_session=False)
             for p in poses:
                 s.add(
                     DockingPose(

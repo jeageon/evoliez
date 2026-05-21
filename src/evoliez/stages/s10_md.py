@@ -38,6 +38,18 @@ class MDStage(Stage):
         # the openmm sequence guard correctly skips.
         mut_complexes = ctx.get("mutant_complexes", {}) or {}
         n_ran = n_skipped = n_failed = 0
+        # Idempotency on resume / re-run: drop prior MDSimulation rows for
+        # the candidates we're about to (re-)run so we don't accumulate
+        # duplicate (DockingPose, MDSimulation) rows the way the
+        # observability test caught (1 -> 2 -> 4 -> ...). Once s10 has a
+        # proper load(), this no-op when the stage skips entirely.
+        cand_ids = [c.candidate_id for c in candidates]
+        if cand_ids:
+            with ctx.store.session() as s:
+                s.query(MDSimulation).filter(
+                    MDSimulation.project_id == ctx.project_id,
+                    MDSimulation.candidate_id.in_(cand_ids),
+                ).delete(synchronize_session=False)
         # P0.6 final-tier replicas. md_candidates arrive ordered by upstream
         # rank (s09 sorts and keeps the top `top_candidates`). The first
         # ceil(top_candidates * 0.25) are treated as "final tier" and get
