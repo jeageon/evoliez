@@ -86,29 +86,75 @@ def _redock_real(
     )
     if dry_run or not out.exists():
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
-    score, cnn = _parse_gnina(out)
+    score, cnn, atoms = _parse_gnina(out)
+    locked, rmsd = _lock_to_reference(atoms, list(reference_atoms),
+                                      candidate_id)
     return Pose(
         candidate_id=candidate_id, method=METHOD, score=score,
-        ligand_atoms=list(reference_atoms), cluster=0,
+        ligand_atoms=locked, rmsd_to_reference=rmsd, cluster=0,
         cnn_score=cnn.get("CNNscore"),
         cnn_vs=cnn.get("CNN_VS"),
         cnn_affinity=cnn.get("CNN_affinity"),
     )
 
 
+def _lock_to_reference(parsed, ref, candidate_id: str):
+    """Atom-id lock + RMSD computation, shared with vina._parse_vina.
+    Returns (ligand_atoms_for_pose, rmsd_to_reference_or_None). When
+    the parse failed or the heavy-atom count diverges beyond what
+    relabel_to_canonical can reconcile, we fall back to the reference
+    atoms with rmsd=None - same honest-skip semantics as Vina, so s09's
+    ligand_escape gate has a real RMSD to gate on instead of `None or
+    0.0` (vacuously True before this fix)."""
+    import math
+
+    from evoliez.features.ligand import relabel_to_canonical
+
+    locked, ok = relabel_to_canonical(parsed, ref) if parsed else (None, False)
+    rmsd = None
+    if ok and locked:
+        rref = ([a for a in ref if (a.element or "").upper() != "H"]
+                if len(locked) != len(ref) else list(ref))
+        if len(rref) == len(locked):
+            rmsd = round(math.sqrt(sum(
+                sum((locked[i].coord[k] - rref[i].coord[k]) ** 2
+                    for k in range(3)) for i in range(len(locked))
+            ) / len(locked)), 3)
+        return locked, rmsd
+    if parsed:
+        log.warning(
+            "GNINA pose atom ids NOT verified vs reference (%d vs %d "
+            "heavy) for %s; RMSD-to-reference unavailable",
+            sum(1 for a in parsed if (a.element or "").upper() != "H"),
+            sum(1 for a in ref if (a.element or "").upper() != "H"),
+            candidate_id,
+        )
+    return list(ref), None
+
+
 def _parse_gnina(out):
     """Parse a gnina SDF.
 
-    Returns ``(best_minimizedAffinity, cnn_features_for_best_pose)``.
-    GNINA 1.3 emits ``CNNscore``, ``CNN_VS``, and ``CNN_affinity`` next to
-    ``minimizedAffinity`` per pose; persisting them as Pose features lets
-    the reranker use the CNN signal alongside Vina-style physics scoring.
+    Returns ``(best_minimizedAffinity, cnn_features_for_best_pose,
+    best_pose_atoms)``. Expert audit follow-up: previously this dropped
+    atom coordinates and the caller returned `reference_atoms` as the
+    pose ligand_atoms, which silently made `pose.rmsd_to_reference =
+    None` -> `None or 0.0 = 0.0` -> s09's `ligand_escape > 4.5` gate
+    NEVER tripped for real GNINA. Now we parse the SDF atom block too
+    and hand it back so the caller can compute RMSD vs reference.
+
+    GNINA 1.3 emits ``CNNscore``, ``CNN_VS``, and ``CNN_affinity`` next
+    to ``minimizedAffinity`` per pose; persisting them as Pose features
+    lets the reranker use the CNN signal alongside Vina-style physics
+    scoring.
     """
     from pathlib import Path
 
+    from evoliez.types import LigandAtom
+
     lines = Path(out).read_text().splitlines()
 
-    def _read_tag_value(i: int) -> float | None:
+    def _read_tag_value(i: int) -> "float | None":
         for j in range(i + 1, min(i + 3, len(lines))):
             tok = lines[j].strip().split()
             if tok:
@@ -118,31 +164,77 @@ def _parse_gnina(out):
                     continue
         return None
 
-    pose_records = []                       # [(score, {CNNscore: .., ...}), ...]
-    cur_score = None
-    cur_cnn: dict = {}
-    pose_open = False
-    for i, ln in enumerate(lines):
-        if "<minimizedAffinity>" in ln:
-            v = _read_tag_value(i)
-            if v is not None:
-                cur_score = v
-                pose_open = True
-        for tag in ("CNNscore", "CNN_VS", "CNN_affinity"):
-            if f"<{tag}>" in ln:
-                v = _read_tag_value(i)
+    def _parse_atom_block(start: int, n_atoms: int):
+        """SDF V2000 atom block: `xxxxxxxxxxyyyyyyyyyyzzzzzzzzzz aaa ...`
+        with x/y/z each 10 chars wide. We use whitespace split rather
+        than column slicing for robustness across writers (RDKit,
+        OpenBabel, gnina); the format is loose enough in practice."""
+        atoms = []
+        for k in range(n_atoms):
+            line = lines[start + k] if start + k < len(lines) else ""
+            tok = line.split()
+            if len(tok) < 4:
+                return None
+            try:
+                x, y, z = float(tok[0]), float(tok[1]), float(tok[2])
+            except ValueError:
+                return None
+            elem = tok[3]
+            atoms.append(LigandAtom(id=f"{elem}{k}", element=elem,
+                                    coord=(x, y, z)))
+        return atoms
+
+    # Walk records: record header (3 lines) + counts + atom block +
+    # bond block + properties. Per-record we capture score / cnn /
+    # atoms; at $$$$ we close the record.
+    pose_records = []  # [(score, {CNN..}, [LigandAtom...]), ...]
+    i = 0
+    while i < len(lines):
+        # Each SDF record opens with 3 header lines (name, info, blank
+        # or comment), then a counts line: "  N1 N2  0  0 ... V2000".
+        # Find the next counts line; not all writers emit a clean
+        # 3-line header so we scan defensively.
+        counts_i = -1
+        for j in range(i, min(i + 8, len(lines))):
+            if "V2000" in lines[j] or "V3000" in lines[j]:
+                counts_i = j
+                break
+        if counts_i < 0:
+            break
+        try:
+            n_atoms = int(lines[counts_i][:3].strip())
+        except (ValueError, IndexError):
+            n_atoms = 0
+        atoms = _parse_atom_block(counts_i + 1, n_atoms) if n_atoms else []
+        cur_score = None
+        cur_cnn: dict = {}
+        # Walk forward from the bond block looking for tags until $$$$.
+        j = counts_i + 1 + n_atoms
+        while j < len(lines):
+            ln = lines[j]
+            if "<minimizedAffinity>" in ln:
+                v = _read_tag_value(j)
                 if v is not None:
-                    cur_cnn[tag] = v
-        # SDF record terminator: stash + reset
-        if ln.strip() == "$$$$" and pose_open:
-            pose_records.append((cur_score, cur_cnn))
-            cur_score, cur_cnn, pose_open = None, {}, False
-    # Trailing pose without explicit $$$$
-    if pose_open and cur_score is not None:
-        pose_records.append((cur_score, cur_cnn))
+                    cur_score = v
+            else:
+                for tag in ("CNNscore", "CNN_VS", "CNN_affinity"):
+                    if f"<{tag}>" in ln:
+                        v = _read_tag_value(j)
+                        if v is not None:
+                            cur_cnn[tag] = v
+            if ln.strip() == "$$$$":
+                pose_records.append((cur_score, cur_cnn, atoms))
+                j += 1
+                break
+            j += 1
+        i = j
 
     if not pose_records:
-        return 0.0, {}
-    # Best (lowest minimizedAffinity); CNN features come from the same pose.
-    best = min(pose_records, key=lambda r: r[0])
-    return round(best[0], 4), best[1]
+        return 0.0, {}, []
+    # Best (lowest minimizedAffinity); CNN features + atom coords come
+    # from the same pose. Skip None-score records (malformed pose).
+    scored = [r for r in pose_records if r[0] is not None]
+    if not scored:
+        return 0.0, {}, []
+    best = min(scored, key=lambda r: r[0])
+    return round(best[0], 4), best[1], best[2]

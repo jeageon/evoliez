@@ -7,6 +7,7 @@ toward chemically sensible substitutions, so candidates are reproducible.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
@@ -44,6 +45,29 @@ def design_sequences(
     return _design_mock(cx, designable, cfg)
 
 
+def _resolve_lmpnn_install() -> Path:
+    """Locate the LigandMPNN install root via `EVOLIEZ_LIGANDMPNN`.
+    LigandMPNN's `run.py` is cwd-relative (script-style invocation); the
+    old code called `python run.py` from the current working directory,
+    which only worked by accident if the user happened to be cd'd into
+    the LigandMPNN install. Fail loudly so a real backend doesn't
+    silently fall through to a wrong-cwd subprocess."""
+    root = os.environ.get("EVOLIEZ_LIGANDMPNN", "").strip()
+    if not root:
+        raise RuntimeError(
+            "EVOLIEZ_LIGANDMPNN env var is not set. Point it at your "
+            "LigandMPNN install root (the directory containing run.py). "
+            "Mock backend works without this; real backend requires it."
+        )
+    run_py = Path(root) / "run.py"
+    if not run_py.exists():
+        raise RuntimeError(
+            f"EVOLIEZ_LIGANDMPNN={root} but {run_py} does not exist. "
+            f"Set the env var to the LigandMPNN install root."
+        )
+    return Path(root)
+
+
 def _design_real(
     cx: Complex,
     designable: Sequence[int],
@@ -53,6 +77,7 @@ def _design_real(
     dry_run: bool,
 ) -> List[Tuple[List[Mutation], float]]:
     require("python")  # LigandMPNN is invoked via its run.py
+    install_root = _resolve_lmpnn_install()
     apply_gpu_selection()
     workdir.mkdir(parents=True, exist_ok=True)
     pdb = workdir / "input_complex.pdb"
@@ -60,8 +85,12 @@ def _design_real(
     fixed = sorted(set(r.index for r in cx.structure.residues) - set(designable))
     fixed_str = " ".join(f"A{p}" for p in fixed)
     out = workdir / "lmpnn_out"
+    # Use the absolute path to LigandMPNN's run.py; previously this was
+    # cwd-relative which silently broke any caller not chdir'd into the
+    # LigandMPNN repo. Doctor / s07 now fail with a clear env-var error
+    # instead of subprocessing into a missing run.py.
     cmd = [
-        "python", "run.py",
+        "python", str(install_root / "run.py"),
         "--model_type", "ligand_mpnn",
         "--pdb_path", str(pdb),
         "--out_folder", str(out),
@@ -71,7 +100,7 @@ def _design_real(
     ]
     if fixed_str:
         cmd += ["--fixed_residues", fixed_str]
-    run(cmd, dry_run=dry_run)
+    run(cmd, dry_run=dry_run, cwd=install_root)
     if dry_run:
         return _design_mock(cx, designable, cfg)
     return _parse_lmpnn(out, cx.structure.sequence)

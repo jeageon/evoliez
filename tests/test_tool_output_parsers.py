@@ -106,15 +106,22 @@ def test_vina_real_pdbqt_heavy_atom_lock_and_rmsd():
 
 def test_gnina_sdf_tag_on_next_line():
     # value is on the line AFTER `> <minimizedAffinity>`; best (lowest) = -7.85.
-    # _parse_gnina now also collects GNINA 1.3 CNN tags from the best pose.
-    score, cnn = _parse_gnina(FX / "gnina" / "out.sdf")
+    # _parse_gnina now ALSO returns the best pose's atom coordinates so
+    # s09 can compute a real RMSD-to-reference (the old contract
+    # silently fed reference_atoms back, making the ligand_escape gate
+    # vacuously pass for real GNINA - expert audit finding #3).
+    score, cnn, atoms = _parse_gnina(FX / "gnina" / "out.sdf")
     assert score == -7.85
     assert isinstance(cnn, dict)
+    assert isinstance(atoms, list)
 
 
 def test_diffdock_confidence_from_filename():
     # DiffDock: rank1_confidence<value>.sdf  (value carries its own sign)
-    assert _parse_diffdock(FX / "diffdock") == -0.42
+    # Same contract widening as GNINA: now also returns best pose atoms.
+    score, atoms = _parse_diffdock(FX / "diffdock")
+    assert score == -0.42
+    assert isinstance(atoms, list)
 
 
 def test_blast_mmseqs_stockholm_fixture_files():

@@ -81,9 +81,25 @@ class FinalRankingStage(Stage):
 
     def run(self, ctx: RunContext) -> None:
         weights = ctx.config.scoring
-        validated: List[Candidate] = ctx.get("validated_candidates") or ctx.require(
-            "candidates"
-        )
+        # Distinguish "s09 did not run" from "s09 ran and rejected every
+        # candidate". The old `ctx.get(...) or ctx.require(...)` treated
+        # the empty-list case as truthy-false, silently re-ranking the
+        # FULL unfiltered candidate set as if validation never happened -
+        # a Strong-looking final report on a run where nothing actually
+        # passed non-MD validation. Honest behaviour: if s09 published
+        # the key, trust it (even if empty).
+        validated = ctx.get("validated_candidates")
+        if validated is None:
+            validated = ctx.require("candidates")
+        validated_list: List[Candidate] = list(validated)
+        if ctx.get("validated_candidates") is not None and not validated_list:
+            self.log.warning(
+                "s09 published validated_candidates=[] (every candidate "
+                "failed non-MD validation); s11 will write an EMPTY "
+                "final library rather than silently ranking the full "
+                "unfiltered candidate set"
+            )
+        validated = validated_list
         # md_candidates carry MD scores; merge them back by id
         md_by_id = {c.candidate_id: c for c in ctx.get("md_candidates", [])}
         for c in validated:
