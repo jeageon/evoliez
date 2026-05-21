@@ -54,6 +54,20 @@ if ! curl -fsSL --max-time 60 -o "$OUT_FASTA.partial" "$URL"; then
 fi
 mv "$OUT_FASTA.partial" "$OUT_FASTA"
 
+# Also fetch the Swiss-Prot flat (TXT) file with the curated feature
+# annotations - ACT_SITE / BINDING / SITE entries are the authoritative
+# source for catalytic & NAD-binding residues, not literature numbering
+# which often disagrees due to signal-peptide / mature-protein offsets.
+TXT_URL="https://rest.uniprot.org/uniprotkb/${ACC}.txt"
+OUT_TXT="$OUT_DIR/uniprot_${ACC}.txt"
+if curl -fsSL --max-time 60 -o "$OUT_TXT.partial" "$TXT_URL"; then
+    mv "$OUT_TXT.partial" "$OUT_TXT"
+else
+    rm -f "$OUT_TXT.partial"
+    say "[fetch-target] note: could not fetch annotations TXT (continuing)"
+    OUT_TXT=""
+fi
+
 # Strip header + concatenate
 SEQ=$(grep -v '^>' "$OUT_FASTA" | tr -d '\n')
 LEN=${#SEQ}
@@ -94,19 +108,124 @@ done
 say
 if [ $ALL_OK -eq 1 ] && [ ${#RESIDUES[@]} -gt 0 ]; then
     say "[fetch-target] OK: all residue tokens consistent with the fasta"
-    say "[fetch-target] next steps:"
-    say "  1. update configs/server_fdh_nadp.yaml:"
-    say "       target_fasta: $OUT_FASTA"
-    say "       catalytic_residues: [\"<verified tokens here>\"]"
-    say "  2. run: evoliez doctor -c configs/server_fdh_nadp.yaml"
-    say "     (the 'illustrative placeholder' BLOCK should clear)"
 elif [ ${#RESIDUES[@]} -gt 0 ]; then
-    say "[fetch-target] WARN: some residue tokens don't match the fasta -"
-    say "[fetch-target]   check the literature numbering (signal peptide vs"
-    say "[fetch-target]   mature protein numbering, often differs by ~24 aa)"
-    say "[fetch-target]   before updating the config."
+    say "[fetch-target] some residue tokens don't match the fasta - that's"
+    say "[fetch-target]   usually literature-numbering drift. Check the"
+    say "[fetch-target]   UniProt annotations below for the authoritative"
+    say "[fetch-target]   positions and re-run with the corrected tokens."
+fi
+
+# UniProt curated feature annotations - the authoritative source for
+# catalytic + NAD-binding residues. Print everything relevant.
+if [ -n "$OUT_TXT" ] && [ -f "$OUT_TXT" ]; then
+    say
+    say "[fetch-target] UniProt feature annotations (authoritative):"
+    say "  source: $OUT_TXT"
+    say
+
+    OUT_TXT="$OUT_TXT" SEQ="$SEQ" python - <<'PY' 2>&1 | tee -a "$LOG"
+import os, re, sys
+
+path = os.environ["OUT_TXT"]
+seq = os.environ["SEQ"]
+text = open(path).read().splitlines()
+
+# Parse FT (feature) blocks. Format (UniProt SwissProt flat):
+#   FT   ACT_SITE        332
+#   FT                   /note="Proton donor"
+#   FT   BINDING         204..209
+#   FT                   /ligand="NAD(+)"
+#   FT                   /ligand_id="ChEBI:CHEBI:57540"
+#   FT                   /ligand_part="..."
+# A new feature starts on a line with a feature key in the
+# first sub-field; subsequent lines with leading spaces extend it.
+def parse_features():
+    feats = []
+    cur = None
+    for ln in text:
+        if not ln.startswith("FT"):
+            if cur:
+                feats.append(cur); cur = None
+            continue
+        # `FT   KEY            range` (new feature)
+        m = re.match(r"^FT\s+([A-Z_]+)\s+(\S+)\s*$", ln)
+        if m:
+            if cur:
+                feats.append(cur)
+            cur = {"key": m.group(1), "range": m.group(2), "notes": {}}
+            continue
+        # continuation: `FT                   /name="value"`
+        m2 = re.match(r"^FT\s+/([A-Za-z_]+)=(.+)$", ln)
+        if m2 and cur is not None:
+            v = m2.group(2).strip().strip('"')
+            cur["notes"].setdefault(m2.group(1), []).append(v)
+    if cur:
+        feats.append(cur)
+    return feats
+
+def aa_at(pos: int) -> str:
+    if 1 <= pos <= len(seq):
+        return seq[pos - 1]
+    return "?"
+
+def positions(rng: str):
+    m = re.match(r"^(\d+)(?:\.\.(\d+))?$", rng)
+    if not m: return []
+    a = int(m.group(1))
+    b = int(m.group(2)) if m.group(2) else a
+    return list(range(a, b + 1))
+
+feats = parse_features()
+
+# Print ACT_SITE, BINDING (esp. for NAD / formate / substrate), SITE.
+shown_any = False
+print(f"  {'kind':<10}{'pos':<10}{'aa':<4}{'note':<40}{'ligand':<25}")
+print("  " + "-" * 95)
+
+want_keys = ("ACT_SITE", "BINDING", "SITE")
+ligand_priority = ("NAD", "NADP", "NADPH", "FORMATE", "SUBSTRATE")
+collected = {"catalytic": [], "nad_binding": [], "other_binding": [], "site": []}
+
+for f in feats:
+    if f["key"] not in want_keys:
+        continue
+    notes = f["notes"]
+    note = "; ".join(notes.get("note", []))[:38]
+    lig  = "; ".join(notes.get("ligand", []))[:23]
+    for pos in positions(f["range"]):
+        aa = aa_at(pos)
+        print(f"  {f['key']:<10}{str(pos):<10}{aa:<4}{note:<40}{lig:<25}")
+        shown_any = True
+        tok = f"{aa}{pos}"
+        if f["key"] == "ACT_SITE":
+            collected["catalytic"].append(tok)
+        elif f["key"] == "BINDING":
+            if any(x in lig.upper() for x in ("NAD", "NADP")):
+                collected["nad_binding"].append(tok)
+            else:
+                collected["other_binding"].append((tok, lig))
+        elif f["key"] == "SITE":
+            collected["site"].append((tok, note))
+
+if not shown_any:
+    print("  (no ACT_SITE / BINDING / SITE features in this record)")
+
+print()
+print("  ----- suggested config tokens (verify against the comparison table) -----")
+if collected["catalytic"]:
+    print(f"  catalytic_residues : {collected['catalytic']}")
+if collected["nad_binding"]:
+    print(f"  known_binding_site : {collected['nad_binding']}    # NAD/NADP-binding")
+if collected["site"]:
+    print("  notable SITEs:")
+    for tok, note in collected["site"]:
+        print(f"    {tok}  - {note}")
+PY
 fi
 
 say
 say "[fetch-target] FASTA at: $(realpath "$OUT_FASTA")"
+if [ -n "$OUT_TXT" ]; then
+    say "[fetch-target] TXT  at: $(realpath "$OUT_TXT")"
+fi
 exit 0
