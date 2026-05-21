@@ -92,7 +92,11 @@ def test_server_config_and_defaults():
     sc = load_config(srv)
     assert sc.backend is Backend.real
     assert sc.gnn.enabled is True
-    assert sc.project.output_dir.startswith("/mnt/data2")
+    # Same "safe mount" criteria as doctor (/_check_config): either of the
+    # bulk-storage roots is fine. After the PseFDH real-target switch the
+    # server config writes to /mnt/data/<user>/runs/ (writable in our
+    # actual deployment; /mnt/data2 root isn't on this host).
+    assert sc.project.output_dir.startswith(("/mnt/data2", "/mnt/data"))
     assert sc.scoring.gnn > 0.0
 
 
