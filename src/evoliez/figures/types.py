@@ -56,4 +56,6 @@ class ReportArtifacts:
     state_json: Optional[Path] = None
     md_dirs: Dict[str, Path] = field(default_factory=dict)
     interaction_model_json: Optional[Path] = None
+    graph_features_json: Optional[Path] = None
+    homolog_identities: List[float] = field(default_factory=list)
     ml_datasets: Dict[str, Path] = field(default_factory=dict)

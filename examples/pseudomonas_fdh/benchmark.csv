@@ -1,0 +1,6 @@
+mutation,label,activity
+D222S,beneficial,1.8
+D222H,beneficial,1.5
+D222A,beneficial,1.2
+R285E,deleterious,0.05
+H333A,deleterious,0.05

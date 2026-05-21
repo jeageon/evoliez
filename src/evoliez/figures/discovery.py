@@ -93,6 +93,21 @@ def discover(run_dir: Path) -> ReportArtifacts:
     # ---- interaction graphs ---------------------------------------------
     igraphs = run_dir / "interaction_graphs"
     arts.interaction_model_json = _first_existing(igraphs / "interaction_model.json")
+    arts.graph_features_json = _first_existing(igraphs / "graph_features.json")
+
+    # ---- homolog identities ---------------------------------------------
+    # Three sources, in priority order:
+    #   1. interaction_graphs/interaction_model.json -> homologs[].identity
+    #   2. _state.json meta.homolog_identities (forward-compat hook;
+    #      the pipeline doesn't currently emit this but report code can
+    #      start trusting it when it does).
+    #   3. msa/alignment.fasta -- compute %-identity to the first record
+    #      (WT by convention). Returned as fractions in [0, 1].
+    arts.homolog_identities = (
+        _identities_from_interaction_model(arts.interaction_model_json)
+        or _identities_from_state_meta(state_meta)
+        or _identities_from_alignment_fasta(arts.alignment_fasta)
+    )
 
     # ---- ML datasets ----------------------------------------------------
     arts.ml_datasets = _find_ml_datasets(run_dir / "ml_datasets")
@@ -242,6 +257,106 @@ def _find_md_dirs(md_root: Path) -> Dict[str, Path]:
     for sub in sorted(md_root.iterdir()):
         if sub.is_dir():
             out[sub.name] = sub
+    return out
+
+
+def _identities_from_interaction_model(path: Optional[Path]) -> List[float]:
+    """Pull homolog identities from ``interaction_model.json``.
+
+    Expected shape: ``{"homologs": [{"identity": 0.8}, ...]}``. ``identity``
+    may also be named ``percent_identity`` or ``pid``. Values are returned
+    as-is - the report code is responsible for deciding whether a value is
+    a fraction or a percentage.
+    """
+    if path is None or not Path(path).exists():
+        return []
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    homologs = data.get("homologs")
+    if not isinstance(homologs, list):
+        return []
+    out: List[float] = []
+    for h in homologs:
+        if not isinstance(h, dict):
+            continue
+        for key in ("identity", "percent_identity", "pid"):
+            v = h.get(key)
+            if v is None:
+                continue
+            try:
+                out.append(float(v))
+            except (TypeError, ValueError):
+                continue
+            break
+    return out
+
+
+def _identities_from_state_meta(meta: Dict[str, Any]) -> List[float]:
+    """Forward-compat: ``meta.homolog_identities`` if the pipeline ever writes it."""
+    raw = meta.get("homolog_identities")
+    if not isinstance(raw, list):
+        return []
+    out: List[float] = []
+    for v in raw:
+        try:
+            out.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _identities_from_alignment_fasta(fasta_path: Optional[Path]) -> List[float]:
+    """Compute %-identity of every record after the first against the first.
+
+    By convention the first record in ``msa/alignment.fasta`` is the WT.
+    Identities are returned as fractions in [0, 1]. Gap-only columns are
+    ignored. Returns an empty list if the file is missing, has < 2 records,
+    or every comparison would be zero-length.
+    """
+    if fasta_path is None or not Path(fasta_path).exists():
+        return []
+    try:
+        text = Path(fasta_path).read_text()
+    except OSError:
+        return []
+    records: List[str] = []
+    chunks: List[str] = []
+    started = False
+    for line in text.splitlines():
+        if line.startswith(">"):
+            if started:
+                records.append("".join(chunks))
+                chunks = []
+            started = True
+            continue
+        if started:
+            chunks.append(line.strip())
+    if started:
+        records.append("".join(chunks))
+    if len(records) < 2:
+        return []
+    wt = records[0]
+    out: List[float] = []
+    for seq in records[1:]:
+        n = min(len(wt), len(seq))
+        if n == 0:
+            continue
+        matches = 0
+        counted = 0
+        for i in range(n):
+            ca, cb = wt[i], seq[i]
+            if ca == "-" and cb == "-":
+                continue
+            counted += 1
+            if ca == cb and ca != "-":
+                matches += 1
+        if counted == 0:
+            continue
+        out.append(matches / counted)
     return out
 
 

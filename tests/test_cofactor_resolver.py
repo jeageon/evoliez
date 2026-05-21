@@ -81,14 +81,50 @@ def test_formula_of_smiles_matches_curated_table():
         assert formula_of(spec.smiles) == spec.formula
 
 
-def test_formula_of_handles_bracketed_and_aromatic_atoms():
-    # bracketed [N+] / [O-] / aromatic lowercase / two-letter Cl all count.
-    s = "Cc1ccc[n+](c1)CC[O-]Cl"
+def test_formula_of_handles_bracketed_and_aromatic_atoms(monkeypatch):
+    # Bracketed [N+] / [O-] / aromatic lowercase / two-letter Cl all count.
+    # The intent is to exercise the REGEX fallback (the path used when RDKit
+    # isn't installed in the light env). Newer RDKit (>=2024) refuses
+    # syntactically valid but valence-invalid SMILES like the prior fixture,
+    # so we use a well-formed SMILES AND force the import-fallback path so
+    # the regex counter is actually the code under test.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_rdkit(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "rdkit" or name.startswith("rdkit."):
+            raise ImportError("rdkit disabled for this test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _no_rdkit)
+
+    # 1-methylpyridinium fragment + ethoxide + chloride salt - well-formed
+    # under modern RDKit AND exercises every construct the regex must handle:
+    # aromatic lowercase ring atoms, bracketed [n+] / [O-], and two-letter Cl.
+    s = "Cc1ccc[n+](c1)CC[O-].Cl"
     f = formula_of(s)
     assert f.get("C", 0) == 7 + 1                  # methyl + 5 ring + 2 ethyl
     assert f.get("N", 0) == 1
     assert f.get("O", 0) == 1
     assert f.get("Cl", 0) == 1
+
+
+def test_formula_of_regex_fallback_when_rdkit_missing(monkeypatch):
+    # Direct check that when RDKit can't be imported the regex path still
+    # reproduces the curated NADP+ formula - locks in the light-env contract.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_rdkit(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "rdkit" or name.startswith("rdkit."):
+            raise ImportError("rdkit disabled for this test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _no_rdkit)
+    spec = resolve_cofactor("NADP", redox_state="oxidized")
+    assert formula_of(spec.smiles) == spec.formula
 
 
 # --------------------------------------------------------------------------- #

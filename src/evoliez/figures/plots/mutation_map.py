@@ -42,41 +42,82 @@ def _read_fasta_length(path: Path) -> Optional[int]:
     return len(seq) if seq else None
 
 
+def _coerce_int_list(v: Any) -> Optional[List[int]]:
+    if not isinstance(v, list):
+        return None
+    try:
+        return [int(x) for x in v]
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_graph_features_file(path: Optional[Path]) -> Dict[str, List[int]]:
+    """Parse a ``graph_features.json`` payload into our four canonical keys."""
+    if path is None or not Path(path).exists():
+        return {}
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, List[int]] = {}
+    for key, alt in (
+        ("catalytic", ("catalytic_positions", "catalytic_residues")),
+        ("binding_site", ("binding_site_positions", "binding_site")),
+        ("designable", ("designable_positions", "designable")),
+        ("fixed", ("fixed_positions", "fixed")),
+    ):
+        for k in (key, *alt):
+            coerced = _coerce_int_list(data.get(k))
+            if coerced is not None:
+                out[key] = coerced
+                break
+    return out
+
+
 def _read_graph_features(run_dir: Optional[Path]) -> Dict[str, List[int]]:
-    """Pull catalytic / binding-site / designable / fixed positions."""
+    """Legacy fallback: look for ``graph_features.json`` next to the run dir.
+
+    Kept for backward-compat with the pre-discovery-polish layout where
+    callers passed the raw run_dir. New code should prefer
+    :func:`_read_graph_features_file` on an explicit artifact path.
+    """
     if run_dir is None:
         return {}
-    candidates = [
+    for candidate in (
         Path(run_dir) / "graph_features.json",
         Path(run_dir) / "features" / "graph_features.json",
-    ]
-    for candidate in candidates:
-        if not candidate.exists():
-            continue
-        try:
-            data = json.loads(candidate.read_text())
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        out: Dict[str, List[int]] = {}
-        for key, alt in (
-            ("catalytic", ("catalytic_positions", "catalytic_residues")),
-            ("binding_site", ("binding_site_positions", "binding_site")),
-            ("designable", ("designable_positions", "designable")),
-            ("fixed", ("fixed_positions", "fixed")),
-        ):
-            for k in (key, *alt):
-                v = data.get(k)
-                if isinstance(v, list):
-                    try:
-                        out[key] = [int(x) for x in v]
-                    except (TypeError, ValueError):
-                        continue
-                    break
+        Path(run_dir) / "interaction_graphs" / "graph_features.json",
+    ):
+        out = _read_graph_features_file(candidate)
         if out:
             return out
     return {}
+
+
+def _positions_from_state_meta(state_path: Optional[Path]) -> Dict[str, List[int]]:
+    """Pull ``designable_positions`` / ``catalytic_positions`` from ``_state.json``."""
+    if state_path is None or not Path(state_path).exists():
+        return {}
+    try:
+        doc = json.loads(Path(state_path).read_text())
+    except (OSError, ValueError):
+        return {}
+    meta = doc.get("meta") if isinstance(doc, dict) else None
+    if not isinstance(meta, dict):
+        return {}
+    out: Dict[str, List[int]] = {}
+    for cat, key in (
+        ("catalytic", "catalytic_positions"),
+        ("binding_site", "binding_site_positions"),
+        ("designable", "designable_positions"),
+        ("fixed", "fixed_positions"),
+    ):
+        coerced = _coerce_int_list(meta.get(key))
+        if coerced is not None:
+            out[cat] = coerced
+    return out
 
 
 def render(
@@ -96,10 +137,30 @@ def render(
         _LOGGER.warning("mutation_map: failed to read sequence length")
         return None
 
-    positions = _read_graph_features(getattr(artifacts, "run_dir", None))
+    # Sources, in order:
+    #   1. artifacts.graph_features_json (the canonical interaction_graphs
+    #      output path, populated by discovery).
+    #   2. legacy graph_features.json in the run_dir root / features/.
+    #   3. _state.json meta keys (catalytic/designable/binding/fixed _positions).
+    # Whichever first yields a non-empty dict wins; we then *merge* the
+    # state-meta positions in to fill any gaps (e.g., graph_features only
+    # has designable but meta also has catalytic).
+    positions: Dict[str, List[int]] = _read_graph_features_file(
+        getattr(artifacts, "graph_features_json", None)
+    )
     if not positions:
-        _LOGGER.warning("mutation_map: no graph_features.json found, skipping")
-        return None
+        positions = _read_graph_features(getattr(artifacts, "run_dir", None))
+
+    meta_positions = _positions_from_state_meta(getattr(artifacts, "state_json", None))
+    for cat, pts in meta_positions.items():
+        positions.setdefault(cat, pts)
+
+    # As long as we have a sequence length we can still render a useful
+    # backbone strip - empty position lists just produce a sparse track.
+    if not positions:
+        _LOGGER.info(
+            "mutation_map: no position annotations found; rendering empty track"
+        )
 
     dpi = apply_style_and_get_dpi(style)
     from matplotlib import pyplot as plt  # noqa: WPS433

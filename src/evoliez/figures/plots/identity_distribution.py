@@ -132,12 +132,29 @@ def render(
     identities: List[float] = []
     sources: List[Path] = []
 
-    fasta = getattr(artifacts, "alignment_fasta", None)
-    if fasta is not None and Path(fasta).exists():
-        _, identities = _identities_from_alignment(Path(fasta))
-        if identities:
-            sources.append(Path(fasta))
+    # Source 1: pre-discovered list on the artifacts object. Discovery now
+    # populates this from interaction_model.json -> _state.json meta ->
+    # alignment.fasta, so we accept whatever it gave us. Values may be
+    # fractions in [0, 1] or already percentages - normalized below.
+    pre = getattr(artifacts, "homolog_identities", None)
+    if isinstance(pre, list) and pre:
+        for v in pre:
+            try:
+                identities.append(float(v))
+            except (TypeError, ValueError):
+                continue
 
+    # Source 2: parse the alignment FASTA ourselves (gives percentages
+    # directly, plus the WT header which is nice-to-have).
+    if not identities:
+        fasta = getattr(artifacts, "alignment_fasta", None)
+        if fasta is not None and Path(fasta).exists():
+            _, identities = _identities_from_alignment(Path(fasta))
+            if identities:
+                sources.append(Path(fasta))
+
+    # Source 3: pull from interaction_model.json directly if discovery
+    # didn't already.
     if not identities:
         im_path = getattr(artifacts, "interaction_model_json", None)
         if im_path is not None and Path(im_path).exists():
@@ -148,6 +165,19 @@ def render(
     if not identities:
         _LOGGER.warning("identity_distribution: no homolog identities found")
         return None
+
+    # Normalize: anything that looks like a fraction (<= 1.0) gets scaled
+    # to a percentage. This keeps the histogram on a consistent 0-100 axis
+    # regardless of source.
+    identities = [v * 100.0 if v <= 1.0 else v for v in identities]
+
+    # If we didn't already track a source (i.e. the values came from
+    # artifacts.homolog_identities), point at the run dir so the manifest
+    # still has *something* to attribute the figure to.
+    if not sources:
+        run_dir = getattr(artifacts, "run_dir", None)
+        if run_dir is not None:
+            sources.append(Path(run_dir))
 
     dpi = apply_style_and_get_dpi(style)
     from matplotlib import pyplot as plt  # noqa: WPS433

@@ -20,10 +20,68 @@ from evoliez.features.interaction_descriptor import (
     describe,
     fingerprint_dim,
 )
+from evoliez.logging_utils import get_logger
 from evoliez.ml.datasets import edge_rows, pose_rows
 from evoliez.ml.interaction_model import InteractionModel
 from evoliez.ml.pose_selection import PoseRecord, select_poses
 from evoliez.stages.base import Stage
+
+_log = get_logger("evoliez.s06b_interaction")
+
+
+def _export_fingerprint_matrix(out_dir, records, fp_dim: int) -> None:
+    """Write the per-pose fingerprint matrix to ``ml_datasets/`` for HTML
+    report consumption (section 5 - interaction fingerprint heatmap).
+
+    Rows correspond to the **real Boltz poses** that fed into the
+    InteractionModel training selection (one row per ``PoseRecord``), in the
+    order they were collected. This is the data the heatmap renders: the
+    synthetic decoy rows that ``select_poses`` mixes into ``sel.X`` for
+    training are intentionally omitted - they are not real interaction
+    fingerprints and would only distort the heatmap.
+
+    Failure is logged at WARNING and swallowed so a CSV-write hiccup never
+    breaks the pipeline.
+    """
+    import csv as _csv
+    import json as _json
+    from pathlib import Path as _Path
+
+    out_dir = _Path(out_dir)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = out_dir / "fingerprint_matrix.csv"
+        meta_path = out_dir / "fingerprint_matrix_meta.json"
+
+        header = ["pose_id", "group_id"] + [f"feature_{i}" for i in range(fp_dim)]
+        n_rows = 0
+        with csv_path.open("w", newline="") as fh:
+            w = _csv.writer(fh)
+            w.writerow(header)
+            for idx, rec in enumerate(records):
+                fp = rec.fingerprint
+                if fp is None or len(fp) != fp_dim:
+                    continue
+                pose_id = f"{rec.group_id}__p{idx:04d}"
+                w.writerow([pose_id, rec.group_id]
+                           + [round(float(v), 6) for v in fp])
+                n_rows += 1
+        meta = {
+            "row_kind": "pose",
+            "row_headers": ["pose_id", "group_id"],
+            "feature_dim": int(fp_dim),
+            "n_rows": int(n_rows),
+            "source": "s06b_interaction_model.select_poses input records",
+            "note": (
+                "Per-pose interaction-distance fingerprints (Boltz "
+                "diffusion-sample ensemble across representative homologs). "
+                "Synthetic training decoys are NOT included - this is the "
+                "real-pose matrix used by the HTML report fingerprint heatmap."
+            ),
+        }
+        meta_path.write_text(_json.dumps(meta, indent=2))
+    except Exception as exc:  # noqa: BLE001 - report-only artefact
+        _log.warning("fingerprint_matrix export skipped: %s", exc)
 
 
 def _pick_representatives(homologs, n: int):
@@ -149,6 +207,15 @@ class InteractionModelStage(Stage):
         model.fit(sel)
         model.save(ctx.paths.interaction_graphs / "interaction_model.json")
         ctx.put("interaction_model", model)
+
+        # Per-pose fingerprint matrix CSV (additive, report-side artefact for
+        # the HTML interaction-fingerprint heatmap). Failure-soft: a CSV-write
+        # problem must not break model training above.
+        _export_fingerprint_matrix(
+            ctx.paths.ml_datasets,
+            records,
+            fingerprint_dim(cfg.k_nearest_residues),
+        )
 
         ctx.persist_meta(
             "interaction_model",

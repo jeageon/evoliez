@@ -391,12 +391,24 @@ def _build_3d_section_assets(
     *,
     style: str,
     skip_3d: bool,
-) -> Tuple[Dict[str, List[Dict[str, Any]]], List[FigureSpec]]:
-    """Build {section_key: [viewer dicts]} + any PyMOL FigureSpecs.
+) -> Tuple[Dict[str, List[Dict[str, Any]]], List[FigureSpec], List[FigureSpec]]:
+    """Build {section_key: [viewer dicts]} + PyMOL specs + inline-fallback specs.
 
     The 3Dmol inline viewers always work (no native dep); PyMOL PNG
     renders are only attempted when the binary is on PATH and
     ``skip_3d=False``.
+
+    For each of the three section-specific PyMOL renderers (pocket,
+    pose-ensemble, mutation-overlay), we *always* attempt the call.  If
+    the renderer returns ``None`` (PyMOL absent, render failed, etc.) and
+    a WT complex PDB is available, we substitute a 3Dmol.js inline
+    viewer for that section and record a placeholder ``FigureSpec`` with
+    ``renderer="3dmol-inline"`` so the manifest tracks the fallback.
+
+    Returns a 3-tuple: ``(viewers_per_section, pymol_specs,
+    inline_fallback_specs)``.  ``pymol_specs`` lists successful PyMOL PNG
+    renders; ``inline_fallback_specs`` lists the placeholder specs for
+    inline viewer substitutions.
     """
     viewers_per_section: Dict[str, List[Dict[str, Any]]] = {
         "03_boltz_complex": [],
@@ -405,15 +417,27 @@ def _build_3d_section_assets(
         "09_final_library": [],
     }
     pymol_specs: List[FigureSpec] = []
+    inline_fallback_specs: List[FigureSpec] = []
 
     if skip_3d:
-        return viewers_per_section, pymol_specs
+        return viewers_per_section, pymol_specs, inline_fallback_specs
 
-    # ---- 3Dmol inline viewers (always safe) ----------------------------
-    if artifacts.wt_complex_pdb is not None and Path(artifacts.wt_complex_pdb).exists():
+    wt_pdb = (
+        Path(artifacts.wt_complex_pdb)
+        if artifacts.wt_complex_pdb is not None
+        and Path(artifacts.wt_complex_pdb).exists()
+        else None
+    )
+
+    # ---- 3Dmol inline viewers (always safe, independent of PyMOL) ------
+    # These are the legacy unconditional viewers that pre-date the
+    # per-renderer fallback below; they still ship by default so users
+    # always get an interactive WT view in section 03 and per-mutant
+    # views in section 09.
+    if wt_pdb is not None:
         try:
             ctx = make_viewer_context(
-                Path(artifacts.wt_complex_pdb),
+                wt_pdb,
                 viewer_id="wt-complex",
                 height=480,
                 title="WT-ligand complex",
@@ -437,25 +461,259 @@ def _build_3d_section_assets(
         except Exception as exc:  # noqa: BLE001
             _LOG.warning("3Dmol viewer (mut %s) failed: %s", label, exc)
 
-    # ---- PyMOL PNG renders (best-effort) -------------------------------
-    if _THREED_OK and pymol_available():
-        for fid, render_fn in (
-            ("03_boltz_binding_pocket", render_pocket_view),
-            ("04_boltz_pose_ensemble", render_pose_ensemble),
-            ("09_final_library_structure", render_mutation_overlay),
-        ):
-            out_path = figures_dir / f"{fid}.png"
-            try:
-                spec = render_fn(artifacts, out_path, style=style)
-            except Exception as exc:  # noqa: BLE001
-                _LOG.warning("PyMOL %s failed: %s", fid, exc)
-                spec = None
-            if spec is not None:
-                # Force the figure_id to match our manifest layout.
-                spec.figure_id = fid
-                pymol_specs.append(spec)
+    # ---- Per-renderer PyMOL attempts + 3Dmol fallback -------------------
+    # Each renderer is invoked unconditionally; the renderers themselves
+    # short-circuit (returning None) when PyMOL is unavailable or inputs
+    # are missing.  When None comes back AND we have a WT PDB to fall
+    # back on, we build a 3Dmol inline viewer for the section so the
+    # report never shows an empty 3D pane.
+    pymol_section_map = {
+        "03_boltz_binding_pocket": "03_boltz_complex",
+        "04_boltz_pose_ensemble": "04_pose_ensemble",
+        "09_final_library_structure": "09_final_library",
+    }
+    for fid, render_fn in (
+        ("03_boltz_binding_pocket", render_pocket_view),
+        ("04_boltz_pose_ensemble", render_pose_ensemble),
+        ("09_final_library_structure", render_mutation_overlay),
+    ):
+        out_path = figures_dir / f"{fid}.png"
+        spec: Optional[FigureSpec] = None
+        try:
+            spec = render_fn(artifacts, out_path, style=style)
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("PyMOL %s failed: %s", fid, exc)
+            spec = None
 
-    return viewers_per_section, pymol_specs
+        if spec is not None:
+            # Force the figure_id to match our manifest layout.
+            spec.figure_id = fid
+            pymol_specs.append(spec)
+            continue
+
+        # PyMOL render unavailable - try 3Dmol fallback if WT exists.
+        section_key = pymol_section_map[fid]
+        fallback = _build_inline_fallback(
+            fid, artifacts, wt_pdb=wt_pdb
+        )
+        if fallback is None:
+            continue
+        viewer_ctx, fallback_spec = fallback
+        viewers_per_section[section_key].append(viewer_ctx)
+        inline_fallback_specs.append(fallback_spec)
+
+    return viewers_per_section, pymol_specs, inline_fallback_specs
+
+
+def _build_inline_fallback(
+    figure_id: str,
+    artifacts: ReportArtifacts,
+    *,
+    wt_pdb: Optional[Path],
+) -> Optional[Tuple[Dict[str, Any], FigureSpec]]:
+    """Build a (viewer_context, FigureSpec) pair for a PyMOL-renderer fallback.
+
+    Returns ``None`` when the inline fallback can't be built (typically
+    because no WT PDB is available).  Each branch knows which inputs the
+    matching PyMOL renderer needed and constructs a viewer with the
+    relevant title / highlight residues.
+    """
+    if wt_pdb is None:
+        return None
+
+    if figure_id == "03_boltz_binding_pocket":
+        viewer_id = "wt_pocket"
+        title = "WT complex (3Dmol interactive viewer)"
+        description = (
+            "3Dmol.js inline viewer (file://-safe). PyMOL paper-grade "
+            "PNG unavailable - rotate/zoom in browser."
+        )
+        viewer_ctx = make_viewer_context(
+            wt_pdb,
+            viewer_id=viewer_id,
+            height=480,
+            title=title,
+        )
+        if not viewer_ctx or viewer_ctx.get("missing"):
+            return None
+        spec = FigureSpec(
+            figure_id="03_boltz_complex_3dmol",
+            section="boltz_complex",
+            title="WT complex (interactive)",
+            description=description,
+            # No on-disk file -- the viewer lives in <script type="text/plain">
+            # inside the rendered HTML.  Use ``Path(".")`` so the bundler's
+            # "figure file exists" check resolves to the report root and
+            # never errors; ``params["inline"] = True`` is the real marker.
+            path=Path("."),
+            source_files=[Path(wt_pdb)],
+            renderer="3dmol-inline",
+            params={
+                "inline": True,
+                "viewer_id": viewer_id,
+                "inline_uri": f"inline://{viewer_id}",
+            },
+        )
+        return viewer_ctx, spec
+
+    if figure_id == "04_boltz_pose_ensemble":
+        # Prefer the best Boltz model_0.pdb when we can find it; fall
+        # back to the WT complex itself otherwise.  The PNG ensemble
+        # overlay was the value-add for paper figures; the inline
+        # viewer's job is interactive review.
+        pose_pdb = _best_pose_pdb(artifacts) or wt_pdb
+        viewer_id = "pose_ensemble_inline"
+        title = "WT pose (3Dmol interactive viewer)"
+        description = (
+            "3Dmol.js inline viewer (file://-safe). PyMOL pose-ensemble "
+            "overlay unavailable - rotate/zoom in browser."
+        )
+        viewer_ctx = make_viewer_context(
+            pose_pdb,
+            viewer_id=viewer_id,
+            height=480,
+            title=title,
+        )
+        if not viewer_ctx or viewer_ctx.get("missing"):
+            return None
+        spec = FigureSpec(
+            figure_id="04_pose_ensemble_3dmol",
+            section="pose_ensemble",
+            title="WT pose (interactive)",
+            description=description,
+            path=Path("."),
+            source_files=[Path(pose_pdb)],
+            renderer="3dmol-inline",
+            params={
+                "inline": True,
+                "viewer_id": viewer_id,
+                "inline_uri": f"inline://{viewer_id}",
+            },
+        )
+        return viewer_ctx, spec
+
+    if figure_id == "09_final_library_structure":
+        # Highlight residues come from the top candidates' mutation
+        # tokens; the PyMOL renderer ignores the candidate list when
+        # absent, so we mirror that and skip the fallback if nothing
+        # is available.
+        highlight_positions = _top_mutation_positions(artifacts, top_k=10)
+        if not highlight_positions:
+            return None
+        viewer_id = "final_library_structure_inline"
+        title = "Top-K mutation positions on WT (interactive)"
+        description = (
+            "3Dmol.js inline viewer (file://-safe). PyMOL mutation "
+            "overlay unavailable - rotate/zoom in browser."
+        )
+        viewer_ctx = make_viewer_context(
+            wt_pdb,
+            viewer_id=viewer_id,
+            height=480,
+            highlight_residues=highlight_positions,
+            title=title,
+        )
+        if not viewer_ctx or viewer_ctx.get("missing"):
+            return None
+        source_files: List[Path] = [Path(wt_pdb)]
+        csv_path = artifacts.final_candidates_csv
+        if csv_path is not None and Path(csv_path).exists():
+            source_files.append(Path(csv_path))
+        spec = FigureSpec(
+            figure_id="09_final_library_3dmol",
+            section="final_library",
+            title="Top-K mutation positions (interactive)",
+            description=description,
+            path=Path("."),
+            source_files=source_files,
+            renderer="3dmol-inline",
+            params={
+                "inline": True,
+                "viewer_id": viewer_id,
+                "inline_uri": f"inline://{viewer_id}",
+                "highlight_residues": list(highlight_positions),
+            },
+        )
+        return viewer_ctx, spec
+
+    return None
+
+
+def _best_pose_pdb(artifacts: ReportArtifacts) -> Optional[Path]:
+    """Return the best WT Boltz pose (``*_model_0.pdb``) if discoverable.
+
+    Mirrors :mod:`evoliez.figures.three_d.pose_ensemble` lookup so the
+    inline fallback shows the same primary pose the PyMOL overlay would
+    have used as its reference.  Returns ``None`` when nothing is found.
+    """
+    run_dir = getattr(artifacts, "run_dir", None)
+    if run_dir is None:
+        return None
+    pred_root = (
+        Path(run_dir)
+        / "complexes"
+        / "boltz_results_wt_boltz_input"
+        / "predictions"
+        / "wt_boltz_input"
+    )
+    if pred_root.exists():
+        hits = sorted(pred_root.glob("*_model_0.pdb"))
+        if hits:
+            return hits[0]
+    alt_root = (
+        Path(run_dir)
+        / "complexes"
+        / "boltz_results_wt_boltz_input"
+        / "predictions"
+    )
+    if alt_root.exists():
+        hits = sorted(alt_root.rglob("*_model_0.pdb"))
+        if hits:
+            return hits[0]
+    return None
+
+
+def _top_mutation_positions(
+    artifacts: ReportArtifacts, *, top_k: int = 10
+) -> List[int]:
+    """Parse ``final_candidates.csv`` for the top-K rows' mutation positions.
+
+    Mirrors :mod:`evoliez.figures.three_d.mutation_overlay` parsing so the
+    inline fallback highlights the same residues PyMOL would have. Returns
+    an ordered, de-duplicated list (best-first).
+    """
+    csv_path = getattr(artifacts, "final_candidates_csv", None)
+    if csv_path is None or not Path(csv_path).exists():
+        return []
+    import re
+
+    token_re = re.compile(r"^[A-Z](?P<pos>\d+)[A-Z*]$")
+    out: List[int] = []
+    seen: set = set()
+    try:
+        with Path(csv_path).open("r", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for i, row in enumerate(reader):
+                if i >= max(1, int(top_k)):
+                    break
+                raw = row.get("mutations") or row.get("mutation") or ""
+                for tok in re.split(r"[,;+\s]+", str(raw).strip()):
+                    if not tok:
+                        continue
+                    m = token_re.match(tok.strip())
+                    if not m:
+                        continue
+                    try:
+                        pos = int(m.group("pos"))
+                    except ValueError:
+                        continue
+                    if pos in seen:
+                        continue
+                    seen.add(pos)
+                    out.append(pos)
+    except OSError:
+        return []
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -635,7 +893,7 @@ def build_report(
         figures_generated += 1
 
     # ---- 6. 3D viewers + PyMOL ------------------------------------------
-    viewer_buckets, pymol_specs = _build_3d_section_assets(
+    viewer_buckets, pymol_specs, inline_fallback_specs = _build_3d_section_assets(
         artifacts, figures_dir, style=style, skip_3d=skip_3d
     )
     for sec_key, viewers in viewer_buckets.items():
@@ -654,6 +912,17 @@ def build_report(
         section_key = pymol_section_map.get(spec.figure_id, "03_boltz_complex")
         sections[section_key]["figures"].append(_spec_to_template_dict(spec))
         figures_generated += 1
+
+    # 3Dmol inline fallback FigureSpecs: provenance-only - ``path``
+    # is ``"."`` (the report root) because the actual viewer lives in
+    # the rendered HTML's ``<script type="text/plain">`` block, not on
+    # disk.  ``params["inline"] = True`` is the real marker.  We DON'T
+    # rebase the path against ``output_dir`` (it's already a root-relative
+    # sentinel) and we DON'T add the spec to ``sections[..]["figures"]``
+    # (would render as a broken ``<img>``).  The viewer itself was
+    # appended to ``sections[..]["viewers"]`` above.
+    for spec in inline_fallback_specs:
+        manifest.add_figure(spec)
 
     # ---- 7. tables ------------------------------------------------------
     seq_table = _sequence_track_table(artifacts)

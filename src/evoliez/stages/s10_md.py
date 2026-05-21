@@ -140,6 +140,49 @@ class MDStage(Stage):
                 cand.scores["md_replicas_run"] = int(result.replicas_run)
 
             aj = to_json(metrics)
+            # Trajectory metadata (additive): when the OpenMM engine wrote a
+            # real .dcd, the HTML report needs the path / topology / frame
+            # count to generate movies. Mock backend runs leave these as
+            # None. Wrapped in try/except so a metadata-write hiccup never
+            # poisons the stage. See adapters/openmm_engine.py for the
+            # DCDReporter convention (`<md_dir>/<cand>.dcd`, 50 frames per
+            # production run; minimised PDB is the topology).
+            try:
+                _traj_str = result.trajectory_path
+                _traj_p = __import__("pathlib").Path(_traj_str) if _traj_str else None
+                _top_str = result.minimized_pdb
+                _top_p = __import__("pathlib").Path(_top_str) if _top_str else None
+                _real_md = (
+                    _traj_p is not None
+                    and _traj_p.exists()
+                    and not result.integration_failed
+                    and not str(result.status).startswith("skipped")
+                )
+                _n_frames = (
+                    len(result.ligand_rmsd_series)
+                    if (_real_md and result.ligand_rmsd_series) else None
+                )
+                # production_ns is total simulated time; per-frame dt = total / n_frames
+                _dt_ps = None
+                if _real_md and _n_frames:
+                    _dt_ps = round(
+                        float(result.simulation_time_ns) * 1000.0 / float(_n_frames),
+                        4,
+                    )
+                aj["trajectory_path"] = (
+                    str(_traj_p) if (_traj_p is not None and _traj_p.exists()) else None
+                )
+                aj["topology_path"] = (
+                    str(_top_p) if (_top_p is not None and _top_p.exists()) else None
+                )
+                aj["n_frames"] = _n_frames
+                aj["dt_ps"] = _dt_ps
+                aj["trajectory_format"] = "dcd" if _real_md else None
+            except Exception as exc:  # noqa: BLE001 - never break stage on metadata
+                self.log.warning(
+                    "trajectory metadata write skipped for %s: %s",
+                    cand.candidate_id, exc,
+                )
             (ctx.paths.md_candidate(cand.candidate_id) / "analysis.json").write_text(
                 __import__("json").dumps(aj, indent=2)
             )
