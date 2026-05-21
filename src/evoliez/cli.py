@@ -251,21 +251,41 @@ def figures_cmd(
         None, "--benchmark", help="Override benchmark CSV"
     ),
 ) -> None:
-    """Build a portable HTML report package for a pipeline run.
+    """Build a portable HTML report package for a pipeline run."""
+    from evoliez.figures.html.builder import build_report
 
-    Wave 1 stub: the CLI registration is wired so ``evoliez figures
-    --help`` works and downstream agents (wave 2) can swap the body for a
-    call into ``figures.html.builder.build_report`` without changing the
-    user-facing surface.
-    """
-    typer.echo(
-        f"figures: config={config} run_dir={run_dir} style={style} "
-        f"html={html} output={output} skip_3d={skip_3d} benchmark={benchmark}"
+    if html not in ("linked", "self-contained"):
+        typer.echo(f"--html must be 'linked' or 'self-contained' (got {html})")
+        raise typer.Exit(2)
+    if style not in ("paper", "presentation", "poster"):
+        typer.echo(f"--style must be paper|presentation|poster (got {style})")
+        raise typer.Exit(2)
+
+    cfg = load_config(config)
+    if run_dir is None:
+        run_dir = Path(cfg.project.output_dir)
+    if output is None:
+        output = run_dir / "report_package.zip"
+
+    result = build_report(
+        run_dir,
+        style=style,
+        html_mode=html,
+        skip_3d=skip_3d,
+        benchmark_csv=benchmark,
+        mock_backend=(cfg.backend.value == "mock"),
+        output_zip=output,
     )
+    typer.echo(f"HTML report:   {result['html_path']}")
+    typer.echo(f"Zip package:   {result['zip_path']}")
+    typer.echo(f"Manifest:      {result['manifest_path']}")
     typer.echo(
-        "(Wave 2 will implement the actual builder. "
-        "This stub exists so the CLI registration is verifiable.)"
+        f"Figures:       {result['figures_generated']} generated, "
+        f"{result['figures_skipped']} skipped"
     )
+    typer.echo(f"Total size:    {result['total_size_mb']:.1f} MB")
+    if result["warnings"]:
+        typer.echo(f"Warnings:      {len(result['warnings'])}")
 
 
 @app.command()

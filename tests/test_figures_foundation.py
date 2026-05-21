@@ -316,8 +316,9 @@ def test_cli_figures_help() -> None:
     assert "--run-dir" in result.output
 
 
-def test_cli_figures_stub_runs(tmp_path: Path) -> None:
-    """Stub command echoes its arguments and returns 0 (wave-1 contract)."""
+def test_cli_figures_rejects_bad_style(tmp_path: Path) -> None:
+    """Wave-2: CLI validates --style/--html before touching the config."""
+    pytest.importorskip("jinja2")
     from typer.testing import CliRunner
 
     from evoliez.cli import app
@@ -325,6 +326,8 @@ def test_cli_figures_stub_runs(tmp_path: Path) -> None:
     runner = CliRunner()
     cfg = tmp_path / "config.yaml"
     cfg.write_text("project: {}\n")
-    result = runner.invoke(app, ["figures", "-c", str(cfg), "--style", "paper"])
-    assert result.exit_code == 0, result.output
-    assert "style=paper" in result.output
+    # Bogus style flag is rejected with exit code 2 before any config
+    # validation runs.
+    result = runner.invoke(app, ["figures", "-c", str(cfg), "--style", "bogus"])
+    assert result.exit_code == 2, result.output
+    assert "--style" in result.output
