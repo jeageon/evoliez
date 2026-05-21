@@ -11,6 +11,7 @@ Returns a backend-agnostic :class:`MDResult` consumed by ``md.analysis``.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -390,6 +391,26 @@ def _curated_param_system_generator(
     return system, prm.topology, crd.positions
 
 
+def _ff_cache_path(workdir: Path, ff: str) -> Path:
+    """Run-level FF cache: openmmforcefields indexes parameters by SMILES
+    inside the cache JSON, so sharing ONE cache file across all
+    candidates of a single MD stage invocation lets the same ligand
+    (e.g. NADP+ at -3) be parameterized ONCE and reused for every
+    candidate. Previously each candidate had its own
+    `<candidate>/ff_cache_*.json` and reparameterized from scratch -
+    ~30 redundant antechamber/Gasteiger passes on production scale.
+
+    workdir = per-candidate dir (e.g. `<md>/<candidate_id>/`).
+    workdir.parent = MD stage dir, shared across candidates of this run.
+    Sanitize `ff` because it can contain slashes / pluses (e.g.
+    "gaff-2.11+gasteiger").
+    """
+    safe = re.sub(r"[^A-Za-z0-9._+-]", "_", ff)
+    parent = workdir.parent if workdir.parent.exists() or workdir.exists() else workdir
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent / f"ff_cache_{safe}.json"
+
+
 class _LigandParamUnsupported(Exception):
     """No available small-molecule FF can parameterize this ligand (e.g.
     GAFF/AM1-BCC on a large multiply-phosphorylated cofactor like NADP -
@@ -427,7 +448,14 @@ def _gasteiger_charge_system_generator(off_lig, workdir: Path):
             forcefields=["amber14-all.xml", "implicit/obc2.xml"],
             small_molecule_forcefield="gaff-2.11",
             molecules=[off_lig],
-            cache=str(workdir / "ff_cache_gasteiger.json"),
+            # Run-level FF cache: openmmforcefields indexes parameters by
+            # molecule (SMILES) inside the JSON, so sharing one cache file
+            # across all candidates of a single MD stage invocation lets
+            # the same ligand (e.g. NADP+) be parameterized ONCE and
+            # reused for every candidate. workdir.parent is the MD stage
+            # dir; per-candidate trajectory files still live under
+            # workdir/<candidate_id>/.
+            cache=str(_ff_cache_path(workdir, "gaff-2.11+gasteiger")),
             forcefield_kwargs={"constraints": app.HBonds},
             nonperiodic_forcefield_kwargs={
                 "nonbondedMethod": app.CutoffNonPeriodic,
@@ -483,7 +511,7 @@ def _ligand_system_generator(off_lig, workdir: Path,
                 forcefields=["amber14-all.xml", "implicit/obc2.xml"],
                 small_molecule_forcefield=ff,
                 molecules=[off_lig],
-                cache=str(workdir / f"ff_cache_{ff}.json"),
+                cache=str(_ff_cache_path(workdir, ff)),  # run-level cache
                 forcefield_kwargs={"constraints": app.HBonds},
                 nonperiodic_forcefield_kwargs={
                     "nonbondedMethod": app.CutoffNonPeriodic,
