@@ -723,14 +723,23 @@ def build_report(
         except Exception as exc:  # noqa: BLE001
             _LOG.warning("self-contained packaging failed: %s", exc)
             manifest.add_warning(f"self-contained packaging failed: {exc}")
-    if output_zip is not None:
-        zip_path = Path(output_zip)
-        try:
-            build_zip(output_dir, zip_path)
-        except Exception as exc:  # noqa: BLE001
-            _LOG.warning("zip packaging failed: %s", exc)
-            manifest.add_warning(f"zip packaging failed: {exc}")
-            zip_path = None
+    # Default zip path: <run_dir>/report_package.zip when caller didn't
+    # specify - the whole point of `evoliez figures` is portability, so
+    # a ZIP should exist by default. The CLI sets an explicit path; the
+    # Python API gets this convenience default. (build_zip is also
+    # called for self-contained mode so the user gets ONE archive
+    # whether they chose linked or self-contained.)
+    zip_path = (
+        Path(output_zip)
+        if output_zip is not None
+        else (run_dir / "report_package.zip")
+    )
+    try:
+        build_zip(output_dir, zip_path)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("zip packaging failed: %s", exc)
+        manifest.add_warning(f"zip packaging failed: {exc}")
+        zip_path = None
 
     # Rewrite the manifest one more time so any packaging warnings land.
     manifest.write(manifest_path)

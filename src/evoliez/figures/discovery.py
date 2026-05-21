@@ -12,9 +12,10 @@ Boltz / MD stage writers; see the spec at the top of each entry below.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from evoliez.figures.types import ReportArtifacts
 
@@ -35,6 +36,7 @@ def discover(run_dir: Path) -> ReportArtifacts:
 
     # ---- top-level state / reports --------------------------------------
     arts.state_json = _first_existing(run_dir / "_state.json")
+    state_meta = _read_state_meta(arts.state_json)
 
     reports = run_dir / "reports"
     arts.final_candidates_csv = _first_existing(reports / "final_candidates.csv")
@@ -44,13 +46,32 @@ def discover(run_dir: Path) -> ReportArtifacts:
     arts.provenance_json = _first_existing(reports / "provenance.json")
 
     # ---- inputs (target FASTA, ligand SMILES) ---------------------------
+    # Several discovery sources, ordered by reliability:
+    #   1. inputs/target.fasta or .fa (canonical drop)
+    #   2. inputs/*.fasta glob (looser but explicit)
+    #   3. run_dir/target.fasta (some setups skip the inputs/ subdir)
+    #   4. examples/<project_dir>/target.fasta referenced from provenance
+    # Any one match is enough; missing target_fasta just gates the
+    # mutation_map and sequence-track figures, the rest still render.
     inputs = run_dir / "inputs"
-    arts.target_fasta = _first_existing(
+    fasta_candidates: List[Path] = [
         inputs / "target.fasta",
         inputs / "target.fa",
-        *sorted(inputs.glob("*.fasta")) if inputs.exists() else [],
+    ]
+    if inputs.exists():
+        fasta_candidates.extend(sorted(inputs.glob("*.fasta")))
+    fasta_candidates.append(run_dir / "target.fasta")
+    fasta_candidates.append(run_dir / "target.fa")
+    arts.target_fasta = _first_existing(*fasta_candidates)
+
+    # Ligand SMILES: file in inputs/ OR _state.json meta. The pipeline
+    # writes meta.ligand_smiles in s01_input, so this is a reliable
+    # late-stage fallback even when no inputs/ligand.smi was provided.
+    arts.ligand_smiles = (
+        _read_ligand_smiles(inputs)
+        or _smiles_from_meta(state_meta)
+        or _smiles_from_provenance(arts.provenance_json)
     )
-    arts.ligand_smiles = _read_ligand_smiles(inputs)
 
     # ---- MSA / conservation ---------------------------------------------
     msa = run_dir / "msa"
@@ -111,6 +132,45 @@ def _read_ligand_smiles(inputs_dir: Path) -> Optional[str]:
                 if line and not line.startswith("#"):
                     # SMILES files sometimes have "SMILES NAME" on a line.
                     return line.split()[0]
+    return None
+
+
+def _read_state_meta(state_path: Optional[Path]) -> Dict[str, Any]:
+    """Return ``_state.json`` ``meta`` dict, or ``{}`` if missing/unparseable.
+
+    The pipeline records small JSON-safe facts there (sequence length,
+    ligand SMILES, n_homologs, etc.) - they're cheap to read once at
+    report-build time and give us a reliable fallback when canonical
+    file artifacts (e.g., inputs/ligand.smi) were never written.
+    """
+    if state_path is None or not state_path.exists():
+        return {}
+    try:
+        doc = json.loads(state_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    meta = doc.get("meta")
+    return meta if isinstance(meta, dict) else {}
+
+
+def _smiles_from_meta(meta: Dict[str, Any]) -> Optional[str]:
+    """Pull ``meta.ligand_smiles`` (string) if present."""
+    s = meta.get("ligand_smiles")
+    return s if isinstance(s, str) and s.strip() else None
+
+
+def _smiles_from_provenance(provenance_path: Optional[Path]) -> Optional[str]:
+    """Last-resort fallback: provenance.json may carry the SMILES too."""
+    if provenance_path is None or not provenance_path.exists():
+        return None
+    try:
+        doc = json.loads(provenance_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    for key in ("ligand_smiles", "smiles"):
+        s = doc.get(key)
+        if isinstance(s, str) and s.strip():
+            return s
     return None
 
 
