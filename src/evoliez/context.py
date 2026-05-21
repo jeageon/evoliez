@@ -127,7 +127,21 @@ class RunContext:
         sp = self.paths.state_path
         current = self.run_fingerprint()
         if sp.exists():
-            self._state = json.loads(sp.read_text())
+            # Production safety: a crash mid-`_save_state` (pre-atomic-
+            # rename fix below this was a real possibility) can leave a
+            # truncated state.json. Don't propagate the JSONDecodeError
+            # up the stack on startup - log loudly and reset state so
+            # the user can re-run from scratch rather than being stuck.
+            try:
+                raw = sp.read_text()
+                self._state = json.loads(raw) if raw.strip() else {}
+            except (json.JSONDecodeError, OSError) as exc:
+                log.warning(
+                    "state file %s is corrupt (%s); discarding resume "
+                    "checkpoint and starting fresh", sp, exc,
+                )
+                self._state = {}
+                self.invalidated = True
             self._state.setdefault("completed_stages", [])
             self._state.setdefault("meta", {})
             stored = self._state.get("fingerprint", {})
@@ -148,7 +162,24 @@ class RunContext:
         self._save_state()
 
     def _save_state(self) -> None:
-        self.paths.state_path.write_text(json.dumps(self._state, indent=2, default=str))
+        """Atomic write: serialise + fsync to a tmp sibling and `os.replace`
+        into place. A crash mid-write (Ctrl-C, OOM kill, power loss) leaves
+        either the old state intact or the new one intact - never a
+        truncated JSON that wedges the next startup."""
+        sp = self.paths.state_path
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        tmp = sp.with_suffix(sp.suffix + ".tmp")
+        payload = json.dumps(self._state, indent=2, default=str)
+        # write + fsync the tmp file, then rename. os.replace is atomic
+        # on POSIX and on Windows (Python>=3.3).
+        with open(tmp, "w") as fh:
+            fh.write(payload)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass  # non-fatal on tmpfs / network mounts
+        os.replace(tmp, sp)
 
     def is_stage_done(self, name: str) -> bool:
         return name in self._state.get("completed_stages", [])

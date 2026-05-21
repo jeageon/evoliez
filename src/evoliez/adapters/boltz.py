@@ -89,6 +89,11 @@ def _load_existing_real(
     disk yet (caller falls back to running Boltz). Same scoping rule as
     the structure-discovery fix: ONLY look under this label's results
     dir so multi-mutant runs don't cross-contaminate.
+
+    Defensive against half-written output (production was interrupted
+    mid-Boltz at least once): if the PDB/CIF parser raises, treat the
+    cache as a miss and return None so the caller falls back to a
+    fresh prediction instead of crashing the whole pipeline.
     """
     label_results = outdir / f"boltz_results_{label}_boltz_input"
     if not label_results.exists():
@@ -100,10 +105,49 @@ def _load_existing_real(
     if not found:
         return None
     structure_file = found[0]
-    cx = _parse_real_structure(structure_file, sequence, ligand)
+    # An empty (0-byte) PDB - left behind by a Boltz subprocess killed
+    # mid-write - shouldn't fool the cache into "we have a result".
+    try:
+        if structure_file.stat().st_size < 64:
+            log.warning(
+                "_load_existing_real(%s): %s is suspiciously small "
+                "(%d bytes); ignoring cache and re-predicting",
+                label, structure_file, structure_file.stat().st_size,
+            )
+            return None
+    except OSError:
+        return None
+    try:
+        cx = _parse_real_structure(structure_file, sequence, ligand)
+    except Exception as exc:
+        # Half-written / malformed PDB on resume from a killed Boltz.
+        # Log loudly and fall through to a fresh prediction.
+        log.warning(
+            "_load_existing_real(%s): failed to parse %s (%s); "
+            "ignoring cache and re-predicting", label, structure_file, exc,
+        )
+        return None
+    # _parse_real_structure is lenient on garbage (returns an empty-
+    # residue Complex rather than raising). Treat that as a cache miss
+    # too - a zero-residue cached complex would otherwise silently feed
+    # downstream stages and produce useless mutant predictions.
+    if not cx.structure.residues:
+        log.warning(
+            "_load_existing_real(%s): parsed %s but got 0 residues; "
+            "ignoring cache and re-predicting", label, structure_file,
+        )
+        return None
     cx.method = cfg.primary_method
     cx.path = str(structure_file)
-    cx.samples = _parse_real_samples(label_results, cx.ligand.atoms)
+    try:
+        cx.samples = _parse_real_samples(label_results, cx.ligand.atoms)
+    except Exception as exc:
+        log.warning(
+            "_load_existing_real(%s): sample parse failed (%s); "
+            "using synthesised metrics from structure-only cache",
+            label, exc,
+        )
+        cx.samples = []
     if not cx.samples:
         m = _parse_one_confidence(label_results) or {}
         cx.samples = [BoltzSample(idx=0, ligand_atoms=cx.ligand.atoms, metrics=m)]
