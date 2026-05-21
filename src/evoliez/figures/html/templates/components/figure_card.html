@@ -1,0 +1,36 @@
+{# Render one figure (image, embedded HTML, or video) with caption +
+   collapsible provenance.  `fig` is a FigureSpec-shaped dict. #}
+<figure class="figure-card" id="fig-{{ fig.figure_id }}">
+  {% set _path = fig.path|string %}
+  {% if _path.endswith('.html') or _path.endswith('.htm') %}
+    <iframe src="{{ _path }}" loading="lazy" title="{{ fig.title }}"></iframe>
+  {% elif _path.endswith('.mp4') or _path.endswith('.webm') %}
+    <video controls loop muted preload="metadata"
+           {% if fig.poster %}poster="{{ fig.poster }}"{% endif %}>
+      <source src="{{ _path }}" type="video/mp4; codecs=avc1.42E01E">
+      Your browser does not support embedded video.
+    </video>
+  {% else %}
+    <img src="{{ _path }}" alt="{{ fig.title }}" loading="lazy">
+  {% endif %}
+  <figcaption>
+    <strong>{{ fig.title }}</strong>
+    {% if fig.description %}<p>{{ fig.description }}</p>{% endif %}
+    <details class="figure-provenance">
+      <summary>Provenance</summary>
+      <ul>
+        <li>Figure id: <code>{{ fig.figure_id }}</code></li>
+        <li>Renderer: <code>{{ fig.renderer }}</code></li>
+        {% if fig.generated_at %}<li>Generated: <code>{{ fig.generated_at }}</code></li>{% endif %}
+        {% if fig.source_files %}
+        <li>Sources:
+          {% for s in fig.source_files %}<code>{{ s }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+        </li>
+        {% endif %}
+        {% if fig.params %}
+        <li>Params: <code>{{ fig.params|tojson }}</code></li>
+        {% endif %}
+      </ul>
+    </details>
+  </figcaption>
+</figure>

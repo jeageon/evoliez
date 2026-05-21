@@ -1,0 +1,25 @@
+{# Filterable / sortable / paginated table.  `table` shape:
+     { id: str, columns: [str], rows: [ {col: value, ..., evidence_class?: str} ] }
+   Behaviour driven entirely by static/report.js (no inline JS). #}
+<div class="datatable-wrap">
+  <div class="datatable-controls">
+    <input type="text" class="datatable-search"
+           placeholder="Search&hellip;"
+           aria-label="Filter table">
+    <span class="datatable-count"></span>
+  </div>
+  <table class="datatable" id="table-{{ table.id }}">
+    <thead>
+      <tr>
+        {% for col in table.columns %}<th scope="col">{{ col }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in table.rows %}
+      <tr {% if row.evidence_class %}class="evidence-{{ row.evidence_class }}"{% endif %}>
+        {% for col in table.columns %}<td>{{ row[col] }}</td>{% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

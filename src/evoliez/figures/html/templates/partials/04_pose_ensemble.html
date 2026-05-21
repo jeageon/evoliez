@@ -1,0 +1,38 @@
+{# Section 4 - Pose ensemble: docking / sampling per homolog. #}
+<section id="04-pose-ensemble" class="report-section">
+  <h2><a href="#04-pose-ensemble" aria-label="Permalink">#</a> 4. Pose Ensemble</h2>
+  {% if section is defined and section.description %}
+  <p class="section-desc">{{ section.description }}</p>
+  {% else %}
+  <p class="section-desc">
+    Ligand pose ensemble across homologs &mdash; clustering and ranking.
+  </p>
+  {% endif %}
+
+  {% set _figs = (section.figures if section is defined else []) or [] %}
+  {% set _tables = (section.tables if section is defined else []) or [] %}
+  {% set _viewers = (section.viewers if section is defined else []) or [] %}
+  {% set _notes = (section.notes if section is defined else []) or [] %}
+
+  {% for fig in _figs %}
+    {% include 'components/figure_card.html' %}
+  {% endfor %}
+
+  {% for viewer in _viewers %}
+    {% include 'components/threed_viewer.html' %}
+  {% endfor %}
+
+  {% for table in _tables %}
+    {% include 'components/datatable.html' %}
+  {% endfor %}
+
+  {% if not _figs and not _tables and not _viewers %}
+  <div class="section-empty">No pose ensemble outputs available.</div>
+  {% endif %}
+
+  {% if _notes %}
+  <div class="banner">
+    <ul>{% for n in _notes %}<li>{{ n }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+</section>

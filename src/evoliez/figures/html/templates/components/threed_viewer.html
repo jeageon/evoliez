@@ -1,0 +1,40 @@
+{# Inline 3Dmol viewer.  The PDB text is embedded in a script tag with a
+   non-executable MIME so the file://-loaded HTML stays self-contained.
+   `viewer` shape:
+     { id: str, pdb_text: str, height?: int, highlight_residues?: [int|str] }
+#}
+<div class="threed-viewer" data-viewer-id="{{ viewer.id }}">
+  <div id="viewer-{{ viewer.id }}"
+       style="height:{{ viewer.height|default(420) }}px;width:100%;position:relative">
+    <noscript>
+      <p class="no-viewer">3D viewer requires JavaScript.  PDB embedded below.</p>
+    </noscript>
+  </div>
+  <script type="text/plain" class="pdb-data" id="pdb-{{ viewer.id }}">{{ viewer.pdb_text }}</script>
+  <script>
+    (function () {
+      if (typeof $3Dmol === "undefined") {
+        var host = document.getElementById("viewer-{{ viewer.id }}");
+        if (host) {
+          host.innerHTML =
+            '<p class="no-viewer">3Dmol.js not loaded &mdash; ' +
+            'download <code>static/vendor/3Dmol-min.js</code> to enable.</p>';
+        }
+        return;
+      }
+      var pdb = document.getElementById("pdb-{{ viewer.id }}").textContent;
+      var v = $3Dmol.createViewer("viewer-{{ viewer.id }}", { backgroundColor: "white" });
+      v.addModel(pdb, "pdb");
+      v.setStyle({}, { cartoon: { color: "spectrum" } });
+      v.setStyle(
+        { resn: ["NDP", "NAP", "LIG", "NAI", "NAD", "SAH", "SAM"] },
+        { stick: {} }
+      );
+      {% if viewer.highlight_residues %}
+      v.addStyle({ resi: {{ viewer.highlight_residues|tojson }} }, { stick: { color: "magenta" } });
+      {% endif %}
+      v.zoomTo({ resn: ["NDP", "NAP", "LIG", "NAI", "NAD", "SAH", "SAM"] });
+      v.render();
+    })();
+  </script>
+</div>

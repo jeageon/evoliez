@@ -228,6 +228,46 @@ def doctor(
         raise typer.Exit(code=1)
 
 
+@app.command(name="figures")
+def figures_cmd(
+    config: Path = typer.Option(..., "-c", "--config", help="Run config YAML"),
+    run_dir: Optional[Path] = typer.Option(
+        None, "--run-dir", help="Override output_dir from config"
+    ),
+    style: str = typer.Option(
+        "presentation", "--style", help="paper|presentation|poster"
+    ),
+    html: str = typer.Option(
+        "linked", "--html", help="linked|self-contained"
+    ),
+    output: Optional[Path] = typer.Option(
+        None, "-o", "--output",
+        help="Output zip path (default: <run_dir>/report_package.zip)",
+    ),
+    skip_3d: bool = typer.Option(
+        False, "--skip-3d", help="Skip PyMOL/3D rendering"
+    ),
+    benchmark: Optional[Path] = typer.Option(
+        None, "--benchmark", help="Override benchmark CSV"
+    ),
+) -> None:
+    """Build a portable HTML report package for a pipeline run.
+
+    Wave 1 stub: the CLI registration is wired so ``evoliez figures
+    --help`` works and downstream agents (wave 2) can swap the body for a
+    call into ``figures.html.builder.build_report`` without changing the
+    user-facing surface.
+    """
+    typer.echo(
+        f"figures: config={config} run_dir={run_dir} style={style} "
+        f"html={html} output={output} skip_3d={skip_3d} benchmark={benchmark}"
+    )
+    typer.echo(
+        "(Wave 2 will implement the actual builder. "
+        "This stub exists so the CLI registration is verifiable.)"
+    )
+
+
 @app.command()
 def version() -> None:
     typer.echo(__version__)

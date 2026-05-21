@@ -1,0 +1,58 @@
+{# Overview / run metadata.  Expects:
+     run.target, run.ligand, run.backend, run.started, run.finished,
+     run.git_sha, run.config_sha1, run.evoliez_version
+     run.catalytic_targets  -> list of strings (D222 etc.)
+     manifest.warnings      -> list of strings
+     section.figures        -> list of FigureSpec-like dicts (evidence donut,
+                                benchmark recovery, ...)
+#}
+<section id="00-overview" class="report-section">
+  <h2><a href="#00-overview" aria-label="Permalink">#</a> Overview</h2>
+  <p class="section-desc">
+    Run-level summary &mdash; metadata, evidence distribution, and curated
+    benchmark recovery (when available).
+  </p>
+
+  <dl class="metadata-grid">
+    {% if run.target %}<dt>Target</dt><dd>{{ run.target }}</dd>{% endif %}
+    {% if run.ligand %}<dt>Ligand</dt><dd><code>{{ run.ligand }}</code></dd>{% endif %}
+    {% if run.backend %}<dt>Backend</dt><dd>{{ run.backend }}</dd>{% endif %}
+    {% if run.started %}<dt>Started</dt><dd>{{ run.started }}</dd>{% endif %}
+    {% if run.finished %}<dt>Finished</dt><dd>{{ run.finished }}</dd>{% endif %}
+    {% if run.git_sha %}<dt>Git SHA</dt><dd><code>{{ run.git_sha }}</code></dd>{% endif %}
+    {% if run.config_sha1 %}<dt>Config SHA1</dt><dd><code>{{ run.config_sha1 }}</code></dd>{% endif %}
+    {% if run.evoliez_version %}<dt>EvoLiEZ</dt><dd>v{{ run.evoliez_version }}</dd>{% endif %}
+  </dl>
+
+  {% if run.catalytic_targets %}
+  <div class="callouts">
+    {% for tgt in run.catalytic_targets %}
+    <span class="callout">Catalytic target: <code>{{ tgt }}</code></span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if manifest and manifest.warnings %}
+  <div class="banner banner-warn" role="status">
+    <strong>Warnings</strong>
+    <ul>
+      {% for w in manifest.warnings %}<li>{{ w }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% set overview_figs = section.figures if section is defined and section.figures else [] %}
+  {% set benchmark_figs = overview_figs|selectattr('figure_id', 'equalto', 'benchmark_recovery')|list %}
+  {% set other_figs = overview_figs|rejectattr('figure_id', 'equalto', 'benchmark_recovery')|list %}
+
+  {% for fig in other_figs %}
+    {% include 'components/figure_card.html' %}
+  {% endfor %}
+
+  <h3>Curated benchmark recovery</h3>
+  {% if benchmark_figs %}
+    {% for fig in benchmark_figs %}{% set fig = fig %}{% include 'components/figure_card.html' %}{% endfor %}
+  {% else %}
+    <div class="section-empty">No curated benchmark for this target.</div>
+  {% endif %}
+</section>

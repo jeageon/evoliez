@@ -60,7 +60,16 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
 ]
-all = ["evoliez[science,md,dev]"]
+# HTML report package with figures (matplotlib 2D plots, jinja2 templates).
+# Optional - the core pipeline runs without it; install with `pip install -e ".[figures]"`.
+# NOTE: We intentionally avoid MDAnalysis/MDTraj (GPL/LGPL closure). MD trajectory
+# rendering is done via subprocess to PyMOL when needed, not in-process.
+figures = [
+    "matplotlib>=3.7",
+    "jinja2>=3.1",
+    "pillow>=10.0",
+]
+all = ["evoliez[science,md,figures,dev]"]
 
 [project.scripts]
 evoliez = "evoliez.cli:app"
