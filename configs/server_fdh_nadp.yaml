@@ -8,34 +8,56 @@
 # or drive the whole thing with workflow/Snakefile.
 
 project:
-  name: fdh_nadp_server
+  name: psefdh_nad_to_nadp
   objective: cofactor_switching
-  output_dir: /mnt/data2/evoligand/runs/fdh_nadp     # NEVER root / or ~
+  output_dir: /mnt/data2/evoligand/runs/psefdh_nad_to_nadp
 
 input:
-  # !!! REPLACE BEFORE ANY REAL RUN !!!
-  # examples/fdh/target.fasta is a bundled ILLUSTRATIVE placeholder and the
-  # catalytic/fixed tokens below do NOT match it. Point target_fasta at the
-  # real target FDH and set catalytic_residues / fixed_residues from the
-  # authoritative numbering (UniProt/PDB/paper). `evoliez doctor` will BLOCK
-  # a real backend until this is done.
-  target_id: fdh
-  target_fasta: examples/fdh/target.fasta
+  # Pseudomonas sp. 101 FDH (PseFDH) - UniProt P33160 (FDH_PSESR), 401 aa.
+  # Gold-standard NAD->NADP cofactor switching target (Tishkov 1999/2003,
+  # Holmberg, Pollegioni). Fetched via scripts/fetch_target_fasta.sh and
+  # all residue tokens BELOW come from UniProt's curated annotations:
+  #   ACT_SITE / BINDING / SITE in uniprot_P33160.txt
+  # (literature numbering from older PDB-based papers disagrees by a few
+  # residues; we use the UniProt mature-protein 1-based numbering).
+  target_id: PseFDH_P33160
+  target_fasta: examples/pseudomonas_fdh/target.fasta
   ligand:
-    # type='cofactor' lets the curated library resolve the SMILES from
-    # (name, target_ph, cofactor_redox) - so we never again ship a NAD+
-    # SMILES labelled NADP (44 vs 48 heavy). For an explicit override,
-    # switch type to 'smiles' and paste the SMILES; the s01_input + doctor
-    # guards will still verify it matches the declared cofactor.
     id: NADP_cofactor
     type: cofactor
     value: NADP
-  catalytic_residues: ["H155", "R285"]
-  fixed_residues: ["G10", "G12", "H155", "R285"]
+  # SITE annotations marked "Important for catalytic activity" in UniProt.
+  # These are NEVER mutated (catalytic) AND fixed (don't include in design).
+  catalytic_residues: ["R285", "H333"]
+  fixed_residues: ["R285", "H333"]
+  # BINDING residues for NAD(+) from UniProt curation. Boltz uses this as
+  # the `pocket_constraints` steering target so the diffusion model
+  # places the cofactor in the real NAD-binding pocket. D222 is the
+  # canonical NAD->NADP specificity switch target (Tishkov: D->S/H/A
+  # variants shift cofactor preference); it's INTENTIONALLY NOT in
+  # fixed_residues so the design generators can propose D222 mutations.
+  known_binding_site:
+    - "S148"
+    - "R202"
+    - "I203"
+    - "D222"      # NADP specificity switch target (Tishkov)
+    - "P257"
+    - "L258"
+    - "H259"
+    - "P260"
+    - "E261"
+    - "T283"
+    - "D309"
+    - "H333"
+    - "I334"
+    - "S335"
+    - "G336"
+    - "S381"
   cofactor: NADP
   cofactor_redox: oxidized     # NADP+ binding/transition proxy for FDH
   target_ph: 7.4
-  ec_number: "1.2.1.2"
+  organism: "Pseudomonas sp. 101"
+  ec_number: "1.17.1.9"          # NAD-dependent formate dehydrogenase
 
 homologs:
   method: mmseqs2
