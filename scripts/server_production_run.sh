@@ -53,6 +53,38 @@ say "[prod] cfg:       $CFG"
 say "[prod] dry-run:   $DRY_RUN"
 say "[prod] log:       $LOG"
 
+# ----- Environment setup (Boltz isolated env + GPU pin) -------------------
+# Boltz lives in its own conda env (numpy<2 etc. - must NOT pollute the
+# evoliez env). Prepend its bin so the `boltz` CLI resolves there while
+# evoliez runs from its own env. Same logic as scripts/server_smoke.sh.
+EVOLIEZ_ROOT="${EVOLIEZ_ROOT:-/mnt/data/${USER}}"
+BOLTZ_ENV="${BOLTZ_ENV:-$EVOLIEZ_ROOT/envs/boltz}"
+if [ -x "$BOLTZ_ENV/bin/boltz" ]; then
+    export PATH="$BOLTZ_ENV/bin:$PATH"
+    export BOLTZ_CACHE="${BOLTZ_CACHE:-$EVOLIEZ_ROOT/evoliez_assets/boltz_cache}"
+    mkdir -p "$BOLTZ_CACHE"
+    say "[prod] using isolated Boltz: $BOLTZ_ENV/bin/boltz"
+    say "[prod] BOLTZ_CACHE=$BOLTZ_CACHE"
+else
+    say "[prod] WARNING: $BOLTZ_ENV/bin/boltz not found - real Boltz will fail"
+fi
+
+# Pin a GPU with enough free memory (matches server_smoke.sh `pin_gpu`).
+if [ -z "${CUDA_VISIBLE_DEVICES:-}" ] && command -v nvidia-smi >/dev/null 2>&1; then
+    minf="${EVOLIEZ_GPU_MIN_FREE_MIB:-20000}"
+    q="$(nvidia-smi --query-gpu=index,memory.free,utilization.gpu \
+         --format=csv,noheader,nounits 2>/dev/null)"
+    idx="$(echo "$q" | awk -F', *' -v m="$minf" \
+         '($2+0)>=m {print ($3+0), -($2+0), $1}' \
+         | sort -k1,1n -k2,2n | head -1 | awk '{print $3}')"
+    if [ -n "$idx" ]; then
+        export CUDA_VISIBLE_DEVICES="$idx"
+        say "[prod] pinned GPU $idx (>= ${minf} MiB free)"
+    else
+        say "[prod] WARNING: no GPU with >= ${minf} MiB free; run may queue"
+    fi
+fi
+
 # ----- Phase 1: doctor pre-flight ----------------------------------------
 banner "Phase 1: evoliez doctor (BLOCK 0 required)"
 set +e

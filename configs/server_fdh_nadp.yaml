@@ -10,7 +10,11 @@
 project:
   name: psefdh_nad_to_nadp
   objective: cofactor_switching
-  output_dir: /mnt/data2/evoligand/runs/psefdh_nad_to_nadp
+  # Server doctor flagged /mnt/data2 root as not writable for the current
+  # user; the smoke pipeline has been writing to /mnt/data/<user>/runs/
+  # cleanly. Use that for the production output to avoid permission
+  # surprises mid-run. /mnt/data2/<user>/runs is fine too if it exists.
+  output_dir: /mnt/data/jglee/runs/psefdh_nad_to_nadp
 
 input:
   # Pseudomonas sp. 101 FDH (PseFDH) - UniProt P33160 (FDH_PSESR), 401 aa.
