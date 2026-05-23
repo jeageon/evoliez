@@ -323,7 +323,6 @@ ok "doctor passed"
 # Phase 2  --  cheap pipeline run
 # ===========================================================
 say "Phase 2 — evoliez run (cheap config; subprocess MD isolation ON)"
-echo "   expected wall time: 30-60 min on 1 A6000 (PseFDH cheap)"
 # Stage-backend pattern (mirrors scripts/server_production_run.sh):
 # default backend=mock so the homolog/MSA stages don't need the
 # UniRef30 mmseqs DB on /mnt/data2, and only the GPU-heavy stages run
@@ -341,6 +340,20 @@ if [ "${ALL_REAL:-0}" = "1" ]; then
     EVOLIEZ_STAGE_OVERRIDES=( --backend real )
     warn "ALL_REAL=1 set — running every stage at backend=real (needs UniRef30 DB)"
 fi
+
+# RERANK_ONLY=1 → re-run JUST the final-ranking stage on top of the
+# existing per-stage output (Boltz / MD outputs on disk are unchanged).
+# Use this when a bug fix touched ONLY s11_final or io/report, so we
+# don't re-pay the 2-hour Boltz+MD cost just to regenerate the CSV.
+# Wall time: ~2 seconds.
+if [ "${RERANK_ONLY:-0}" = "1" ]; then
+    EVOLIEZ_STAGE_OVERRIDES+=( --from s11_final --resume )
+    warn "RERANK_ONLY=1 — re-running only s11_final on existing pipeline output"
+    echo "   expected wall time: <5 s (no Boltz / MD re-execution)"
+else
+    echo "   expected wall time: 30-60 min on 1 A6000 (PseFDH cheap)"
+fi
+
 START_TS="$(date +%s)"
 if ! evoliez run -c "$CFG" "${EVOLIEZ_STAGE_OVERRIDES[@]}"; then
     die "evoliez run exited non-zero. Inspect the log at $_LOG_FILE."
