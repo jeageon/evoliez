@@ -8,6 +8,13 @@
   <style>
 {% include 'static/report.css' ignore missing %}
   </style>
+  {# 3Dmol.js MUST be loaded BEFORE any of the per-viewer inline <script>
+     blocks in the section partials. Otherwise the first inline init
+     checks `typeof $3Dmol === "undefined"` and renders the
+     "3Dmol.js not loaded" fallback - producing the empty-viewer bug
+     observed in v3 (library was at end of <body>, viewers in middle).
+     Loading in <head> here is the cheap, deterministic fix. #}
+  <script src="static/vendor/3Dmol-min.js"></script>
   {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -54,7 +61,10 @@
     </main>
   </div>
 
-  <script src="static/vendor/3Dmol-min.js"></script>
+  {# 3Dmol.js library moved to <head> above so the per-viewer inline
+     scripts inside section partials can use $3Dmol immediately. The
+     end-of-body slot keeps only the report runtime (TOC scroll-spy,
+     sortable tables) which has no inter-script dependency. #}
   <script>
 {% include 'static/report.js' ignore missing %}
   </script>

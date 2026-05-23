@@ -837,19 +837,78 @@ def _final_library_table(artifacts: ReportArtifacts) -> Optional[Dict[str, Any]]
     }
 
 
+def _read_target_sequence(fasta_path: Optional[Path]) -> str:
+    """Best-effort FASTA reader - returns the joined sequence string.
+    Handles multi-line records; ignores comments and the header line.
+    Returns '' on any failure (caller short-circuits the sequence panel).
+    """
+    if fasta_path is None or not Path(fasta_path).exists():
+        return ""
+    try:
+        text = Path(fasta_path).read_text()
+    except OSError:
+        return ""
+    out: list = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith((">", "#", ";")):
+            continue
+        out.append(line)
+    return "".join(out)
+
+
 def _sequence_track_table(artifacts: ReportArtifacts) -> Optional[Dict[str, Any]]:
-    """Single-row "what was given" table for section 01."""
-    bits: Dict[str, str] = {}
+    """Compact "what was given" summary for section 01.
+
+    Two-row table: first column is the field name, second is the value.
+    More readable than the wide one-row layout when the SMILES is long.
+    Includes sequence length here (the FULL sequence text gets its own
+    monospace panel below the table - too long for a cell).
+    """
+    bits: List[tuple] = []
     if artifacts.target_fasta is not None and Path(artifacts.target_fasta).exists():
-        bits["target_fasta"] = Path(artifacts.target_fasta).name
+        bits.append(("target_fasta", Path(artifacts.target_fasta).name))
+        seq = _read_target_sequence(artifacts.target_fasta)
+        if seq:
+            bits.append(("sequence_length_aa", str(len(seq))))
     if artifacts.ligand_smiles:
-        bits["ligand_smiles"] = artifacts.ligand_smiles
+        bits.append(("ligand_smiles", artifacts.ligand_smiles))
     if not bits:
         return None
     return {
         "id": "sequence_track",
-        "columns": list(bits.keys()),
-        "rows": [bits],
+        "columns": ["field", "value"],
+        "rows": [{"field": k, "value": v} for k, v in bits],
+    }
+
+
+def _sequence_panel(artifacts: ReportArtifacts) -> Optional[Dict[str, Any]]:
+    """Full protein sequence as a monospace panel for section 01.
+
+    Wraps to 60 chars per line with 10-residue numbering so users can
+    visually find catalytic / binding positions (e.g. R285, D222) in the
+    actual sequence. Without this panel the input section only shows
+    `target_fasta: target.fasta` (the filename!) - the user-reported
+    "input에 단백질 seq가 안나오는데" bug.
+    """
+    seq = _read_target_sequence(artifacts.target_fasta)
+    if not seq:
+        return None
+    # 60 chars per line is the FASTA convention; group in 10s for
+    # eyeball position counting.
+    LINE = 60
+    GROUP = 10
+    lines: List[str] = []
+    for i in range(0, len(seq), LINE):
+        chunk = seq[i:i + LINE]
+        groups = " ".join(chunk[j:j + GROUP] for j in range(0, len(chunk), GROUP))
+        # leading 1-based residue number (4 chars right-aligned)
+        lines.append(f"{i + 1:>4}  {groups}")
+    return {
+        "id": "target_sequence",
+        "title": "Target protein sequence",
+        "length_aa": len(seq),
+        "text": "\n".join(lines),
     }
 
 
@@ -979,6 +1038,13 @@ def build_report(
     seq_table = _sequence_track_table(artifacts)
     if seq_table is not None:
         sections["01_input"]["tables"].append(seq_table)
+    # User-reported bug ("input에 단백질 seq가 안나오는데"): the input
+    # section showed only the FASTA filename, not the actual sequence.
+    # Add a monospace sequence panel under the metadata table so the
+    # reader can verify catalytic / binding positions visually.
+    seq_panel = _sequence_panel(artifacts)
+    if seq_panel is not None:
+        sections["01_input"].setdefault("panels", []).append(seq_panel)
     pose_table = _per_sample_table(artifacts)
     if pose_table is not None:
         sections["04_pose_ensemble"]["tables"].append(pose_table)

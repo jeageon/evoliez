@@ -461,3 +461,44 @@ code {
     font-size: 11pt;
   }
 }
+
+/* Sequence panel (section 01 input): monospace block with position
+   numbering. User-reported v3 bug: input section showed only the
+   FASTA filename, not the actual protein sequence. The panel below
+   the input metadata table renders the full sequence so the reader
+   can locate catalytic / binding residues (e.g. R285, D222) by eye. */
+.sequence-panel {
+  margin: 1em 0 1.5em 0;
+  padding: 0;
+}
+.sequence-panel figcaption {
+  font-size: 0.9em;
+  color: var(--text);
+  margin-bottom: 0.4em;
+}
+.seq-text {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.78em;
+  line-height: 1.45;
+  background: #fafafa;
+  border: 1px solid var(--card-border);
+  border-radius: 4px;
+  padding: 0.8em 1em;
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 28em;
+  overflow-y: auto;
+  user-select: text;
+}
+@media (prefers-color-scheme: dark) {
+  .seq-text {
+    background: #1d1d1d;
+  }
+}
+@media print {
+  .seq-text {
+    max-height: none;
+    overflow: visible;
+    font-size: 7pt;
+  }
+}
