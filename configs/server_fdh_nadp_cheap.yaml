@@ -121,6 +121,12 @@ validation:
     solvent: implicit
     production_ns: 0.5                       # was 2.0 — KEY cheap-run knob
     top_candidates: 5                        # was 30
+    # P0 from the expert validation plan: per-candidate subprocess
+    # isolation + hard timeout so an OpenMM / CUDA leak or hang on
+    # one candidate can't take the stage with it. Cheap-run validates
+    # this path under real OpenMM load.
+    subprocess_isolation: true
+    subprocess_timeout_seconds: 900          # 15 min/candidate for cheap-run
 
 scoring:
   gnn: 0.0                                   # disabled with gnn.enabled=false

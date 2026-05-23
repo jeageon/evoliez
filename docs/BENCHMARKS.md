@@ -29,9 +29,27 @@ auditable in one place.
 | [`beta_glucosidase_bgl3/`](../examples/beta_glucosidase_bgl3/) | Bgl3 (GH1) | P22073 (structural ref) | Largest published enzymatic-activity DMS (Romero 2015) |
 | [`p450_bm3/`](../examples/p450_bm3/)                      | P450 BM3     | P14779 | Stress test: substrate promiscuity + heme + I-helix; recall@K expected lower |
 
+**P0 fixes shipped before this campaign starts:**
+
+- **Ranking gate** (`s11_final_ranking`): `evidence_class=Reject` /
+  `pose_validity_status=invalid` / `md_status=failed` are blocked from
+  the accepted top via the `is_blocked` column in `final_candidates.csv`.
+- **MD time-series export** (`md/analysis.json`): per-frame
+  `ligand_rmsd_series` / `pocket_rmsd_series` / `key_distances`
+  persisted so the report renders real time-courses, not summary bars.
+- **MD subprocess isolation** (`md.subprocess_isolation: true`): each
+  per-candidate MD now runs in a fresh Python subprocess with
+  `md.subprocess_timeout_seconds` wall-clock cap. OpenMM / CUDA
+  state is cleaned up at the OS level when the subprocess exits, so a
+  leak or hang on one candidate cannot stall the stage. Timeouts and
+  crashes become `MDResult(status="failed", failure_reason="subprocess
+  ...")` with the worker log tail embedded — the next candidate's run
+  starts cleanly.
+
 **Suggested execution order (multi-enzyme validation):**
 
-1. P0 fixes verified end-to-end on PseFDH (ranking gate, MD time-series).
+1. P0 fixes verified end-to-end on PseFDH (ranking gate, MD time-series,
+   MD subprocess isolation).
 2. For each new card, run `evoliez bench --allow-no-overlap` first to
    confirm the card loads and reports zero schema warnings.
 3. Cheap run per enzyme (Boltz real, MD = mock or top-5 real MD) →

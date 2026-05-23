@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import List
 
 from evoliez.adapters.openmm_engine import run_md
+from evoliez.adapters.openmm_subprocess import run_md_in_subprocess
 from evoliez.context import RunContext
 from evoliez.db.schema import MDSimulation
 from evoliez.md.analysis import analyse, to_json
@@ -73,10 +74,18 @@ class MDStage(Stage):
                 workdir = ctx.paths.md_candidate(cand.candidate_id)
                 if replica_id > 0:
                     workdir = workdir.parent / f"{workdir.name}_r{replica_id}"
-                replica_results.append(run_md(
+                # subprocess isolation (opt-in via mdcfg.subprocess_isolation)
+                # contains OpenMM / CUDA state to a per-candidate process and
+                # enforces a hard timeout. Falls back to in-process run_md
+                # when the flag is off or the backend isn't real - mock MD
+                # doesn't need the per-candidate process overhead.
+                replica_results.append(run_md_in_subprocess(
                     mc, cand.candidate_id, mdcfg, workdir,
                     instability=inst, catalytic_positions=catalytic,
                     backend=backend, dry_run=ctx.dry_run,
+                    timeout_seconds=int(getattr(
+                        mdcfg, "subprocess_timeout_seconds", 1800,
+                    )),
                 ))
             # Pick the "primary" result for downstream metrics: the one with
             # the lowest final ligand RMSD across runs that didn't fail.

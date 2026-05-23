@@ -132,6 +132,11 @@ validation:
     solvent: implicit
     production_ns: 2.0
     top_candidates: 30
+    # P0: per-candidate subprocess isolation so OpenMM / CUDA leaks
+    # are contained at the OS level. Enabled for production after
+    # cheap-run validation (scripts/server_cheap_run_psefdh.sh).
+    subprocess_isolation: true
+    subprocess_timeout_seconds: 3600         # 1 h/candidate at production ns
 
 scoring:
   gnn: 1.5                               # EvoLigand-GNN as a primary term

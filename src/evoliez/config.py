@@ -169,6 +169,20 @@ class MDConfig(_Base):
     # MDResult so the final report says "MD passed (Sage, HMR off, 3
     # replicas)" not just "MD passed".
     persist_provenance: bool = True
+    # Subprocess isolation (open-P0 from the expert validation plan):
+    # when True, each per-candidate MD runs in a fresh Python
+    # subprocess via `evoliez.adapters.openmm_subprocess.run_md_in_subprocess`.
+    # OS-level cleanup of OpenMM / CUDA contexts after each candidate
+    # contains any GPU memory / Python ref leak that would otherwise
+    # accumulate across a 30-candidate stage. Default OFF so the
+    # existing in-process tests don't pay the per-candidate subprocess
+    # startup cost; production / server configs should turn this ON.
+    subprocess_isolation: bool = False
+    # Hard wall-clock timeout per candidate (seconds). Only enforced
+    # when subprocess_isolation=True. Generous default (30 min) so a
+    # legitimate long MD run isn't killed; tune down per enzyme once
+    # cheap-run wall times are known.
+    subprocess_timeout_seconds: int = 1800
 
 
 class ValidationConfig(_Base):
