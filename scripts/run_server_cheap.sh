@@ -270,6 +270,47 @@ AVAIL_GB=$(( AVAIL_KB / 1024 / 1024 ))
                      || ok "${AVAIL_GB} GB free on $(dirname "$OUTPUT_DIR")"
 
 # ===========================================================
+# Phase 0e  --  Boltz isolated env + GPU pin
+# ===========================================================
+# Boltz lives in its OWN conda env (numpy<2 etc. — must NOT pollute the
+# evoliez env). Prepend its bin so the `boltz` CLI resolves there while
+# evoliez itself stays in its own env. Same pattern as
+# scripts/server_production_run.sh / scripts/server_smoke.sh.
+say "Phase 0e — Boltz env + GPU pin"
+EVOLIEZ_ROOT="${EVOLIEZ_ROOT:-/mnt/data/${USER}}"
+BOLTZ_ENV="${BOLTZ_ENV:-$EVOLIEZ_ROOT/envs/boltz}"
+if [ -x "$BOLTZ_ENV/bin/boltz" ]; then
+    export PATH="$BOLTZ_ENV/bin:$PATH"
+    export BOLTZ_CACHE="${BOLTZ_CACHE:-$EVOLIEZ_ROOT/evoliez_assets/boltz_cache}"
+    mkdir -p "$BOLTZ_CACHE"
+    ok "isolated Boltz: $(command -v boltz)"
+    ok "BOLTZ_CACHE=$BOLTZ_CACHE"
+else
+    warn "$BOLTZ_ENV/bin/boltz not found — Phase 2 will die at stage s04_complex."
+    warn "Fix: install Boltz into $BOLTZ_ENV, OR override BOLTZ_ENV=/path/to/your/env."
+    # Don't die yet — let the doctor + dry-run logic surface this with
+    # better context if the user does have it elsewhere.
+fi
+
+# Pin a GPU with enough free memory (mirrors server_production_run.sh).
+if [ -z "${CUDA_VISIBLE_DEVICES:-}" ] && command -v nvidia-smi >/dev/null 2>&1; then
+    minf="${EVOLIEZ_GPU_MIN_FREE_MIB:-20000}"
+    q="$(nvidia-smi --query-gpu=index,memory.free,utilization.gpu \
+         --format=csv,noheader,nounits 2>/dev/null)"
+    idx="$(echo "$q" | awk -F', *' -v m="$minf" \
+         '($2+0)>=m {print ($3+0), -($2+0), $1}' \
+         | sort -k1,1n -k2,2n | head -1 | awk '{print $3}')"
+    if [ -n "$idx" ]; then
+        export CUDA_VISIBLE_DEVICES="$idx"
+        ok "pinned GPU $idx (>= ${minf} MiB free)"
+    else
+        warn "no GPU with >= ${minf} MiB free; cheap-run may queue"
+    fi
+else
+    ok "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-(default)}"
+fi
+
+# ===========================================================
 # Phase 1  --  doctor preflight
 # ===========================================================
 say "Phase 1 — evoliez doctor (preflight)"
