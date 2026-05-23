@@ -127,51 +127,76 @@ echo "   log file   : $_LOG_FILE"
 # ===========================================================
 
 say "Phase 0a — conda env activation"
-if [ -z "${CONDA_PREFIX:-}" ] || [ "$(basename "${CONDA_PREFIX:-}")" = "base" ]; then
-    # try to find a non-base evoliez env under common prefixes
+# Source-of-truth: "is the evoliez CLI on PATH?". Don't try to guess
+# which conda env we're in from CONDA_PREFIX / CONDA_DEFAULT_ENV —
+# miniforge3's base env reports CONDA_PREFIX=.../miniforge3 (basename
+# != "base"), which fooled an earlier version into thinking it was
+# already in the right env. The only check that always tells the truth
+# is `command -v evoliez`.
+if command -v evoliez >/dev/null 2>&1; then
+    ok "evoliez CLI already on PATH ($(command -v evoliez))"
+    ok "current env: ${CONDA_PREFIX:-(none)}"
+else
+    echo "   evoliez CLI not on PATH; searching for an evoliez conda env..."
+
+    # Search common locations. /mnt/data{,2}/$USER first because that
+    # mirrors how this server installs envs; HOME paths next; finally
+    # ask conda's env list.
     _candidate=""
     for prefix in \
         "/mnt/data/${USER}/envs/evoliez" \
         "/mnt/data2/${USER}/envs/evoliez" \
         "${HOME}/envs/evoliez" \
+        "${HOME}/miniforge3/envs/evoliez" \
         "${HOME}/miniconda3/envs/evoliez" \
         "${HOME}/anaconda3/envs/evoliez"
     do
-        if [ -x "$prefix/bin/evoliez" ] || [ -d "$prefix/conda-meta" ]; then
+        if [ -x "$prefix/bin/evoliez" ]; then
             _candidate="$prefix"; break
+        fi
+        if [ -d "$prefix/conda-meta" ]; then
+            _candidate="$prefix"
+            # keep looking - prefer one that actually has the CLI installed
         fi
     done
 
-    if [ -z "$_candidate" ]; then
-        # Last resort: ask conda for any env named 'evoliez'
-        if command -v conda >/dev/null 2>&1; then
-            _candidate="$(conda env list 2>/dev/null \
-                | awk '/^evoliez[[:space:]]/ {print $NF; exit}')"
-        fi
+    if [ -z "$_candidate" ] && command -v conda >/dev/null 2>&1; then
+        # Ask conda for any env named 'evoliez'.
+        _candidate="$(conda env list 2>/dev/null \
+            | awk '/^evoliez[[:space:]]/ {print $NF; exit}')"
     fi
 
-    [ -n "$_candidate" ] || die "could not auto-locate the evoliez conda env. \
-Activate manually (conda activate <path>) then re-run."
+    [ -n "$_candidate" ] || die "could not auto-locate an evoliez conda env. \
+Activate manually (e.g. conda activate /mnt/data/\$USER/envs/evoliez) then re-run."
 
-    # source conda hook then activate
+    echo "   candidate env: $_candidate"
+
+    # Source the candidate's conda hook first (works even when no
+    # `conda` is on PATH yet), then fall back to the currently-active
+    # conda's shell hook.
     if [ -f "$_candidate/etc/profile.d/conda.sh" ]; then
         # shellcheck disable=SC1091
         source "$_candidate/etc/profile.d/conda.sh"
+    elif [ -n "${CONDA_PREFIX:-}" ] && [ -f "${CONDA_PREFIX}/etc/profile.d/conda.sh" ]; then
+        # base env's conda.sh — works because activate is just a function
+        # shellcheck disable=SC1091
+        source "${CONDA_PREFIX}/etc/profile.d/conda.sh"
     elif command -v conda >/dev/null 2>&1; then
-        # eval the bash hook so `conda activate` works in this shell
         eval "$(conda shell.bash hook)"
+    else
+        die "no conda hook available to drive `conda activate $_candidate`"
     fi
-    conda activate "$_candidate" \
-        || die "conda activate $_candidate failed"
-    ok "activated $_candidate"
-else
-    ok "already in conda env: $CONDA_PREFIX"
-fi
 
-# Verify evoliez CLI reachable.
-command -v evoliez >/dev/null \
-    || die "evoliez CLI not in PATH after env activation (CONDA_PREFIX=$CONDA_PREFIX)"
-ok "evoliez CLI -> $(command -v evoliez)"
+    conda activate "$_candidate" \
+        || die "`conda activate $_candidate` returned non-zero"
+
+    # Re-verify the CLI is now visible.
+    command -v evoliez >/dev/null \
+        || die "evoliez CLI STILL not on PATH after `conda activate $_candidate` \
+(CONDA_PREFIX=$CONDA_PREFIX). Is the package editable-installed into that env?"
+    ok "activated $_candidate"
+    ok "evoliez CLI -> $(command -v evoliez)"
+fi
 
 say "Phase 0b — git pull (only if behind origin/feat/html-report-package)"
 git fetch --quiet origin feat/html-report-package
