@@ -99,7 +99,17 @@ data_scale:
   final_library: 24                    # was 96
 
 mutation_generation:
-  methods: [chemistry_rules, msa_sampler]   # ligandmpnn dropped (slow)
+  # binding_site_scan: exhaustive 19-AA scan at every known_binding_site
+  # residue. Cheap-run discovery: chemistry_rules' anion/cation/aromatic
+  # pools alone don't cover the Tishkov D222S/N/T/Q family (D222's
+  # nearest atom is a phosphate O → anion pool = KRH only), and
+  # msa_sampler can't see real evolutionary signal on mock homologs
+  # (we mock s02/s03 because UniRef30 isn't on /mnt/data2). The
+  # binding_site_scan generator guarantees the literature-known
+  # cofactor-switch / activity-switch mutations are in the candidate
+  # pool regardless of those upstream gaps. Universal — every enzyme
+  # card declares known_binding_site.
+  methods: [chemistry_rules, msa_sampler, binding_site_scan]
   max_candidates: 1500                       # was 8000
   design_radius_angstrom: 8.0
 

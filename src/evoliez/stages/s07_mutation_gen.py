@@ -128,6 +128,59 @@ class MutationGenStage(Stage):
                         },
                     )
 
+        # ---- binding-site exhaustive scan -------------------------------- #
+        # Cheap-run discovery: chemistry_rules + msa_sampler with mock
+        # homologs (which is what happens when the UniRef30 mmseqs DB isn't
+        # available) failed to propose the documented D222S/N/T/Q/H/A
+        # Tishkov-class NADP-switch family for PseFDH. Two reasons:
+        #
+        #   1. chemistry_rules selects substitutions based on the nearest
+        #      ligand-atom role at each designable position. D222's nearest
+        #      NADP+ atom is a phosphate oxygen (anion role) → pool=KRH;
+        #      Tishkov's polar/amide swaps (S/N/T/Q) are NOT in that pool.
+        #   2. msa_sampler ranks substitutions by frequency in the homolog
+        #      MSA; mock homologs carry no real evolutionary signal at the
+        #      cofactor-specificity loop, so the Tishkov AAs never make it
+        #      to the top of the family-frequency ranking.
+        #
+        # The fix is to ALSO scan EVERY substitution at every residue the
+        # config explicitly flagged as ``known_binding_site`` — these are
+        # the residues the user already decided are mechanistically
+        # important, so it's worth burning ~19 candidates each to make
+        # sure the literature-known cofactor-switch / activity-switch
+        # mutations are in the pool. Universal: every enzyme card declares
+        # a known_binding_site, so this generator works the same way for
+        # PseFDH / XR / TEM-1 / Bgl3 / P450 BM3.
+        #
+        # Respects ``fixed_positions`` (catalytic residues are never
+        # mutated) and the ``max_candidates`` cap. AA order is roughly by
+        # how often these substitutions appear as beneficial in published
+        # literature for cofactor-switch / promiscuity work.
+        if "binding_site_scan" in mgcfg.methods:
+            binding_site_positions = list(
+                ctx.get("known_binding_site", []) or []
+            )
+            fixed_positions = set(ctx.get("fixed_positions", []) or [])
+            # Polar/amide/small first (Tishkov-class), then bulkier
+            # changes; aromatic last because they rarely fit a cofactor
+            # pocket without other accompanying mutations.
+            _SCAN_AAS = "STNQHADEGRKVILMFCYWP"
+            for pos in binding_site_positions:
+                r = by_pos_res.get(pos)
+                if r is None or pos in fixed_positions:
+                    continue
+                for aa in _SCAN_AAS:
+                    if aa == r.aa:
+                        continue
+                    add(
+                        [Mutation(r.aa, pos, aa)],
+                        "binding_site_scan",
+                        {
+                            "known_binding_site": True,
+                            "exhaustive_scan": True,
+                        },
+                    )
+
         # ---- LigandMPNN -------------------------------------------------- #
         # P0.4: real-backend default generator. Preflight before invoking
         # the adapter so a missing precondition is a CLEAR diagnostic instead

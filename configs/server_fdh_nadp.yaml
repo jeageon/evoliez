@@ -110,7 +110,11 @@ data_scale:
   final_library: 96
 
 mutation_generation:
-  methods: [chemistry_rules, msa_sampler, ligandmpnn]
+  # binding_site_scan added so the published Tishkov D222S/N/T/Q/H/A
+  # family is guaranteed to land in the candidate pool even when the
+  # homolog MSA is sparse on the cofactor-specificity loop. See
+  # configs/server_fdh_nadp_cheap.yaml for the rationale.
+  methods: [chemistry_rules, msa_sampler, ligandmpnn, binding_site_scan]
   max_candidates: 8000
   design_radius_angstrom: 8.0
 
