@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+# scripts/run_server_cheap.sh
+#
+# ONE-SHOT cheap-run validator for the multi-enzyme campaign.
+#
+# Single bash entry-point that handles EVERYTHING the operator would
+# otherwise paste line-by-line (and forget). Self-contained on purpose:
+# the user gets corrected dozens of times when their conda env drops
+# back to base inside a screen subshell or they forget to fetch the
+# FASTA; the runbook version of this kept hitting those edge cases.
+#
+# The script:
+#
+#   * auto-detects + activates the evoliez conda env (looks under
+#     /mnt/data*/$USER/envs first, falls back to plain `conda activate
+#     evoliez`),
+#   * git pulls the latest feat/html-report-package head IF behind,
+#   * re-installs the editable package when a known new module is
+#     missing (so `pip install -e .` doesn't get skipped after a fast-
+#     forward that added files),
+#   * fetches the per-enzyme FASTA via scripts/fetch_target_fasta.sh
+#     when target.fasta is missing,
+#   * runs `evoliez doctor` (preflight; aborts on BLOCK 0),
+#   * runs `evoliez run` at cheap scale (smaller Boltz + 5-candidate
+#     real MD with subprocess isolation enabled),
+#   * runs `evoliez bench-summary --strict` on the result,
+#   * prints a clear PASS / FAIL line at the end + path to the
+#     markdown card.
+#
+# Re-runnable: every step is idempotent. Safe to re-launch after a
+# crash; it picks up at the first phase that needs work.
+#
+# Default target: PseFDH (the validated cofactor-switching positive
+# control). Override per-enzyme via env vars:
+#
+#   ENZYME=xr ./scripts/run_server_cheap.sh
+#   ENZYME=tem1 ./scripts/run_server_cheap.sh
+#   ENZYME=bgl3 ./scripts/run_server_cheap.sh
+#   ENZYME=p450 ./scripts/run_server_cheap.sh
+#   ENZYME=fdh ./scripts/run_server_cheap.sh        # default
+#
+# Or fully custom:
+#   CFG=configs/my_cfg.yaml BENCH=examples/my_card/benchmark.csv \
+#     NAME=my_card UNIPROT=Q12345 SLUG=my_card \
+#     ./scripts/run_server_cheap.sh
+#
+# Background-friendly: pipe to log + nohup yourself, or wrap in
+# screen/tmux. Exit code 0 = pass, 2 = fail, anything else = error
+# before the metric check.
+
+set -euo pipefail
+
+# ---- self-locate the repo root (script may be invoked from anywhere) ----
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+# ---- per-enzyme dispatch table (defaults to PseFDH) ----
+ENZYME="${ENZYME:-fdh}"
+case "$ENZYME" in
+    fdh|psefdh)
+        : "${CFG:=configs/server_fdh_nadp_cheap.yaml}"
+        : "${BENCH:=examples/pseudomonas_fdh/benchmark.csv}"
+        : "${NAME:=PseFDH_cheap}"
+        : "${UNIPROT:=P33160}"
+        : "${SLUG:=pseudomonas_fdh}"
+        : "${FASTA_RESIDUES:=R285 H333 D222}"
+        ;;
+    xr)
+        : "${CFG:=configs/server_xr_cheap.yaml}"
+        : "${BENCH:=examples/xylose_reductase/benchmark.csv}"
+        : "${NAME:=XR_cheap}"
+        : "${UNIPROT:=O74237}"
+        : "${SLUG:=xylose_reductase}"
+        : "${FASTA_RESIDUES:=Y51 K80 D46 H110}"
+        ;;
+    tem1)
+        : "${CFG:=configs/server_tem1_cheap.yaml}"
+        : "${BENCH:=examples/tem1_betalactamase/benchmark.csv}"
+        : "${NAME:=TEM1_cheap}"
+        : "${UNIPROT:=P62593}"
+        : "${SLUG:=tem1_betalactamase}"
+        : "${FASTA_RESIDUES:=S70 K73 E166}"
+        ;;
+    bgl3)
+        : "${CFG:=configs/server_bgl3_cheap.yaml}"
+        : "${BENCH:=examples/beta_glucosidase_bgl3/benchmark.csv}"
+        : "${NAME:=Bgl3_cheap}"
+        : "${UNIPROT:=P22073}"
+        : "${SLUG:=beta_glucosidase_bgl3}"
+        : "${FASTA_RESIDUES:=E166 E352}"
+        ;;
+    p450|bm3)
+        : "${CFG:=configs/server_p450_bm3_cheap.yaml}"
+        : "${BENCH:=examples/p450_bm3/benchmark.csv}"
+        : "${NAME:=P450BM3_cheap}"
+        : "${UNIPROT:=P14779}"
+        : "${SLUG:=p450_bm3}"
+        : "${FASTA_RESIDUES:=F87 A82 C400 D251}"
+        ;;
+    *)
+        # user provided custom env vars only — accept and proceed
+        : "${CFG:?ENZYME=$ENZYME not recognised; set CFG explicitly}"
+        : "${BENCH:?set BENCH= when ENZYME is unknown}"
+        : "${NAME:?set NAME= when ENZYME is unknown}"
+        ;;
+esac
+
+# ---- nice-to-have output helpers ----
+_LOG_FILE="${RUN_LOG:-$REPO_ROOT/cheap_run_${NAME}_$(date +%F_%H%M).log}"
+exec > >(tee -a "$_LOG_FILE") 2>&1
+say() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
+ok()  { printf '   \033[1;32mOK\033[0m  %s\n' "$*"; }
+warn(){ printf '   \033[1;33mWARN\033[0m %s\n' "$*"; }
+die() { printf '\n\033[1;31mFAIL\033[0m %s\n' "$*"; exit 1; }
+
+say "EvoLiEZ cheap-run validator (ENZYME=$ENZYME)"
+echo "   repo       : $REPO_ROOT"
+echo "   config     : $CFG"
+echo "   benchmark  : $BENCH"
+echo "   name       : $NAME"
+echo "   uniprot    : ${UNIPROT:-(custom)}"
+echo "   log file   : $_LOG_FILE"
+
+# ===========================================================
+# Phase 0  --  Self-bootstrap: conda env + git + editable install
+# ===========================================================
+
+say "Phase 0a — conda env activation"
+if [ -z "${CONDA_PREFIX:-}" ] || [ "$(basename "${CONDA_PREFIX:-}")" = "base" ]; then
+    # try to find a non-base evoliez env under common prefixes
+    _candidate=""
+    for prefix in \
+        "/mnt/data/${USER}/envs/evoliez" \
+        "/mnt/data2/${USER}/envs/evoliez" \
+        "${HOME}/envs/evoliez" \
+        "${HOME}/miniconda3/envs/evoliez" \
+        "${HOME}/anaconda3/envs/evoliez"
+    do
+        if [ -x "$prefix/bin/evoliez" ] || [ -d "$prefix/conda-meta" ]; then
+            _candidate="$prefix"; break
+        fi
+    done
+
+    if [ -z "$_candidate" ]; then
+        # Last resort: ask conda for any env named 'evoliez'
+        if command -v conda >/dev/null 2>&1; then
+            _candidate="$(conda env list 2>/dev/null \
+                | awk '/^evoliez[[:space:]]/ {print $NF; exit}')"
+        fi
+    fi
+
+    [ -n "$_candidate" ] || die "could not auto-locate the evoliez conda env. \
+Activate manually (conda activate <path>) then re-run."
+
+    # source conda hook then activate
+    if [ -f "$_candidate/etc/profile.d/conda.sh" ]; then
+        # shellcheck disable=SC1091
+        source "$_candidate/etc/profile.d/conda.sh"
+    elif command -v conda >/dev/null 2>&1; then
+        # eval the bash hook so `conda activate` works in this shell
+        eval "$(conda shell.bash hook)"
+    fi
+    conda activate "$_candidate" \
+        || die "conda activate $_candidate failed"
+    ok "activated $_candidate"
+else
+    ok "already in conda env: $CONDA_PREFIX"
+fi
+
+# Verify evoliez CLI reachable.
+command -v evoliez >/dev/null \
+    || die "evoliez CLI not in PATH after env activation (CONDA_PREFIX=$CONDA_PREFIX)"
+ok "evoliez CLI -> $(command -v evoliez)"
+
+say "Phase 0b — git pull (only if behind origin/feat/html-report-package)"
+git fetch --quiet origin feat/html-report-package
+LOCAL_SHA="$(git rev-parse HEAD)"
+REMOTE_SHA="$(git rev-parse origin/feat/html-report-package)"
+if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
+    ok "already at origin head ($LOCAL_SHA)"
+else
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        warn "uncommitted local changes detected; stashing before pull"
+        git stash push -u -m "pre-cheap-run-$(date +%F_%H%M)" >/dev/null
+    fi
+    git checkout feat/html-report-package --quiet
+    if ! git pull --ff-only origin feat/html-report-package; then
+        warn "fast-forward pull failed; falling back to hard reset to origin"
+        git reset --hard origin/feat/html-report-package
+    fi
+    ok "now at $(git rev-parse HEAD)"
+fi
+
+say "Phase 0c — editable install (only if a new module fails to import)"
+# Probe a module that only exists at HEAD (so a stale install gets re-bound).
+if ! python -c "from evoliez.adapters.openmm_subprocess import run_md_in_subprocess" 2>/dev/null; then
+    pip install -e . --no-deps --quiet \
+        && ok "pip install -e . refreshed"
+fi
+python -c "from evoliez.adapters.openmm_subprocess import run_md_in_subprocess" \
+    || die "openmm_subprocess module STILL missing after pip install -e ."
+python -c "from evoliez.ml.bench_summary import compute_summary" \
+    || die "bench_summary module missing"
+evoliez --help | grep -q bench-summary \
+    || die "bench-summary subcommand not registered"
+ok "all expected new modules + CLI commands resolve"
+
+say "Phase 0d — target FASTA + cheap config sanity"
+[ -f "$CFG" ]   || die "cheap config not found: $CFG  (only ENZYME=fdh has a config so far; create configs/server_${ENZYME}_cheap.yaml first)"
+[ -f "$BENCH" ] || die "benchmark CSV not found: $BENCH"
+
+FASTA_PATH="$REPO_ROOT/examples/${SLUG}/target.fasta"
+if [ ! -f "$FASTA_PATH" ] && [ -n "${UNIPROT:-}" ]; then
+    warn "target.fasta missing; fetching via scripts/fetch_target_fasta.sh"
+    bash scripts/fetch_target_fasta.sh "$UNIPROT" "$SLUG" ${FASTA_RESIDUES:-} \
+        || die "fetch_target_fasta.sh failed (offline server? UniProt down?)"
+fi
+[ -f "$FASTA_PATH" ] \
+    && ok "FASTA at $FASTA_PATH ($(wc -l < "$FASTA_PATH") lines)" \
+    || warn "no FASTA at $FASTA_PATH; config may rely on a different path"
+
+# Auto-rewrite output_dir for the current user (jglee → $USER), idempotent.
+if grep -q "/mnt/data/jglee/" "$CFG" && [ "$USER" != "jglee" ]; then
+    sed -i.bak "s|/mnt/data/jglee/|/mnt/data/${USER}/|g" "$CFG"
+    ok "rewrote output_dir for user=$USER (backup at $CFG.bak)"
+fi
+
+# Resolve output_dir from the config so we know where to look for outputs.
+OUTPUT_DIR="$(python -c "
+import yaml, sys
+try:
+    print(yaml.safe_load(open('$CFG'))['project']['output_dir'])
+except Exception:
+    sys.exit(0)
+")"
+[ -n "$OUTPUT_DIR" ] || die "could not parse project.output_dir from $CFG"
+mkdir -p "$(dirname "$OUTPUT_DIR")"
+ok "output_dir: $OUTPUT_DIR"
+
+# Check disk room (need ~5 GB headroom per cheap run).
+AVAIL_KB="$(df -Pk "$(dirname "$OUTPUT_DIR")" | awk 'NR==2 {print $4}')"
+AVAIL_GB=$(( AVAIL_KB / 1024 / 1024 ))
+[ "$AVAIL_GB" -lt 5 ] && warn "only ${AVAIL_GB} GB free on $(dirname "$OUTPUT_DIR") — cheap-run typically uses 3-5 GB" \
+                     || ok "${AVAIL_GB} GB free on $(dirname "$OUTPUT_DIR")"
+
+# ===========================================================
+# Phase 1  --  doctor preflight
+# ===========================================================
+say "Phase 1 — evoliez doctor (preflight)"
+if ! evoliez doctor -c "$CFG"; then
+    die "evoliez doctor reported a blocking failure. Fix that first, then re-run."
+fi
+ok "doctor passed"
+
+# ===========================================================
+# Phase 2  --  cheap pipeline run
+# ===========================================================
+say "Phase 2 — evoliez run (cheap config; subprocess MD isolation ON)"
+echo "   expected wall time: 30-60 min on 1 A6000 (PseFDH cheap)"
+START_TS="$(date +%s)"
+if ! evoliez run -c "$CFG"; then
+    die "evoliez run exited non-zero. Inspect the log at $_LOG_FILE."
+fi
+END_TS="$(date +%s)"
+ELAPSED=$(( END_TS - START_TS ))
+ok "pipeline finished in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
+
+CAND_CSV="$OUTPUT_DIR/reports/final_candidates.csv"
+[ -f "$CAND_CSV" ] || die "no $CAND_CSV — pipeline produced no ranking"
+
+# ===========================================================
+# Phase 3  --  bench-summary (post-hoc metrics)
+# ===========================================================
+say "Phase 3 — evoliez bench-summary --strict"
+MD_DIR="$OUTPUT_DIR/md"
+SUMMARY_MD="$OUTPUT_DIR/reports/bench_summary.md"
+MD_ARG=()
+[ -d "$MD_DIR" ] && MD_ARG=( "--md-root" "$MD_DIR" )
+
+set +e
+evoliez bench-summary \
+    --candidates "$CAND_CSV" \
+    --benchmark  "$BENCH" \
+    --name       "$NAME" \
+    ${MD_ARG[@]+"${MD_ARG[@]}"} \
+    --out        "$SUMMARY_MD" \
+    --strict
+RC=$?
+set -e
+
+# ===========================================================
+# Summary
+# ===========================================================
+say "Result"
+if [ "$RC" -eq 0 ]; then
+    printf '\033[1;42m PASS \033[0m  cheap-run met every threshold (%s)\n' "$NAME"
+    echo "   markdown report: $SUMMARY_MD"
+    echo
+    echo "   Next:"
+    echo "     - cat \"$SUMMARY_MD\"     # full metric card"
+    echo "     - then either repeat with ENZYME=xr/tem1/bgl3/p450 ./$(basename "$0"),"
+    echo "       or run scripts/server_production_run.sh for full prod."
+    exit 0
+else
+    printf '\033[1;41m FAIL \033[0m  bench-summary reported threshold violations\n'
+    echo "   markdown report: $SUMMARY_MD"
+    echo
+    echo "   Quick triage:"
+    echo "     grep -E 'Reject|MD failure|MD timeout|recall' \"$SUMMARY_MD\""
+    echo "     ls \"$MD_DIR\"/  # which candidate workdirs exist"
+    echo "     for d in \"$MD_DIR\"/*/; do echo \"=== \$d\"; tail -30 \"\$d/_md_subprocess.log\" 2>/dev/null; done"
+    echo
+    echo "   DO NOT proceed to full prod until the failure is understood."
+    exit 2
+fi

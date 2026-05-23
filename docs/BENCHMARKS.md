@@ -52,12 +52,22 @@ auditable in one place.
    MD subprocess isolation).
 2. For each new card, run `evoliez bench --allow-no-overlap` first to
    confirm the card loads and reports zero schema warnings.
-3. Cheap run per enzyme (Boltz real, MD = mock or top-5 real MD) →
-   `evoliez bench-summary --candidates <run>/reports/final_candidates.csv
-   --benchmark examples/<slug>/benchmark.csv --md-root <run>/md`. The
-   summary reports recall@1/5/10/30, deleterious bottom-quintile rate,
-   `Reject/invalid` top-leakage (must be 0 — P0a contract), MD
-   failure/timeout rate. If those numbers look right, go to step 4.
+3. Cheap run per enzyme via the **single self-bootstrapping script**:
+   ```
+   bash scripts/run_server_cheap.sh                  # PseFDH (default)
+   ENZYME=xr   bash scripts/run_server_cheap.sh      # Xylose reductase
+   ENZYME=tem1 bash scripts/run_server_cheap.sh      # TEM-1 β-lactamase
+   ENZYME=bgl3 bash scripts/run_server_cheap.sh      # β-glucosidase Bgl3
+   ENZYME=p450 bash scripts/run_server_cheap.sh      # P450 BM3
+   ```
+   The script auto-activates the conda env, git-pulls if behind, runs
+   the editable install when new modules are missing, fetches the
+   per-enzyme FASTA when absent, and chains `evoliez doctor` →
+   `evoliez run` → `evoliez bench-summary --strict`. Exits 0 on PASS,
+   2 on FAIL. The bench-summary reports recall@1/5/10/30, deleterious
+   bottom-quintile rate, `Reject/invalid` top-leakage (must be 0 —
+   P0a contract), MD failure/timeout rate. If those numbers look
+   right, go to step 4.
 4. Full production run, one enzyme at a time, with output diffed
    against the cheap-run snapshot.
 5. Cross-enzyme summary: `evoliez multi-bench-summary --examples
