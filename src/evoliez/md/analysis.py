@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from statistics import mean, pstdev
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from evoliez.adapters.openmm_engine import MDResult
 from evoliez.config import ScoreWeights
@@ -122,8 +122,24 @@ def analyse(result: MDResult, weights: ScoreWeights) -> MDMetrics:
     return m
 
 
-def to_json(metrics: MDMetrics) -> Dict[str, object]:
-    return {
+def to_json(
+    metrics: MDMetrics,
+    result: Optional["MDResult"] = None,
+) -> Dict[str, object]:
+    """Serialise MD metrics for ``md/<cand>/analysis.json``.
+
+    P0b: when the original ``MDResult`` is passed, the per-frame time
+    series (ligand RMSD, pocket RMSD, key distances, per-replica
+    spreads) are persisted too. Production analysis.json had only
+    summary stats (mean / final / std) which forced the HTML report to
+    fall back to a bar chart and made downstream trajectory analysis
+    impossible.
+
+    Backward compatible: ``result=None`` reproduces the legacy summary-
+    only payload exactly. Callers should pass the result whenever it's
+    available (s10_md does).
+    """
+    out: Dict[str, object] = {
         "ligand_rmsd_mean": metrics.ligand_rmsd_mean,
         "ligand_rmsd_final": metrics.ligand_rmsd_final,
         "ligand_escape": metrics.ligand_escape,
@@ -138,3 +154,35 @@ def to_json(metrics: MDMetrics) -> Dict[str, object]:
         "passed": metrics.passed,
         "failure_reasons": metrics.failure_reasons,
     }
+    if result is not None:
+        # Per-frame time series. The reporter writes ~50 frames per
+        # production run (see openmm_engine `_run_real`), so each list
+        # is small (50 floats x 4 bytes ~= 200 B). Safe to inline in
+        # analysis.json. Empty / mock-backend runs round-trip as
+        # empty lists rather than missing keys.
+        out["ligand_rmsd_series"] = list(result.ligand_rmsd_series or [])
+        out["pocket_rmsd_series"] = list(result.pocket_rmsd_series or [])
+        out["key_distances"] = {
+            str(k): list(v) for k, v in (result.key_distances or {}).items()
+        }
+        # Per-replica spread for the final-tier (replicas_run > 1) MD; the
+        # HTML report can render confidence ribbons or per-replica curves
+        # from these when present.
+        if result.ligand_rmsd_replicas:
+            out["ligand_rmsd_replicas"] = [
+                list(s) for s in result.ligand_rmsd_replicas
+            ]
+        if result.pocket_rmsd_replicas:
+            out["pocket_rmsd_replicas"] = [
+                list(s) for s in result.pocket_rmsd_replicas
+            ]
+        # Derived time axis: production_ns total / n_frames = ps/frame.
+        # Lets the report position the dashed cutoff in real time units
+        # without recomputing from config.
+        n_frames = len(out["ligand_rmsd_series"]) or len(out["pocket_rmsd_series"])
+        if n_frames and result.simulation_time_ns:
+            dt_ps = float(result.simulation_time_ns) * 1000.0 / float(n_frames)
+            out["time_ps"] = [round(i * dt_ps, 3) for i in range(int(n_frames))]
+            out["dt_ps"] = round(dt_ps, 3)
+            out["n_frames"] = int(n_frames)
+    return out
