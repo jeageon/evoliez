@@ -195,14 +195,26 @@ def _smiles_from_provenance(provenance_path: Optional[Path]) -> Optional[str]:
 def _find_wt_complex(complexes: Path) -> Optional[Path]:
     """Best Boltz model for the WT complex.
 
-    Boltz emits ``complexes/boltz_results_wt_boltz_input/predictions/wt_boltz_input/<...>_model_0.pdb``;
-    we pick the lexicographically-first ``*model_0.pdb`` so the same input
-    deterministically picks the same file (no mtime fragility).
+    Two server-observed layouts:
+      1. ``complexes/boltz_results_wt_boltz_input/predictions/wt_boltz_input/...``
+      2. ``complexes/boltz/boltz_results_wt_boltz_input/predictions/wt_boltz_input/...``
+         (production server uses this extra ``boltz/`` subdirectory.)
+
+    Walk the whole ``complexes/`` tree once for ``boltz_results_wt_boltz_input``
+    rather than hardcoding either path, so future layout tweaks are
+    tolerated. Always pick model_0 (best confidence by Boltz convention)
+    and lex-sort for determinism.
     """
     if not complexes.exists():
         return None
-    pred_root = complexes / "boltz_results_wt_boltz_input" / "predictions"
-    if pred_root.exists():
+    # Look at depth 0 (canonical) AND depth 1 (server-observed boltz/ subdir)
+    # to keep the glob cheap on big runs.
+    candidates: List[Path] = []
+    for parent in (complexes, *[p for p in complexes.iterdir() if p.is_dir()]):
+        cand = parent / "boltz_results_wt_boltz_input" / "predictions"
+        if cand.exists():
+            candidates.append(cand)
+    for pred_root in candidates:
         hits = sorted(pred_root.rglob("*model_0.pdb"))
         if hits:
             return hits[0]
@@ -220,27 +232,34 @@ _MUT_DIR_RE = re.compile(r"boltz_results_mut_(?P<cand>.+?)_boltz_input$")
 def _find_mutant_complexes(complexes: Path) -> Dict[str, Path]:
     """Map cand_id -> best Boltz PDB for each mutant.
 
-    Layout: ``complexes/mutant_boltz/boltz_results_mut_<cand>_boltz_input/predictions/.../*model_0.pdb``.
+    Two server-observed layouts (same as ``_find_wt_complex``):
+      1. ``complexes/mutant_boltz/boltz_results_mut_<cand>_boltz_input/...``
+      2. ``complexes/boltz/mutant_boltz/boltz_results_mut_<cand>_boltz_input/...``
     """
     out: Dict[str, Path] = {}
     if not complexes.exists():
         return out
-    mutant_root = complexes / "mutant_boltz"
-    if not mutant_root.exists():
-        return out
-    for sub in sorted(mutant_root.iterdir()):
-        if not sub.is_dir():
-            continue
-        m = _MUT_DIR_RE.match(sub.name)
-        if not m:
-            continue
-        cand = m.group("cand")
-        preds = sub / "predictions"
-        if not preds.exists():
-            continue
-        hits = sorted(preds.rglob("*model_0.pdb"))
-        if hits:
-            out[cand] = hits[0]
+    mutant_roots: List[Path] = []
+    for parent in (complexes, *[p for p in complexes.iterdir() if p.is_dir()]):
+        cand = parent / "mutant_boltz"
+        if cand.exists():
+            mutant_roots.append(cand)
+    for mutant_root in mutant_roots:
+        for sub in sorted(mutant_root.iterdir()):
+            if not sub.is_dir():
+                continue
+            m = _MUT_DIR_RE.match(sub.name)
+            if not m:
+                continue
+            cand = m.group("cand")
+            if cand in out:                # first-found wins (canonical layout)
+                continue
+            preds = sub / "predictions"
+            if not preds.exists():
+                continue
+            hits = sorted(preds.rglob("*model_0.pdb"))
+            if hits:
+                out[cand] = hits[0]
     return out
 
 

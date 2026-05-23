@@ -18,18 +18,44 @@ def _load_conservation(path: Path) -> Optional[List[float]]:
         data = json.loads(Path(path).read_text())
     except (OSError, ValueError):
         return None
-    if isinstance(data, dict):
-        cons = data.get("conservation") or data.get("scores")
-    elif isinstance(data, list):
-        cons = data
-    else:
-        cons = None
-    if not isinstance(cons, list) or not cons:
+    # Shape 1: flat list.
+    if isinstance(data, list):
+        try:
+            return [float(x) for x in data] or None
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(data, dict):
         return None
+    # Shape 2 (legacy): {"conservation": [...], "scores": [...]}.
+    flat = data.get("conservation") or data.get("scores")
+    if isinstance(flat, list) and flat:
+        try:
+            return [float(x) for x in flat]
+        except (TypeError, ValueError):
+            return None
+    # Shape 3 (production - s03_msa actually writes this):
+    #   {"1": {"conservation": 0.59, "entropy": ..., "allowed_aa": [...]},
+    #    "2": {"conservation": 0.45, ...}, ...}
+    # Numerically-sorted keys -> per-position conservation list.
     try:
-        return [float(x) for x in cons]
+        pos_keys = sorted(data.keys(), key=lambda k: int(k))
     except (TypeError, ValueError):
         return None
+    if not pos_keys:
+        return None
+    cons: List[float] = []
+    for key in pos_keys:
+        entry = data[key]
+        if not isinstance(entry, dict):
+            return None
+        val = entry.get("conservation")
+        if val is None:
+            return None
+        try:
+            cons.append(float(val))
+        except (TypeError, ValueError):
+            return None
+    return cons or None
 
 
 def _load_designable_positions(run_dir: Optional[Path]) -> List[int]:

@@ -300,7 +300,11 @@ def test_md_rmsd_with_series(tmp_path: Path) -> None:
     assert _png_ok(out)
 
 
-def test_md_rmsd_summary_only_returns_none(tmp_path: Path) -> None:
+def test_md_rmsd_summary_only_renders_bar_fallback(tmp_path: Path) -> None:
+    """Production schema (md/analysis.json) carries only mean+final RMSD,
+    not the full time series. Renderer must fall back to a horizontal
+    bar chart rather than skipping the whole section. Without this,
+    s10_md's actual output produces an empty section 8."""
     pytest.importorskip("matplotlib")
     from evoliez.figures.plots import md_rmsd
 
@@ -308,14 +312,30 @@ def test_md_rmsd_summary_only_returns_none(tmp_path: Path) -> None:
     run.mkdir()
     md_a = run / "md" / "cand_00"
     md_a.mkdir(parents=True)
-    # Summary numbers only -> renderer should skip with a warning.
-    (md_a / "analysis.json").write_text(
-        json.dumps({"ligand_rmsd_mean": 1.2, "pocket_rmsd_mean": 0.8})
-    )
+    # Production-shape analysis.json: only mean + final, no series.
+    (md_a / "analysis.json").write_text(json.dumps({
+        "ligand_rmsd_mean": 1.2, "ligand_rmsd_final": 2.1,
+        "pocket_rmsd_mean": 0.8, "pocket_rmsd_final": 1.0,
+        "passed": True, "md_lite_score": 0.5,
+    }))
     art = _empty_artifacts(run)
     art.md_dirs = {"cand_00": md_a}
     out = tmp_path / "rmsd.png"
-    assert md_rmsd.render(art, out) is None
+    spec = md_rmsd.render(art, out)
+    assert spec is not None
+    assert spec.figure_id == "08_md_rmsd_timeseries"
+    assert spec.params.get("mode") == "summary_bars"
+    assert _png_ok(out)
+
+
+def test_md_rmsd_returns_none_when_no_md_dirs(tmp_path: Path) -> None:
+    """Sanity floor: with NO md_dirs at all, render must still skip."""
+    pytest.importorskip("matplotlib")
+    from evoliez.figures.plots import md_rmsd
+
+    art = _empty_artifacts(tmp_path / "run")
+    art.md_dirs = {}
+    assert md_rmsd.render(art, tmp_path / "out.png") is None
 
 
 # ---------------------------------------------------------------------------
