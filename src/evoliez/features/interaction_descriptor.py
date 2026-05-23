@@ -27,6 +27,40 @@ def fingerprint_dim(k_nearest: int, n_bins: int = 8) -> int:
     return n_bins + len(_ITYPES) + 4 + k_nearest
 
 
+def fingerprint_feature_labels(
+    k_nearest: int, n_bins: int = 8, cutoff: float = 6.0,
+) -> List[dict]:
+    """Per-feature semantic labels for the complex fingerprint vector.
+
+    Returns a list of length ``fingerprint_dim(...)``; each entry is
+    ``{"label": str, "group": str, "index_in_group": int}``. The HTML
+    report's fingerprint heatmap consumes this to label x-ticks
+    ("0-0.75Å", "hbond", "mean", "k1") instead of the meaningless
+    "feature_0", and to draw vertical separators between groups so a
+    reviewer can read the four regions at a glance.
+
+    Kept here (not in the figures package) so the labels stay in lockstep
+    with the vector layout - any future change to ``complex_fingerprint``
+    forces an update on both sides at once.
+    """
+    out: List[dict] = []
+    bin_w = float(cutoff) / max(1, n_bins)
+    for i in range(n_bins):
+        lo = i * bin_w
+        hi = (i + 1) * bin_w
+        out.append({
+            "label": f"{lo:.2g}-{hi:.2g}Å",
+            "group": "dist_hist", "index_in_group": i,
+        })
+    for j, t in enumerate(_ITYPES):
+        out.append({"label": t, "group": "itype", "index_in_group": j})
+    for j, name in enumerate(("mean", "std", "min", "contact_frac")):
+        out.append({"label": name, "group": "summary", "index_in_group": j})
+    for j in range(k_nearest):
+        out.append({"label": f"k{j + 1}", "group": "kshell", "index_in_group": j})
+    return out
+
+
 def complex_fingerprint(
     structure: ProteinStructure,
     ligand_atoms: Sequence[LigandAtom],

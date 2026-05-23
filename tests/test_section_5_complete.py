@@ -142,6 +142,47 @@ def test_fingerprint_heatmap_renders(tmp_path: Path) -> None:
     assert spec.params["n_rows"] == 6
 
 
+def test_fingerprint_heatmap_uses_semantic_labels_when_meta_present(
+    tmp_path: Path,
+) -> None:
+    """When ``fingerprint_matrix_meta.json`` carries ``feature_labels``,
+    the renderer uses them as x-tick labels and surfaces
+    ``params['semantic_xticks'] == True``. Absent meta → fallback to
+    numeric ticks, ``semantic_xticks == False``."""
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("numpy")
+    import json
+    from evoliez.features.interaction_descriptor import (
+        fingerprint_dim, fingerprint_feature_labels,
+    )
+    from evoliez.figures.plots import fingerprint_heatmap
+
+    n_features = fingerprint_dim(k_nearest=6, n_bins=8)  # 24
+    csv_path = _write_fingerprint_matrix(
+        tmp_path / "run" / "ml_datasets" / "fingerprint_matrix.csv",
+        n_rows=5, n_features=n_features,
+    )
+    meta_path = csv_path.parent / "fingerprint_matrix_meta.json"
+    meta_path.write_text(json.dumps({
+        "feature_dim": n_features,
+        "feature_labels": fingerprint_feature_labels(k_nearest=6, n_bins=8),
+    }))
+    art = _empty_artifacts(tmp_path / "run")
+    art.fingerprint_matrix_csv = csv_path
+    out = tmp_path / "heat_sem.png"
+    spec = fingerprint_heatmap.render(art, out)
+    assert spec is not None
+    assert spec.params["semantic_xticks"] is True
+    assert out.exists() and out.stat().st_size > 0
+
+    # Without the meta file, falls back to numeric ticks.
+    meta_path.unlink()
+    out2 = tmp_path / "heat_num.png"
+    spec2 = fingerprint_heatmap.render(art, out2)
+    assert spec2 is not None
+    assert spec2.params["semantic_xticks"] is False
+
+
 def test_fingerprint_heatmap_returns_none_without_csv(tmp_path: Path) -> None:
     pytest.importorskip("matplotlib")
     from evoliez.figures.plots import fingerprint_heatmap

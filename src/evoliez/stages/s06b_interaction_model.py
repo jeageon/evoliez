@@ -47,6 +47,23 @@ def _export_fingerprint_matrix(out_dir, records, fp_dim: int) -> None:
     import json as _json
     from pathlib import Path as _Path
 
+    # Pull the per-feature semantic labels from the descriptor module so
+    # the heatmap renderer can show "0-0.75Å"/"hbond"/"mean"/"k1" instead
+    # of "feature_N". Falling back to an empty list keeps this best-effort
+    # for older fingerprints that don't match the standard dim.
+    try:
+        from evoliez.features.interaction_descriptor import (
+            fingerprint_dim as _fp_dim,
+            fingerprint_feature_labels as _fp_labels,
+        )
+        feature_labels = (
+            _fp_labels(k_nearest=6, n_bins=8, cutoff=6.0)
+            if int(fp_dim) == _fp_dim(k_nearest=6, n_bins=8)
+            else []
+        )
+    except Exception:  # noqa: BLE001 - meta is best-effort
+        feature_labels = []
+
     out_dir = _Path(out_dir)
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +95,9 @@ def _export_fingerprint_matrix(out_dir, records, fp_dim: int) -> None:
                 "Synthetic training decoys are NOT included - this is the "
                 "real-pose matrix used by the HTML report fingerprint heatmap."
             ),
+            # New (P1f): semantic feature labels so the heatmap x-axis
+            # reads as physical bins rather than opaque "feature_N".
+            "feature_labels": feature_labels,
         }
         meta_path.write_text(_json.dumps(meta, indent=2))
     except Exception as exc:  # noqa: BLE001 - report-only artefact

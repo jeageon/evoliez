@@ -5,6 +5,7 @@ from evoliez.config import LigandInput
 from evoliez.features.interaction_descriptor import (
     complex_fingerprint,
     fingerprint_dim,
+    fingerprint_feature_labels,
 )
 from evoliez.features.ligand import parse_ligand
 from evoliez.ml.interaction_model import InteractionModel
@@ -26,6 +27,39 @@ def test_fingerprint_is_fixed_length_regardless_of_size():
     fp2 = complex_fingerprint(s2, l2, cutoff=6.0, k_nearest=6, n_bins=8)
     assert fp1.shape == (dim,)
     assert fp2.shape == (dim,)  # different protein length -> same descriptor size
+
+
+def test_fingerprint_feature_labels_match_dim_and_groups():
+    """Label list length == fingerprint_dim; group order is
+    dist_hist → itype → summary → kshell; entries within a group are
+    contiguous (P1f heatmap renderer depends on contiguity to draw the
+    group separators)."""
+    dim = fingerprint_dim(6, 8)
+    labels = fingerprint_feature_labels(k_nearest=6, n_bins=8)
+    assert len(labels) == dim
+    groups = [e["group"] for e in labels]
+    # First-seen order locks the group sequence.
+    seen = []
+    for g in groups:
+        if g not in seen:
+            seen.append(g)
+    assert seen == ["dist_hist", "itype", "summary", "kshell"]
+    # Each group is a single contiguous block.
+    for g in seen:
+        idxs = [i for i, x in enumerate(groups) if x == g]
+        assert idxs == list(range(idxs[0], idxs[-1] + 1)), (
+            f"group {g!r} not contiguous"
+        )
+    # Spot-check labels in each group.
+    dist_labels = [e["label"] for e in labels if e["group"] == "dist_hist"]
+    assert any("Å" in lab for lab in dist_labels)
+    itype_labels = [e["label"] for e in labels if e["group"] == "itype"]
+    for expected in ("hbond", "salt_bridge", "aromatic", "hydrophobic", "vdw", "none"):
+        assert expected in itype_labels
+    summary_labels = [e["label"] for e in labels if e["group"] == "summary"]
+    assert summary_labels == ["mean", "std", "min", "contact_frac"]
+    kshell_labels = [e["label"] for e in labels if e["group"] == "kshell"]
+    assert kshell_labels == [f"k{i + 1}" for i in range(6)]
 
 
 def test_pose_selection_splits_consensus_and_outliers():

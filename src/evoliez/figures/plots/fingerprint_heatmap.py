@@ -21,6 +21,7 @@ crashing.
 from __future__ import annotations
 
 import csv
+import json
 import logging
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -29,6 +30,21 @@ from evoliez.figures.plots import apply_style_and_get_dpi
 from evoliez.figures.types import FigureSpec, ReportArtifacts
 
 _LOGGER = logging.getLogger(__name__)
+
+# Group → display color for the vertical separators / group banner labels.
+# Wong-style palette (colorblind-safe) reused from evoliez.figures.style.
+_GROUP_COLORS = {
+    "dist_hist": "#0072B2",  # blue
+    "itype":     "#D55E00",  # vermilion
+    "summary":   "#009E73",  # bluish-green
+    "kshell":    "#CC79A7",  # reddish-purple
+}
+_GROUP_PRETTY = {
+    "dist_hist": "distance histogram",
+    "itype":     "interaction type",
+    "summary":   "summary",
+    "kshell":    "k-shell distances",
+}
 
 # When the matrix has more rows than this we sub-sample to the rows with
 # the highest variance - a 5000-pose ensemble produces an unreadable
@@ -86,6 +102,35 @@ def _load_matrix(
     return pose_ids, mat
 
 
+def _load_feature_labels(csv_path: Path, n_features: int) -> List[dict]:
+    """Resolve per-feature semantic labels from the sibling
+    ``fingerprint_matrix_meta.json`` (written by s06b). Returns ``[]``
+    when the meta file is missing or its label count doesn't match the
+    matrix - the renderer then falls back to numeric x-ticks.
+    """
+    meta_path = csv_path.parent / "fingerprint_matrix_meta.json"
+    if not meta_path.exists():
+        return []
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, ValueError):
+        return []
+    labels = meta.get("feature_labels") or []
+    if not isinstance(labels, list) or len(labels) != n_features:
+        return []
+    # Be defensive: ensure each entry has the expected keys.
+    cleaned: List[dict] = []
+    for entry in labels:
+        if not isinstance(entry, dict):
+            return []
+        cleaned.append({
+            "label": str(entry.get("label", "?")),
+            "group": str(entry.get("group", "")),
+            "index_in_group": int(entry.get("index_in_group", 0)),
+        })
+    return cleaned
+
+
 def render(
     artifacts: ReportArtifacts,
     out_path: Path,
@@ -114,6 +159,7 @@ def render(
     dpi = apply_style_and_get_dpi(style)
     import numpy as np  # noqa: WPS433
     from matplotlib import pyplot as plt  # noqa: WPS433
+    from matplotlib.patches import Rectangle  # noqa: WPS433
 
     n_rows_full, n_features = mat.shape
 
@@ -137,9 +183,10 @@ def render(
         cmap="viridis",
         interpolation="nearest",
     )
-    ax.set_xlabel("fingerprint feature index")
     ax.set_ylabel("pose")
-    ax.set_title("Interaction fingerprint matrix")
+    # Extra pad leaves room for the colored group banner that the
+    # semantic-xticks branch adds above the heatmap.
+    ax.set_title("Interaction fingerprint matrix", pad=18)
 
     # Truncate pose labels so they don't fight the layout.
     short_labels = [
@@ -148,10 +195,55 @@ def render(
     ax.set_yticks(np.arange(n_rows))
     ax.set_yticklabels(short_labels, fontsize=7)
 
-    # Thin out x-ticks so they stay readable.
-    if n_features > 30:
-        step = max(1, n_features // 12)
-        ax.set_xticks(np.arange(0, n_features, step))
+    # ---- semantic x-axis (P1f) ---------------------------------------
+    # When the sibling meta JSON has per-feature labels, use them - and
+    # draw a vertical separator + colored group banner at each group
+    # boundary so a reader can scan the four regions at a glance.
+    feature_labels = _load_feature_labels(Path(csv_path), n_features)
+    used_semantic_xticks = False
+    if feature_labels:
+        ax.set_xticks(np.arange(n_features))
+        ax.set_xticklabels(
+            [e["label"] for e in feature_labels],
+            rotation=60, ha="right", fontsize=7,
+        )
+        # Find group boundaries and draw vertical separator lines.
+        groups: List[str] = [e["group"] for e in feature_labels]
+        boundaries: List[Tuple[int, int, str]] = []
+        start = 0
+        for i in range(1, n_features + 1):
+            if i == n_features or groups[i] != groups[start]:
+                boundaries.append((start, i, groups[start]))
+                if i != n_features:
+                    ax.axvline(i - 0.5, color="white", linewidth=1.6,
+                               alpha=0.85)
+                start = i
+        # Colored group strip across the top of the axes.
+        y_top = ax.get_ylim()[1]
+        for (s, e, g) in boundaries:
+            color = _GROUP_COLORS.get(g, "#888888")
+            ax.add_patch(
+                Rectangle(
+                    (s - 0.5, y_top - 0.4), (e - s), 0.4,
+                    facecolor=color, alpha=0.7, edgecolor="none",
+                    clip_on=False, zorder=5,
+                )
+            )
+            ax.text(
+                (s + e - 1) / 2.0, y_top - 0.2,
+                _GROUP_PRETTY.get(g, g),
+                ha="center", va="center",
+                color="white", fontsize=7, weight="bold",
+                clip_on=False, zorder=6,
+            )
+        ax.set_xlabel("fingerprint feature")
+        used_semantic_xticks = True
+    else:
+        # Legacy fallback: numeric ticks, thinned out so they stay readable.
+        ax.set_xlabel("fingerprint feature index")
+        if n_features > 30:
+            step = max(1, n_features // 12)
+            ax.set_xticks(np.arange(0, n_features, step))
     fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02, label="feature value")
 
     out_path = Path(out_path)
@@ -176,6 +268,7 @@ def render(
             "n_rows_total": int(n_rows_full),
             "n_features": int(n_features),
             "sampled": bool(n_rows_full > _MAX_ROWS),
+            "semantic_xticks": bool(used_semantic_xticks),
             "style": style,
         },
     )
