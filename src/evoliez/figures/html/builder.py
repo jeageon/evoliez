@@ -321,13 +321,52 @@ def _copy_static_assets(output_dir: Path) -> None:
             _LOG.warning("could not copy %s -> %s: %s", src, dst, exc)
 
 
-def _copy_pdb_assets(
-    artifacts: ReportArtifacts, output_dir: Path
-) -> Dict[str, Path]:
-    """Copy WT + top-candidate PDBs into ``output_dir/pdb/``.
+def _top_accepted_candidate_ids(
+    artifacts: ReportArtifacts, top_k: int = 10,
+) -> List[str]:
+    """Top-K candidate IDs from ``final_candidates.csv`` after the P0a
+    gate (is_blocked == 0 if the column is present; otherwise the raw
+    rank order). Reads the CSV instead of taking an alphabetical slice
+    of ``mutant_complex_pdbs`` - that was the v3 packaging bug where
+    ``mut_00003/4/5`` ended up in the zip even though the actual top
+    were ``mut_00053/30/54``.
+    """
+    if artifacts.final_candidates_csv is None:
+        return []
+    try:
+        with Path(artifacts.final_candidates_csv).open("r", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+    except OSError:
+        return []
+    if not rows:
+        return []
+    # If the gate column is present (post-P0a runs), use it to drop
+    # blocked candidates. Otherwise take rows in CSV rank order.
+    have_gate = "is_blocked" in rows[0]
+    accepted = [
+        r for r in rows
+        if (not have_gate) or r.get("is_blocked", "0") in ("0", "", "False")
+    ]
+    return [r["candidate_id"] for r in accepted[:top_k] if r.get("candidate_id")]
 
-    Returns ``{label: dest_path}`` for any successful copy.  Best-effort -
+
+def _copy_pdb_assets(
+    artifacts: ReportArtifacts, output_dir: Path, *, top_k: int = 10,
+) -> Dict[str, Path]:
+    """Copy WT + the TOP-K ACCEPTED candidate PDBs into ``output_dir/pdb/``.
+
+    Returns ``{label: dest_path}`` for any successful copy. Best-effort -
     missing source files simply skip.
+
+    Expert-flagged v3 bug: the previous version sliced
+    ``mutant_complex_pdbs.items()[:3]`` which returned alphabetical
+    ``mut_00003/4/5`` rather than the actual top-recommendation
+    candidates (``mut_00053/30/54`` for PseFDH). This left the zip's
+    ``pdb/`` folder + ``session.pml`` decoupled from the recommendation
+    list - users opening the package couldn't inspect the candidates
+    we were actually telling them to test. Now we pull the order from
+    ``final_candidates.csv`` so the packaged PDBs always match the
+    report's top recommendations.
     """
     pdb_dir = output_dir / "pdb"
     pdb_dir.mkdir(parents=True, exist_ok=True)
@@ -342,18 +381,94 @@ def _copy_pdb_assets(
         except OSError as exc:
             _LOG.warning("could not copy WT PDB: %s", exc)
 
-    # Top 3 mutant PDBs (alphabetical for determinism).
-    for label, src in list(artifacts.mutant_complex_pdbs.items())[:3]:
-        if not Path(src).exists():
+    # Top-K accepted candidate PDBs, in the recommendation order from
+    # the CSV. Discovery's _find_mutant_complexes strips the ``mut_``
+    # prefix when keying (the regex captures only digits after
+    # ``boltz_results_mut_``), but CSV candidate_ids include it - so
+    # we try both forms for lookup. Missing source files (e.g. mutant
+    # whose Boltz output was cleaned) are simply skipped.
+    top_ids = _top_accepted_candidate_ids(artifacts, top_k=top_k)
+    mut_pdbs = artifacts.mutant_complex_pdbs or {}
+    for cand_id in top_ids:
+        # Try the CSV form first ("mut_00030"), then the stripped form
+        # ("00030") that discovery uses as its dict key.
+        src = mut_pdbs.get(cand_id)
+        if src is None and cand_id.startswith("mut_"):
+            src = mut_pdbs.get(cand_id[4:])
+        if src is None or not Path(src).exists():
             continue
-        dst = pdb_dir / f"mut_{label}.pdb"
+        dst = pdb_dir / f"{cand_id}.pdb"
         try:
             shutil.copy2(src, dst)
-            out[label] = dst
+            out[cand_id] = dst
         except OSError as exc:
-            _LOG.warning("could not copy mutant PDB %s: %s", label, exc)
-
+            _LOG.warning("could not copy mutant PDB %s: %s", cand_id, exc)
+    if not top_ids and mut_pdbs:
+        # No CSV (or no gate / empty after filter) - fall back to
+        # alphabetical first 3 so the zip still has SOME mutant
+        # structures. Logged loudly so this isn't silent.
+        _LOG.warning(
+            "no top-accepted candidates resolved from final_candidates.csv; "
+            "falling back to alphabetical first 3 mutant PDBs"
+        )
+        for cand_id, src in list(mut_pdbs.items())[:3]:
+            if not Path(src).exists():
+                continue
+            dst = pdb_dir / f"{cand_id}.pdb"
+            try:
+                shutil.copy2(src, dst)
+                out[cand_id] = dst
+            except OSError:
+                continue
     return out
+
+
+def _write_pymol_session(
+    output_dir: Path, copied_pdbs: Dict[str, Path],
+) -> Optional[Path]:
+    """Write a PyMOL session script (``session.pml``) that actually
+    loads the PDBs we just packaged.
+
+    Expert-flagged v3 bug: ``io/report._write_pymol`` emitted
+    ``bg_color white`` and nothing else because it read
+    ``c.details["complex_path"]`` which the stage never sets. Opening
+    that session.pml in PyMOL showed an empty viewer. Now we emit
+    real ``load pdb/<id>.pdb, <id>`` lines for every PDB the builder
+    copied, so the script is immediately useful.
+
+    The script lives at ``output_dir/session.pml`` so the relative
+    ``pdb/...`` path resolves correctly from inside the package.
+    """
+    if not copied_pdbs:
+        return None
+    pml = output_dir / "session.pml"
+    lines: List[str] = [
+        "# PyMOL session for the EvoLiEZ report package.",
+        "# Opens the WT + top-recommendation mutant structures and",
+        "# colours them so they're visually distinguishable.",
+        "bg_color white",
+        "set ray_shadows, 0",
+        "set ray_opaque_background, off",
+    ]
+    # WT loaded first as the reference.
+    if "wt" in copied_pdbs:
+        lines.append("load pdb/wt.pdb, wt")
+        lines.append("color cyan, wt and polymer")
+    # Then each mutant in CSV rank order.
+    for label in copied_pdbs:
+        if label == "wt":
+            continue
+        lines.append(f"load pdb/{label}.pdb, {label}")
+        lines.append(f"color magenta, {label} and polymer")
+    # Show the ligand sticks across all loaded objects.
+    lines.append(
+        "show sticks, resn NDP+NAP+LIG+NAI+NAD+SAH+SAM and not polymer"
+    )
+    lines.append("hide everything, polymer and not (name CA)")
+    lines.append("show cartoon, polymer")
+    lines.append("zoom resn NDP+NAP+LIG+NAI+NAD+SAH+SAM, 8")
+    pml.write_text("\n".join(lines) + "\n")
+    return pml
 
 
 # ---------------------------------------------------------------------------
@@ -1134,7 +1249,14 @@ def build_report(
 
     # ---- 10. static assets ---------------------------------------------
     _copy_static_assets(output_dir)
-    _copy_pdb_assets(artifacts, output_dir)
+    copied_pdbs = _copy_pdb_assets(artifacts, output_dir)
+    # Overwrite session.pml with a script that actually loads the PDBs
+    # we just packaged. io/report._write_pymol emits a stub with no
+    # `load` commands (`c.details["complex_path"]` is never set), so
+    # without this step PyMOL opens to an empty session.
+    pml_path = _write_pymol_session(output_dir, copied_pdbs)
+    if pml_path is not None:
+        _LOG.info("session.pml: %d structures wired", len(copied_pdbs))
 
     # ---- 11. render templates ------------------------------------------
     html_path = _render_html(

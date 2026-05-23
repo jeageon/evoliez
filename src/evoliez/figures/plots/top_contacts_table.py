@@ -105,23 +105,40 @@ def render(
         _LOGGER.info("top_contacts_table: no usable rows in %s", edge_csv)
         return None
 
-    # Sort by frequency (descending); NaNs sink to the bottom.
-    def _sort_key(r):
+    # Expert-flagged v3 issue: PseFDH `contact_frequency` saturated at
+    # 1.0 across the top - the column carried no rank information.
+    # Detect saturation (>=80% of top-K at >=0.99) and switch the
+    # secondary sort to mean_distance asc (closer contacts first).
+    # Frequency stays the primary sort so unsaturated columns keep
+    # their old behaviour.
+    def _freq(r) -> float:
         f = r["frequency"]
-        # NaN compares unpredictably - replace with -inf for sorting.
         return f if f == f else float("-inf")
 
-    rows.sort(key=_sort_key, reverse=True)
+    def _dist(r) -> float:
+        d = r["mean_distance"]
+        return d if d == d else float("inf")
+
+    rows.sort(key=lambda r: (-_freq(r), _dist(r)))
     keep = rows[: max(1, int(top_k))]
+    saturated_freq = (
+        len(keep) > 0
+        and sum(1 for r in keep if _freq(r) >= 0.99) / len(keep) >= 0.8
+    )
 
     dpi = apply_style_and_get_dpi(style)
     from matplotlib import pyplot as plt  # noqa: WPS433
 
     n_rows = len(keep)
-    fig_h = min(8.0, max(2.0, 0.32 * (n_rows + 1) + 0.5))
+    fig_h = min(8.0, max(2.0, 0.32 * (n_rows + 1) + 0.8))
     fig, ax = plt.subplots(figsize=(7.0, fig_h))
     ax.set_axis_off()
-    ax.set_title(f"Top {n_rows} ligand-residue contacts", pad=12)
+    title = f"Top {n_rows} ligand-residue contacts"
+    if saturated_freq:
+        # Make the saturation explicit so the reader doesn't read
+        # "1.000 1.000 1.000" as a meaningful rank signal.
+        title += "\n(frequency saturated at 1.0 — ranked by closest mean distance)"
+    ax.set_title(title, pad=12, fontsize=10)
 
     columns = ["residue", "ligand atom", "frequency", "mean distance (Å)"]
     cell_text: List[List[str]] = []
@@ -159,7 +176,13 @@ def render(
         title=f"Top {n_rows} ligand-residue contacts",
         description=(
             "Most frequent ligand-residue contacts across the Boltz "
-            "pose ensemble, ranked by contact frequency."
+            "pose ensemble. " + (
+                "Frequency is saturated at 1.0 (every pose contains "
+                "these contacts) so the table is re-ranked by closest "
+                "mean distance, which carries the residual signal."
+                if saturated_freq else
+                "Ranked by contact frequency; mean distance shown for context."
+            )
         ),
         path=out_path,
         source_files=[Path(edge_csv)],
@@ -168,6 +191,7 @@ def render(
             "top_k": int(top_k),
             "n_rows": int(n_rows),
             "n_rows_total": int(len(rows)),
+            "frequency_saturated": bool(saturated_freq),
             "style": style,
         },
     )

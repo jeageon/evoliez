@@ -58,28 +58,82 @@ def _load_conservation(path: Path) -> Optional[List[float]]:
     return cons or None
 
 
-def _load_designable_positions(run_dir: Optional[Path]) -> List[int]:
-    """Best-effort read of designable positions from ``graph_features.json``."""
-    if run_dir is None:
+def _load_positions_from_graph_features(
+    graph_features_json: Optional[Path], key: str,
+) -> List[int]:
+    """Read ``designable`` or ``catalytic`` positions from a resolved
+    ``graph_features.json`` path. Returns empty list on any failure.
+
+    ``key`` is the json field name (``"designable_positions"`` /
+    ``"catalytic_positions"`` / ``"binding_site_positions"`` etc.) -
+    also tries the short alias without ``_positions``.
+    """
+    if graph_features_json is None:
         return []
-    candidates = [
-        Path(run_dir) / "graph_features.json",
-        Path(run_dir) / "features" / "graph_features.json",
-    ]
-    for candidate in candidates:
-        if not candidate.exists():
-            continue
+    p = Path(graph_features_json)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return []
+    short = key.replace("_positions", "")
+    positions = data.get(key) or data.get(short)
+    if isinstance(positions, list):
         try:
-            data = json.loads(candidate.read_text())
-        except (OSError, ValueError):
-            continue
-        positions = data.get("designable") or data.get("designable_positions")
-        if isinstance(positions, list):
-            try:
-                return [int(p) for p in positions]
-            except (TypeError, ValueError):
-                continue
+            return [int(x) for x in positions]
+        except (TypeError, ValueError):
+            return []
     return []
+
+
+def _load_positions_from_state_meta(state_json: Optional[Path],
+                                    key: str) -> List[int]:
+    """Fallback: pull catalytic/designable positions out of
+    ``_state.json`` meta dict written by s01/s06."""
+    if state_json is None or not Path(state_json).exists():
+        return []
+    try:
+        doc = json.loads(Path(state_json).read_text())
+    except (OSError, ValueError):
+        return []
+    meta = doc.get("meta") or {}
+    positions = meta.get(key)
+    if isinstance(positions, list):
+        try:
+            return [int(x) for x in positions]
+        except (TypeError, ValueError):
+            return []
+    return []
+
+
+def _load_designable_positions(run_dir: Optional[Path],
+                               graph_features_json: Optional[Path] = None,
+                               state_json: Optional[Path] = None) -> List[int]:
+    """Designable-position resolver — production path first, legacy
+    fallbacks after. ``artifacts.graph_features_json`` is the right
+    source (Wave 4-B added it); also tries the run-dir guesses and the
+    ``_state.json`` meta hook."""
+    # Production: artifacts.graph_features_json (set by discovery).
+    out = _load_positions_from_graph_features(
+        graph_features_json, "designable_positions"
+    )
+    if out:
+        return out
+    # Legacy guesses kept for backwards compatibility.
+    if run_dir is not None:
+        for candidate in (
+            Path(run_dir) / "interaction_graphs" / "graph_features.json",
+            Path(run_dir) / "graph_features.json",
+            Path(run_dir) / "features" / "graph_features.json",
+        ):
+            out = _load_positions_from_graph_features(
+                candidate, "designable_positions"
+            )
+            if out:
+                return out
+    # State-meta fallback (s06 may have stashed it there).
+    return _load_positions_from_state_meta(state_json, "designable_positions")
 
 
 def render(
@@ -106,8 +160,21 @@ def render(
     n_pos = len(scores)
     positions = np.arange(1, n_pos + 1)
 
-    catalytic_list: List[int] = list(catalytic) if catalytic else []
-    designable = _load_designable_positions(getattr(artifacts, "run_dir", None))
+    # Resolve catalytic + designable from artifacts when caller doesn't
+    # pass them explicitly. Production v3 saw n_catalytic=0 +
+    # n_designable=0 in this figure's params because the builder didn't
+    # plumb the catalytic list through. Now we self-resolve from
+    # graph_features.json + _state.json meta.
+    gf = getattr(artifacts, "graph_features_json", None)
+    state = getattr(artifacts, "state_json", None)
+    run_dir = getattr(artifacts, "run_dir", None)
+    if catalytic:
+        catalytic_list: List[int] = list(catalytic)
+    else:
+        catalytic_list = _load_positions_from_graph_features(
+            gf, "catalytic_positions"
+        ) or _load_positions_from_state_meta(state, "catalytic_positions")
+    designable = _load_designable_positions(run_dir, gf, state)
 
     fig, axes = plt.subplots(
         2, 1,
