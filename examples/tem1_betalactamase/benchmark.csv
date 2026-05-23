@@ -1,0 +1,15 @@
+mutation,label,activity,source
+M182T,beneficial,2.5,Huang & Palzkill 1997 PNAS (global stabilising mutation; restores fold-stability defects of resistance mutations) — PMID 9050851
+M69L,beneficial,1.8,Stiffler/Hekstra/Ranganathan 2015 Cell DMS — IRT-class beneficial w/ amp+inhibitor; AmbF table — PMID 25723163
+G238S,beneficial,2.0,Hall & Barlow 2004 J Mol Evol; classic ESBL gateway (TEM-19) — PMID 15136889
+E104K,beneficial,1.7,Hall 2002 (TEM-17 ESBL component; additive with G238S) — PMC2566518
+R164S,beneficial,1.9,Hall 2002 (TEM-12 ESBL component; class-A Omega-loop expansion) — PMC2566518
+N175S,neutral,1.0,Stiffler/Hekstra/Ranganathan 2015 DMS — buffer-region position; near-neutral mean fitness — PMID 25723163
+V216A,neutral,1.0,Stiffler/Hekstra/Ranganathan 2015 DMS — buried small→small swap; near-neutral — PMID 25723163
+A237T,neutral,1.0,Stiffler/Hekstra/Ranganathan 2015 DMS — adjacent to G238 but conservative; near-neutral mean fitness — PMID 25723163
+S70A,deleterious,0.02,Strynadka 1992 Nature; class-A serine nucleophile ablation — PMID 1538780
+K73A,deleterious,0.04,Lenfant 1991; general base K73 ablation — PMID 1825695
+E166A,deleterious,0.05,Strynadka 1992 Nature; Omega-loop acid/base residue — PMID 1538780
+N170A,deleterious,0.10,Damblon 1996 PNAS; oxyanion-hole hydrogen-bond donor — PMID 8757758
+K234A,deleterious,0.05,Lenfant 1991; SDN-loop Lys (substrate binding + electrostatics) — PMID 1825695
+S130A,deleterious,0.10,Lamotte-Brasseur 1991; covalent-intermediate hydrolysis catalyst — PMID 1893393

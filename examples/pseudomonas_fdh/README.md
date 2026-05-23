@@ -28,17 +28,47 @@ benchmarking the wrong residue.
 
 ## Sources used for the current scaffold
 
-| Mutation | Label | Source in this repo |
-|---|---|---|
-| `D222S` | beneficial | `configs/server_fdh_nadp.yaml` — D222 is the documented NADP-specificity-switch target (UniProt-numbered equivalent of literature D196S, Tishkov 2003) |
-| `D222H` | beneficial | same docstring — Tishkov-class D→H variant (literature D196H) |
-| `D222A` | beneficial | same docstring — Tishkov-class D→A variant (literature D196A) |
-| `R285E` | deleterious | `configs/server_fdh_nadp.yaml` — R285 is annotated as catalytic; charge-flip kills activity |
-| `H333A` | deleterious | `configs/server_fdh_nadp.yaml` — H333 is annotated as catalytic; ablation kills activity |
+The scaffold was originally 5 rows (3 beneficial D222X + 2 deleterious
+catalytic). It was expanded to 15 rows in commit `7414882` (P1c) so
+Figure 3 (Benchmark Recovery) has enough beneficial / deleterious /
+neutral signal to plot a meaningful recall@K curve.
 
-The three `D222X` rows are the **same Tishkov-class single-residue switch**
-written in this repo's UniProt P33160 numbering. The two deleterious rows
-exercise the catalytic-residue avoidance metric. That's the whole scaffold.
+### Beneficial (7 — NAD→NADP cofactor-specificity switch + extended set)
+
+| Mutation | Source in this repo |
+|---|---|
+| `D222S` | `configs/server_fdh_nadp.yaml` — D222 is the documented NADP-specificity-switch target (UniProt-numbered equivalent of literature D196S, Tishkov 2003) |
+| `D222H` | same docstring — Tishkov-class D→H variant (literature D196H) |
+| `D222A` | same docstring — Tishkov-class D→A variant (literature D196A) |
+| `D222N` | Tishkov-class neutral-amide switch (UniProt-numbered P33160) |
+| `D222T` | Tishkov-class hydroxyl swap at the cofactor-specificity loop |
+| `D222Q` | Tishkov-class amide switch at the cofactor-specificity loop |
+| `Y223H` | Holmberg/Bocanegra extended switch set (UniProt equivalent of literature Y197H); additional polar contact on the cofactor-binding loop |
+
+### Neutral (2 — adjacent-loop near-neutral controls)
+
+| Mutation | Source in this repo |
+|---|---|
+| `T221N` | `docs/FDH_TARGET_CANDIDATES.md` — cofactor-binding loop 195-198 region, adjacent residue observed near-neutral in Bocanegra-class studies |
+| `T221S` | `docs/FDH_TARGET_CANDIDATES.md` — same loop region, conservative S/T swap |
+
+### Deleterious (6 — catalytic + Rossmann-motif ablations)
+
+| Mutation | Source in this repo |
+|---|---|
+| `R285E` | `configs/server_fdh_nadp.yaml` — R285 is annotated as catalytic; charge-flip kills activity |
+| `R285A` | `configs/server_fdh_nadp.yaml` — catalytic ablation |
+| `H333A` | `configs/server_fdh_nadp.yaml` — H333 is annotated as catalytic; ablation kills activity |
+| `H333N` | `configs/server_fdh_nadp.yaml` — partial catalytic disruption |
+| `N146A` | `docs/FDH_TARGET_CANDIDATES.md` — Asn146 catalytic class (literature N146-equivalent) |
+| `G174A` | Rossmann motif glycine in 165-180 loop; documented in Tishkov-class motif studies as packing-critical |
+
+The seven `D222X / Y223H` rows are the **Tishkov-class cofactor-binding loop
+expansion** written in this repo's UniProt P33160 numbering. The six
+deleterious rows exercise the catalytic-residue avoidance metric. The two
+neutral rows provide controls so the per-mutation-percentile panel of
+Figure 3 doesn't collapse into a purely bimodal beneficial-vs-deleterious
+distribution.
 
 ## Validate sequence consistency before using
 
