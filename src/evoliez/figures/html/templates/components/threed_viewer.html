@@ -25,7 +25,16 @@
       var pdb = document.getElementById("pdb-{{ viewer.id }}").textContent;
       var v = $3Dmol.createViewer("viewer-{{ viewer.id }}", { backgroundColor: "white" });
       v.addModel(pdb, "pdb");
+      {# Section 3 pLDDT colouring + pocket close-up are opt-in via
+         viewer.color_js / viewer.zoom_js (set by pdb_inline.make_viewer_context
+         when color_by="plddt" or pocket_zoom=<N>). Default keeps the
+         spectrum cartoon + ligand-stick + zoom-to-ligand behaviour so
+         existing sections (04/09) render unchanged. #}
+      {% if viewer.color_js %}
+      {{ viewer.color_js|safe }}
+      {% else %}
       v.setStyle({}, { cartoon: { color: "spectrum" } });
+      {% endif %}
       v.setStyle(
         { resn: ["NDP", "NAP", "LIG", "NAI", "NAD", "SAH", "SAM"] },
         { stick: {} }
@@ -33,8 +42,15 @@
       {% if viewer.highlight_residues %}
       v.addStyle({ resi: {{ viewer.highlight_residues|tojson }} }, { stick: { color: "magenta" } });
       {% endif %}
+      {% if viewer.zoom_js %}
+      {{ viewer.zoom_js|safe }}
+      {% else %}
       v.zoomTo({ resn: ["NDP", "NAP", "LIG", "NAI", "NAD", "SAH", "SAM"] });
+      {% endif %}
       v.render();
+      {% if viewer.custom_script %}
+      {{ viewer.custom_script|safe }}
+      {% endif %}
     })();
   </script>
 </div>

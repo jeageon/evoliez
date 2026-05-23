@@ -187,9 +187,12 @@ def test_fallback_viewers_added_when_pymol_unavailable(
         artifacts, tmp_path / "figs", style="presentation", skip_3d=False
     )
 
-    # Section 03 - WT pocket fallback viewer.
+    # Section 03 - two fallback viewers: pLDDT-colored full structure
+    # and an 8 A pocket close-up.  The legacy single ``wt_pocket`` id
+    # was retired when section 03 grew the close-up companion.
     sec03_ids = [v.get("id") for v in viewers["03_boltz_complex"]]
-    assert "wt_pocket" in sec03_ids
+    assert "wt_pocket_plddt" in sec03_ids
+    assert "wt_pocket_closeup" in sec03_ids
     # Section 04 - pose-ensemble fallback viewer.
     sec04_ids = [v.get("id") for v in viewers["04_pose_ensemble"]]
     assert "pose_ensemble_inline" in sec04_ids
@@ -198,11 +201,13 @@ def test_fallback_viewers_added_when_pymol_unavailable(
     sec09_ids = [v.get("id") for v in viewers["09_final_library"]]
     assert "final_library_structure_inline" in sec09_ids
 
-    # Each section also has a corresponding manifest FigureSpec with
-    # renderer="3dmol-inline".
+    # Each section also has corresponding manifest FigureSpec(s) with
+    # renderer="3dmol-inline".  Section 03 contributes TWO (full +
+    # close-up); sections 04 / 09 contribute one each.
     assert pymol_specs == []
     fallback_ids = {s.figure_id for s in fallback_specs}
     assert "03_boltz_complex_3dmol" in fallback_ids
+    assert "03_boltz_complex_3dmol_closeup" in fallback_ids
     assert "04_pose_ensemble_3dmol" in fallback_ids
     assert "09_final_library_3dmol" in fallback_ids
     for spec in fallback_specs:
@@ -247,7 +252,8 @@ def test_no_fallback_when_pymol_succeeds(
     for vs in viewers.values():
         all_viewer_ids.extend(v.get("id") for v in vs)
     for forbidden in (
-        "wt_pocket",
+        "wt_pocket_plddt",
+        "wt_pocket_closeup",
         "pose_ensemble_inline",
         "final_library_structure_inline",
     ):
@@ -309,6 +315,7 @@ def test_manifest_records_3dmol_inline_renderer(
     inline_figs = [f for f in figures if f.get("renderer") == "3dmol-inline"]
     inline_ids = {f["figure_id"] for f in inline_figs}
     assert "03_boltz_complex_3dmol" in inline_ids
+    assert "03_boltz_complex_3dmol_closeup" in inline_ids
     assert "04_pose_ensemble_3dmol" in inline_ids
     assert "09_final_library_3dmol" in inline_ids
     # Inline figures use a ``Path(".")`` sentinel path; the bundler's

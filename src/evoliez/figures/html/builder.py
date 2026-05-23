@@ -154,12 +154,15 @@ def _plot_dispatch() -> Dict[str, Tuple[str, Callable[..., Optional[FigureSpec]]
             benchmark_recovery,
             conservation,
             evidence_distribution,
+            fingerprint_heatmap,
             identity_distribution,
             library_diversity,
             ligand_2d,
+            md_key_distances,
             md_rmsd,
             mutation_map,
             score_waterfall,
+            top_contacts_table,
         )
     except Exception:  # noqa: BLE001
         return {}
@@ -170,9 +173,12 @@ def _plot_dispatch() -> Dict[str, Tuple[str, Callable[..., Optional[FigureSpec]]
         "01_ligand_2d": ("01_input", ligand_2d.render),
         "02_conservation_heatmap": ("02_msa", conservation.render),
         "02_identity_distribution": ("02_msa", identity_distribution.render),
+        "05_fingerprint_heatmap": ("05_fingerprint", fingerprint_heatmap.render),
+        "05_top_contacts": ("05_fingerprint", top_contacts_table.render),
         "06_mutation_design_space": ("06_mutation", mutation_map.render),
         "07_score_waterfall": ("07_reranking", score_waterfall.render),
         "08_md_rmsd_timeseries": ("08_md", md_rmsd.render),
+        "08_md_key_distances": ("08_md", md_key_distances.render),
         "09_library_diversity": ("09_final_library", library_diversity.render),
     }
 
@@ -493,14 +499,14 @@ def _build_3d_section_assets(
 
         # PyMOL render unavailable - try 3Dmol fallback if WT exists.
         section_key = pymol_section_map[fid]
-        fallback = _build_inline_fallback(
+        fallback_pairs = _build_inline_fallback(
             fid, artifacts, wt_pdb=wt_pdb
         )
-        if fallback is None:
+        if not fallback_pairs:
             continue
-        viewer_ctx, fallback_spec = fallback
-        viewers_per_section[section_key].append(viewer_ctx)
-        inline_fallback_specs.append(fallback_spec)
+        for viewer_ctx, fallback_spec in fallback_pairs:
+            viewers_per_section[section_key].append(viewer_ctx)
+            inline_fallback_specs.append(fallback_spec)
 
     return viewers_per_section, pymol_specs, inline_fallback_specs
 
@@ -510,51 +516,96 @@ def _build_inline_fallback(
     artifacts: ReportArtifacts,
     *,
     wt_pdb: Optional[Path],
-) -> Optional[Tuple[Dict[str, Any], FigureSpec]]:
-    """Build a (viewer_context, FigureSpec) pair for a PyMOL-renderer fallback.
+) -> List[Tuple[Dict[str, Any], FigureSpec]]:
+    """Build (viewer_context, FigureSpec) pairs for a PyMOL-renderer fallback.
 
-    Returns ``None`` when the inline fallback can't be built (typically
-    because no WT PDB is available).  Each branch knows which inputs the
-    matching PyMOL renderer needed and constructs a viewer with the
-    relevant title / highlight residues.
+    Returns an empty list when no fallback can be built (typically
+    because no WT PDB is available).  Returns 1 pair for sections 4 and
+    9; section 3 returns 2 pairs (full pLDDT-colored view + pocket
+    close-up) so the Boltz complex section satisfies the expert plan's
+    "predicted 3D structure + binding pocket close-up + Boltz
+    confidence coloring" trio.
     """
     if wt_pdb is None:
-        return None
+        return []
 
     if figure_id == "03_boltz_binding_pocket":
-        viewer_id = "wt_pocket"
-        title = "WT complex (3Dmol interactive viewer)"
-        description = (
-            "3Dmol.js inline viewer (file://-safe). PyMOL paper-grade "
-            "PNG unavailable - rotate/zoom in browser."
+        pairs: List[Tuple[Dict[str, Any], FigureSpec]] = []
+        # ---- Viewer 1: full structure, pLDDT (B-factor) colored. -----
+        v1_id = "wt_pocket_plddt"
+        v1_title = "WT complex (pLDDT confidence-colored)"
+        v1_desc = (
+            "3Dmol.js inline viewer (file://-safe). Cartoon colored by "
+            "Boltz per-residue pLDDT confidence (red < 50, orange < 70, "
+            "yellow < 90, blue >= 90)."
         )
-        viewer_ctx = make_viewer_context(
+        v1_ctx = make_viewer_context(
             wt_pdb,
-            viewer_id=viewer_id,
+            viewer_id=v1_id,
             height=480,
-            title=title,
+            title=v1_title,
+            color_by="plddt",
+            pocket_zoom=None,
         )
-        if not viewer_ctx or viewer_ctx.get("missing"):
-            return None
-        spec = FigureSpec(
-            figure_id="03_boltz_complex_3dmol",
-            section="boltz_complex",
-            title="WT complex (interactive)",
-            description=description,
-            # No on-disk file -- the viewer lives in <script type="text/plain">
-            # inside the rendered HTML.  Use ``Path(".")`` so the bundler's
-            # "figure file exists" check resolves to the report root and
-            # never errors; ``params["inline"] = True`` is the real marker.
-            path=Path("."),
-            source_files=[Path(wt_pdb)],
-            renderer="3dmol-inline",
-            params={
-                "inline": True,
-                "viewer_id": viewer_id,
-                "inline_uri": f"inline://{viewer_id}",
-            },
+        if v1_ctx and not v1_ctx.get("missing"):
+            v1_spec = FigureSpec(
+                figure_id="03_boltz_complex_3dmol",
+                section="boltz_complex",
+                title="WT complex (pLDDT-colored, interactive)",
+                description=v1_desc,
+                # No on-disk file -- the viewer lives in <script
+                # type="text/plain"> inside the rendered HTML.  Use
+                # ``Path(".")`` so the bundler's "figure file exists"
+                # check resolves to the report root and never errors;
+                # ``params["inline"] = True`` is the real marker.
+                path=Path("."),
+                source_files=[Path(wt_pdb)],
+                renderer="3dmol-inline",
+                params={
+                    "inline": True,
+                    "viewer_id": v1_id,
+                    "inline_uri": f"inline://{v1_id}",
+                    "color_by": "plddt",
+                },
+            )
+            pairs.append((v1_ctx, v1_spec))
+
+        # ---- Viewer 2: pocket close-up, spectrum (default) colored. --
+        v2_id = "wt_pocket_closeup"
+        v2_title = "Binding pocket close-up"
+        v2_desc = (
+            "3Dmol.js inline viewer (file://-safe). Zoomed to ~8 A "
+            "around the ligand so reviewers can see the pocket "
+            "interactions Boltz predicted."
         )
-        return viewer_ctx, spec
+        v2_ctx = make_viewer_context(
+            wt_pdb,
+            viewer_id=v2_id,
+            height=480,
+            title=v2_title,
+            color_by="spectrum",
+            pocket_zoom=8.0,
+        )
+        if v2_ctx and not v2_ctx.get("missing"):
+            v2_spec = FigureSpec(
+                figure_id="03_boltz_complex_3dmol_closeup",
+                section="boltz_complex",
+                title="Binding pocket close-up (interactive)",
+                description=v2_desc,
+                path=Path("."),
+                source_files=[Path(wt_pdb)],
+                renderer="3dmol-inline",
+                params={
+                    "inline": True,
+                    "viewer_id": v2_id,
+                    "inline_uri": f"inline://{v2_id}",
+                    "color_by": "spectrum",
+                    "pocket_zoom": 8.0,
+                },
+            )
+            pairs.append((v2_ctx, v2_spec))
+
+        return pairs
 
     if figure_id == "04_boltz_pose_ensemble":
         # Prefer the best Boltz model_0.pdb when we can find it; fall
@@ -575,7 +626,7 @@ def _build_inline_fallback(
             title=title,
         )
         if not viewer_ctx or viewer_ctx.get("missing"):
-            return None
+            return []
         spec = FigureSpec(
             figure_id="04_pose_ensemble_3dmol",
             section="pose_ensemble",
@@ -590,7 +641,7 @@ def _build_inline_fallback(
                 "inline_uri": f"inline://{viewer_id}",
             },
         )
-        return viewer_ctx, spec
+        return [(viewer_ctx, spec)]
 
     if figure_id == "09_final_library_structure":
         # Highlight residues come from the top candidates' mutation
@@ -599,7 +650,7 @@ def _build_inline_fallback(
         # is available.
         highlight_positions = _top_mutation_positions(artifacts, top_k=10)
         if not highlight_positions:
-            return None
+            return []
         viewer_id = "final_library_structure_inline"
         title = "Top-K mutation positions on WT (interactive)"
         description = (
@@ -614,7 +665,7 @@ def _build_inline_fallback(
             title=title,
         )
         if not viewer_ctx or viewer_ctx.get("missing"):
-            return None
+            return []
         source_files: List[Path] = [Path(wt_pdb)]
         csv_path = artifacts.final_candidates_csv
         if csv_path is not None and Path(csv_path).exists():
@@ -634,9 +685,9 @@ def _build_inline_fallback(
                 "highlight_residues": list(highlight_positions),
             },
         )
-        return viewer_ctx, spec
+        return [(viewer_ctx, spec)]
 
-    return None
+    return []
 
 
 def _best_pose_pdb(artifacts: ReportArtifacts) -> Optional[Path]:
@@ -935,11 +986,72 @@ def build_report(
     if final_table is not None:
         sections["09_final_library"]["tables"].append(final_table)
 
-    # ---- 8. section 05 placeholder note --------------------------------
-    sections["05_fingerprint"]["notes"].append(
-        "Interaction-fingerprint matrix CSV not yet emitted by stage s06b; "
-        "figure deferred."
-    )
+    # ---- 8. section 05 contact-lines viewer ----------------------------
+    # The 2D figures (fingerprint heatmap + top contacts table) are wired
+    # via the standard dispatch above; here we attach the 3Dmol viewer
+    # that overlays family-consensus dashed contact lines on the WT
+    # complex.  ``contact_lines.render`` returns ``None`` when WT PDB or
+    # edge_level.csv is missing - in that case we re-attach the legacy
+    # placeholder note so the section explains why it's empty rather
+    # than just rendering a blank pane.
+    if not skip_3d:
+        try:
+            from evoliez.figures.three_d.contact_lines import (
+                render as render_contact_lines,
+            )
+
+            ctx = render_contact_lines(artifacts)
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("contact_lines viewer failed: %s", exc)
+            ctx = None
+        if ctx is not None:
+            sections["05_fingerprint"]["viewers"].append(ctx)
+    if (
+        not sections["05_fingerprint"]["figures"]
+        and not sections["05_fingerprint"]["viewers"]
+    ):
+        sections["05_fingerprint"]["notes"].append(
+            "Interaction-fingerprint outputs not yet available "
+            "(stage s06b / s11 edge_level.csv missing); section deferred."
+        )
+
+    # ---- 8b. section 08 representative frames + trajectory movie -------
+    # The 2D plots (RMSD time series + key distances) are wired via the
+    # standard dispatch above.  Here we add the interactive
+    # representative-frame viewers and (best-effort) the trajectory mp4.
+    # md_frames returns a list of up to 3 viewer dicts (start/mid/end);
+    # md_trajectory returns a FigureSpec when PyMOL + ffmpeg + a real DCD
+    # are all present, else None (the static frames are the fallback).
+    if not skip_3d:
+        try:
+            from evoliez.figures.three_d.md_frames import (
+                render as render_md_frames,
+            )
+
+            frame_viewers = render_md_frames(artifacts)
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("md_frames viewer failed: %s", exc)
+            frame_viewers = []
+        if frame_viewers:
+            sections["08_md"]["viewers"].extend(frame_viewers)
+
+        try:
+            from evoliez.figures.movies.md_trajectory import (
+                render as render_md_movie,
+            )
+
+            movies_dir = output_dir / "movies"
+            movies_dir.mkdir(parents=True, exist_ok=True)
+            movie_out = movies_dir / "08_md_trajectory.mp4"
+            movie_spec = render_md_movie(artifacts, movie_out, style=style)
+        except Exception as exc:  # noqa: BLE001 - movie path is best-effort
+            _LOG.warning("md_trajectory movie failed: %s", exc)
+            movie_spec = None
+        if movie_spec is not None and Path(movie_spec.path).exists():
+            movie_spec = _rebase_figure_path(movie_spec, output_dir)
+            manifest.add_figure(movie_spec)
+            sections["08_md"]["figures"].append(_spec_to_template_dict(movie_spec))
+            figures_generated += 1
 
     # ---- 9. metadata for overview --------------------------------------
     state = _read_state(artifacts)

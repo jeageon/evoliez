@@ -111,6 +111,9 @@ def discover(run_dir: Path) -> ReportArtifacts:
 
     # ---- ML datasets ----------------------------------------------------
     arts.ml_datasets = _find_ml_datasets(run_dir / "ml_datasets")
+    arts.fingerprint_matrix_csv = _first_existing(
+        run_dir / "ml_datasets" / "fingerprint_matrix.csv"
+    )
 
     return arts
 

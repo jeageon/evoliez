@@ -12,17 +12,22 @@
 
   {% set _figs = (section.figures if section is defined else []) or [] %}
   {% set _tables = (section.tables if section is defined else []) or [] %}
+  {% set _viewers = (section.viewers if section is defined else []) or [] %}
   {% set _notes = (section.notes if section is defined else []) or [] %}
 
   {% for fig in _figs %}
     {% include 'components/figure_card.html' %}
   {% endfor %}
 
+  {% for viewer in _viewers %}
+    {% include 'components/threed_viewer.html' %}
+  {% endfor %}
+
   {% for table in _tables %}
     {% include 'components/datatable.html' %}
   {% endfor %}
 
-  {% if not _figs and not _tables %}
+  {% if not _figs and not _tables and not _viewers %}
   <div class="section-empty">No interaction fingerprint available.</div>
   {% endif %}
 

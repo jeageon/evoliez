@@ -59,3 +59,4 @@ class ReportArtifacts:
     graph_features_json: Optional[Path] = None
     homolog_identities: List[float] = field(default_factory=list)
     ml_datasets: Dict[str, Path] = field(default_factory=dict)
+    fingerprint_matrix_csv: Optional[Path] = None
