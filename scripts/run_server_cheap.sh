@@ -283,8 +283,25 @@ ok "doctor passed"
 # ===========================================================
 say "Phase 2 — evoliez run (cheap config; subprocess MD isolation ON)"
 echo "   expected wall time: 30-60 min on 1 A6000 (PseFDH cheap)"
+# Stage-backend pattern (mirrors scripts/server_production_run.sh):
+# default backend=mock so the homolog/MSA stages don't need the
+# UniRef30 mmseqs DB on /mnt/data2, and only the GPU-heavy stages run
+# REAL. Boltz uses its own MSA server (use_msa_server: true in the
+# config) so it never reads the mock s02/s03 output.
+EVOLIEZ_STAGE_OVERRIDES=(
+    --backend mock
+    --stage-backend s04_complex=real
+    --stage-backend s08b_mutant_boltz=real
+    --stage-backend s10_md=real
+)
+# Allow an operator override for the rare case they want full-real
+# (e.g. when /mnt/data2 mmseqs DB IS available + populated).
+if [ "${ALL_REAL:-0}" = "1" ]; then
+    EVOLIEZ_STAGE_OVERRIDES=( --backend real )
+    warn "ALL_REAL=1 set — running every stage at backend=real (needs UniRef30 DB)"
+fi
 START_TS="$(date +%s)"
-if ! evoliez run -c "$CFG"; then
+if ! evoliez run -c "$CFG" "${EVOLIEZ_STAGE_OVERRIDES[@]}"; then
     die "evoliez run exited non-zero. Inspect the log at $_LOG_FILE."
 fi
 END_TS="$(date +%s)"

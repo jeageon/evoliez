@@ -137,9 +137,16 @@ output:
   top_single_mutants: 24
   report_format: [markdown, csv]             # pymol session skipped
 
-backend: real
+backend: mock
 backends:
-  # Real MD is the WHOLE POINT of cheap-run — validates in-process
-  # cleanup under real OpenMM load.
+  # Mock everything by default so we DON'T need the UniRef30 mmseqs DB
+  # (it lives on /mnt/data2 which isn't writable on this server, and a
+  # cheap-run shouldn't be gated on a 30-GB external download). The
+  # runner script (scripts/run_server_cheap.sh) overrides s04 / s08b /
+  # s10 to REAL via --stage-backend so the GPU-heavy stages — Boltz
+  # complex, mutant Boltz, OpenMM MD with subprocess isolation — still
+  # exercise the real code paths. s02/s03 stay mock; Boltz uses its own
+  # built-in MSA server (use_msa_server=true above), so the mock
+  # homologs that s02 produces are never read by the real Boltz call.
   {}
 seed: 1234
