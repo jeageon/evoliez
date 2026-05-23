@@ -101,6 +101,50 @@ def test_ligand_2d_returns_none_without_smiles(tmp_path: Path) -> None:
     assert not out.exists()
 
 
+def test_ligand_2d_functional_groups_match_nadp(tmp_path: Path) -> None:
+    """NADP+ should light up the phosphate / pyridinium / amide / purine /
+    sugar / hydroxyl groups - that's the whole point of the catalogue."""
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("rdkit.Chem.Draw")
+    from evoliez.figures.plots import ligand_2d
+
+    nadp = ("NC(=O)c1ccc[n+](C2OC(COP(=O)(O)OP(=O)(O)OCC3OC(n4cnc5c(N)ncnc54)"
+            "C(OP(=O)(O)O)C3O)C(O)C2O)c1")
+    art = _empty_artifacts(tmp_path / "run")
+    art.ligand_smiles = nadp
+    out = tmp_path / "nadp.png"
+    spec = ligand_2d.render(art, out)
+
+    assert spec is not None
+    assert spec.params["name"] == "NADP+"
+    fg = set(spec.params["functional_groups"])
+    # All five "cofactor signature" groups must be present.
+    for required in ("phosphate", "pyridinium", "amide", "purine",
+                     "sugar (furanose)", "hydroxyl"):
+        assert required in fg, f"missing {required!r}; got {fg}"
+    # At least a non-trivial chunk of atoms got colored.
+    assert spec.params["n_atoms_highlighted"] >= 25
+    assert _png_ok(out)
+
+
+def test_ligand_2d_catalytic_overlay_separate_from_fg(tmp_path: Path) -> None:
+    """Explicit catalytic_atoms list overrides the functional-group color
+    on those atoms (deep red), so the catalytic centre always reads."""
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("rdkit.Chem.Draw")
+    from evoliez.figures.plots import ligand_2d
+
+    art = _empty_artifacts(tmp_path / "run")
+    art.ligand_smiles = "CCO"  # ethanol: O at idx 2 is hydroxyl
+    out = tmp_path / "etoh.png"
+    spec = ligand_2d.render(art, out, catalytic_atoms=[2])
+    assert spec is not None
+    assert spec.params["catalytic_atoms"] == [2]
+    # Hydroxyl still detected on the catalogue scan.
+    assert "hydroxyl" in spec.params["functional_groups"]
+    assert _png_ok(out)
+
+
 # ---------------------------------------------------------------------------
 # conservation
 # ---------------------------------------------------------------------------
