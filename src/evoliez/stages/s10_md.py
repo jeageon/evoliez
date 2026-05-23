@@ -55,16 +55,54 @@ def _load_existing_md_analysis(workdir: Path) -> Optional[Dict[str, Any]]:
 
 
 def _rss_mb() -> Optional[float]:
-    """Process RSS in MiB, or ``None`` when ``psutil`` isn't available.
+    """Process RSS in MiB, or ``None`` when neither /proc nor psutil
+    are available.
 
     Used to log per-candidate memory growth so the production GPU-memory-
     leak fix can be VERIFIED in flight: with the fix, RSS should stay
-    bounded across candidates; without, it grows linearly. Soft import
-    so a missing optional dep never breaks the stage.
+    bounded across candidates; without, it grows linearly. Tries /proc
+    first (cheap, no deps), falls back to psutil.
     """
+    try:
+        with open(f"/proc/{os.getpid()}/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
     try:
         import psutil
         return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    except Exception:                              # noqa: BLE001
+        return None
+
+
+def _memlog_enabled() -> bool:
+    """Whether tracemalloc + Python-heap diagnostic logging is on.
+
+    Off by default so production logs stay clean. Enable for leak
+    hunting:
+        export EVOLIEZ_MD_MEMLOG=1
+        bash scripts/server_production_run.sh
+    """
+    return os.environ.get("EVOLIEZ_MD_MEMLOG", "").strip() in ("1", "true", "yes")
+
+
+def _python_heap_mb() -> Optional[float]:
+    """Current tracemalloc-tracked Python heap in MiB.
+
+    Returns None if tracemalloc isn't active. Comparing this with
+    :func:`_rss_mb` is the diagnostic that splits a Python-ref leak
+    (both grow together) from a native OpenMM/CUDA retention leak
+    (RSS grows, Python heap stays flat). Expert-recommended approach
+    from the production GPU-memory-leak hunt.
+    """
+    try:
+        import tracemalloc
+        if not tracemalloc.is_tracing():
+            return None
+        current, _peak = tracemalloc.get_traced_memory()
+        return current / (1024 * 1024)
     except Exception:                              # noqa: BLE001
         return None
 
@@ -131,6 +169,21 @@ class MDStage(Stage):
         # aggregate to median series + per-replica spread on the MDResult.
         from math import ceil
         n_final_tier = max(1, ceil(len(candidates) * 0.25))
+        # Diagnostic memlog (off in production unless EVOLIEZ_MD_MEMLOG=1).
+        # Starts tracemalloc so the per-candidate log lines can split
+        # Python-heap growth from RSS growth - native OpenMM/CUDA leaks
+        # show as RSS-only growth while Python heap stays flat.
+        if _memlog_enabled():
+            try:
+                import tracemalloc
+                if not tracemalloc.is_tracing():
+                    tracemalloc.start()
+                self.log.info(
+                    "MDMEM diagnostic ON (EVOLIEZ_MD_MEMLOG=1): "
+                    "tracemalloc started, per-phase RSS lines will appear"
+                )
+            except Exception as exc:                  # noqa: BLE001
+                self.log.warning("tracemalloc start failed: %s", exc)
         rss_start = _rss_mb()
         if rss_start is not None:
             self.log.info(
@@ -328,12 +381,24 @@ class MDStage(Stage):
             mc = None
             gc.collect()
             rss_now = _rss_mb()
+            heap_now = _python_heap_mb()
             if rss_start is not None and rss_now is not None:
-                self.log.info(
-                    "MD %d/%d done (%s): RSS=%.0f MB (delta=%+.0f MB "
-                    "from start)", cand_idx + 1, len(candidates),
-                    cand.candidate_id, rss_now, rss_now - rss_start,
-                )
+                if heap_now is not None:
+                    # tracemalloc on -> log both so we can split RSS from
+                    # Python heap. RSS-only growth = native OpenMM/CUDA
+                    # leak; both growing = Python ref leak.
+                    self.log.info(
+                        "MDMEM after %s: RSS=%.0f MB py_heap=%.1f MB "
+                        "(delta_rss=%+.0f MB from start, candidate %d/%d)",
+                        cand.candidate_id, rss_now, heap_now,
+                        rss_now - rss_start, cand_idx + 1, len(candidates),
+                    )
+                else:
+                    self.log.info(
+                        "MD %d/%d done (%s): RSS=%.0f MB (delta=%+.0f MB "
+                        "from start)", cand_idx + 1, len(candidates),
+                        cand.candidate_id, rss_now, rss_now - rss_start,
+                    )
 
         n_pass = sum(1 for c in candidates if c.details.get("md_passed"))
         n_replicated = sum(1 for c in candidates

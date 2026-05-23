@@ -27,6 +27,48 @@ from evoliez.utils.seeds import derive_seed
 log = get_logger("evoliez.openmm")
 
 
+def _memlog_enabled() -> bool:
+    """Whether per-phase memory logging is on. Off in production unless
+    ``EVOLIEZ_MD_MEMLOG=1`` is set; the instrumentation adds one log
+    line per phase and a ``gc.collect()`` call so we keep it gated."""
+    import os
+    return os.environ.get("EVOLIEZ_MD_MEMLOG", "").strip() in ("1", "true", "yes")
+
+
+def _memlog(phase: str, candidate_id: str) -> None:
+    """Diagnostic memlog: logs phase, candidate_id, RSS in MB.
+
+    Expert-recommended path to localise WHERE in ``_run_real`` memory
+    grows (Python-ref vs OpenMM-native vs CUDA-context vs DCDReporter).
+    Reading /proc/self/status keeps the call cheap; the ``gc.collect()``
+    before reading ensures Python heap is fully finalised so the RSS
+    delta we see is "after Python released what it can".
+
+    Active only when ``EVOLIEZ_MD_MEMLOG=1`` so production logs stay
+    clean. The diagnostic is meant to be enabled for the leak hunt and
+    disabled once we know which phase to harden.
+    """
+    if not _memlog_enabled():
+        return
+    import os
+    gc.collect()
+    rss_mb = 0.0
+    try:
+        with open(f"/proc/{os.getpid()}/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    rss_mb = int(line.split()[1]) / 1024
+                    break
+    except OSError:
+        # /proc not available (macOS / containers) - fall back to psutil
+        try:
+            import psutil
+            rss_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        except Exception:                          # noqa: BLE001
+            return
+    log.info("MDMEM %s %s: RSS=%.0f MB", candidate_id, phase, rss_mb)
+
+
 def _release_openmm_resources(*objects: Any) -> None:
     """Explicitly release a sequence of OpenMM (and OpenFF/RDKit) objects.
 
@@ -726,7 +768,9 @@ def _run_real(
                 failure_reason="MD requires a full-atom protein (got CA-only); "
                                "run s04_complex real or supply a full-atom PDB",
             )
+        _memlog("start", candidate_id)
         pdb = app.PDBFile(str(pdb_path))
+        _memlog("after_pdb_load", candidate_id)
 
         # (#2) The full-atom PDB must actually be THIS candidate's structure.
         # _mutant_complex only swaps dataclass residue letters; pdb_path stays
@@ -780,6 +824,7 @@ def _run_real(
         # (structure / chemistry / template), surfaced as failed - never a pass.
         try:
             off_lig = _ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)
+            _memlog("after_off_lig", candidate_id)
         except Exception as exc:
             # Ligand chemistry could not be built from PDB+CONECT+SMILES
             # (rare; verified-correct for NADP locally) - a real structure
@@ -867,6 +912,7 @@ def _run_real(
                         off_lig, workdir,
                         prefer_ff=getattr(cfg, "ligand_forcefield", None),
                     )
+                _memlog("after_ligand_param", candidate_id)
             except _LigandParamUnsupported as exc:
                 log.warning(
                     "no small-molecule FF can parameterize the ligand for %s "
@@ -890,6 +936,7 @@ def _run_real(
                         "`conda install -c conda-forge pdbfixer`", candidate_id,
                     )
                     topo, posns = pdb.topology, pdb.positions
+                _memlog("after_pdbfixer", candidate_id)
                 modeller = app.Modeller(topo, posns)
                 # Invariant: prep MUST be protein-only. A H-less Boltz LIG that
                 # survives here is exactly what produced the confusing "No
@@ -905,6 +952,7 @@ def _run_real(
                         "so these must not be present"
                     )
                 modeller.addHydrogens(system_generator.forcefield)
+                _memlog("after_add_hydrogens", candidate_id)
                 # Add the ligand SOLELY from the OpenFF molecule at its
                 # Boltz-pose conformer; the only ligand in the system is now
                 # this one, which create_system matches via GAFF.
@@ -912,9 +960,11 @@ def _run_real(
                     off_lig.to_topology().to_openmm(),
                     off_lig.conformers[0].to_openmm(),
                 )
+                _memlog("after_add_ligand", candidate_id)
                 system = system_generator.create_system(
                     modeller.topology, molecules=[off_lig]
                 )
+                _memlog("after_create_system", candidate_id)
             except Exception as exc:
                 log.warning(
                     "MD protein+ligand assembly / system creation failed for "
@@ -955,7 +1005,12 @@ def _run_real(
         )
         sim = app.Simulation(modeller.topology, system, integrator)
         sim.context.setPositions(modeller.positions)
+        if _memlog_enabled():
+            log.info("OpenMM platform for %s: %s",
+                     candidate_id, sim.context.getPlatform().getName())
+        _memlog("after_simulation_context", candidate_id)
         sim.minimizeEnergy(maxIterations=cfg.minimize_steps)
+        _memlog("after_minimize", candidate_id)
 
         minpdb = workdir / f"{candidate_id}_minimized.pdb"
         with minpdb.open("w") as fh:
@@ -998,6 +1053,8 @@ def _run_real(
             sim.reporters.append(app.DCDReporter(str(traj), max(1, nsteps // 50)))
             for blk in range(50):
                 sim.step(max(1, nsteps // 50))
+                if _memlog_enabled() and blk % 10 == 0:
+                    _memlog(f"after_step_block_{blk}", candidate_id)
                 st = sim.context.getState(getPositions=True, getEnergy=True)
                 cur = np.array([[p.x, p.y, p.z] for p in st.getPositions()])
                 lig_series.append(round(_rmsd(cur, lig_idx, init), 3))
@@ -1017,6 +1074,7 @@ def _run_real(
         ligand_ff_used = "curated_amber" if took_curated else (_ff or "?")
         timestep_used = (cfg.hmr_timestep_fs if getattr(cfg, "hmr_enabled", False)
                          else cfg.timestep_fs)
+        _memlog("before_return", candidate_id)
         return MDResult(
             candidate_id=candidate_id,
             status=status,
@@ -1049,3 +1107,4 @@ def _run_real(
             sim, integrator, restraint, system, modeller,
             system_generator, off_lig, pdb,
         )
+        _memlog("after_release", candidate_id)
