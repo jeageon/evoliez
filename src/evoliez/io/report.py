@@ -39,6 +39,9 @@ def _write_candidates_csv(paths: ProjectPaths, ranked: Sequence[Candidate]) -> P
     # and never appeared in the user-facing CSV.
     cols = [
         "rank", "candidate_id", "mutations", "generator",
+        # P0a: gate columns FIRST so the eye lands on them - the user can
+        # immediately filter for `is_blocked=0` to get trustworthy top-N.
+        "is_blocked", "block_reason",
         "final_score", "ml_score", "stability_ddg", "docking_score",
         "md_lite_score",
         # P0.5 — evidence class + Boltz delta source + pool tag
@@ -58,6 +61,11 @@ def _write_candidates_csv(paths: ProjectPaths, ranked: Sequence[Candidate]) -> P
         for i, c in enumerate(ranked, 1):
             wri.writerow([
                 i, c.candidate_id, c.mutation_str, c.generator,
+                # P0a
+                int(bool(c.details.get("is_blocked")
+                         or c.scores.get("is_blocked"))),
+                c.details.get("block_reason")
+                  or c.scores.get("block_reason", ""),
                 c.scores.get("final_score", 0.0),
                 c.scores.get("ml_score", 0.0),
                 c.scores.get("ddg_fold", 0.0),
@@ -89,15 +97,33 @@ def _write_candidates_csv(paths: ProjectPaths, ranked: Sequence[Candidate]) -> P
 def _write_library_csv(
     cfg: Config, paths: ProjectPaths, ranked: Sequence[Candidate]
 ) -> Path:
+    """Top-N focused library CSV.
+
+    P0a: hard-filters out blocked candidates (evidence=Reject, invalid
+    pose, failed MD). The wet-lab library should NEVER contain
+    candidates we've already flagged as unreliable - even if their
+    final_score happens to be high.
+    """
     p = paths.reports / "focused_library.csv"
     n = cfg.output.final_library_size
+    # Hard-filter blocked candidates so the library is trustworthy.
+    accepted = [
+        c for c in ranked
+        if not (c.details.get("is_blocked")
+                or c.scores.get("is_blocked"))
+    ]
     with p.open("w", newline="") as fh:
         wri = csv.writer(fh)
-        wri.writerow(["well", "candidate_id", "mutations", "final_score"])
-        for i, c in enumerate(ranked[:n]):
+        wri.writerow(["well", "candidate_id", "mutations", "final_score",
+                      "evidence_class"])
+        for i, c in enumerate(accepted[:n]):
             well = f"{chr(65 + i // 12)}{i % 12 + 1}"
-            wri.writerow([well, c.candidate_id, c.mutation_str,
-                          c.scores.get("final_score", 0.0)])
+            wri.writerow([
+                well, c.candidate_id, c.mutation_str,
+                c.scores.get("final_score", 0.0),
+                c.scores.get("evidence_class",
+                             c.details.get("evidence_class", "")),
+            ])
     return p
 
 

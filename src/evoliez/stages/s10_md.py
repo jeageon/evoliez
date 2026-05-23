@@ -148,7 +148,12 @@ class MDStage(Stage):
                 cand.scores["md_timestep_fs"] = float(result.timestep_fs)
                 cand.scores["md_replicas_run"] = int(result.replicas_run)
 
-            aj = to_json(metrics)
+            # P0b: pass the MDResult so to_json persists per-frame RMSD
+            # time series (ligand, pocket, key distances) along with the
+            # summary stats. Without `result`, analysis.json is summary-
+            # only and downstream consumers (HTML report, paper figures)
+            # have to fall back to bar charts instead of real trajectories.
+            aj = to_json(metrics, result)
             # Trajectory metadata (additive): when the OpenMM engine wrote a
             # real .dcd, the HTML report needs the path / topology / frame
             # count to generate movies. Mock backend runs leave these as

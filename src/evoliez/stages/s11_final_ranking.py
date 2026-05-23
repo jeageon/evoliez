@@ -132,6 +132,30 @@ class FinalRankingStage(Stage):
                 candidate_uncertainty,
                 recommendation,
             )
+
+        # P0a: ranking gate. Production observed `S335T` at rank 1 with
+        # evidence_class=Reject + pose_validity_status=invalid - a clearly
+        # broken signal. Expert audit (correct): Reject / invalid pose /
+        # failed MD candidates MUST NOT occupy top recommendation slots.
+        # We compute the "blocked" flag PER CANDIDATE here so the
+        # downstream code paths (final ranking, focused library, top-
+        # candidate log) all see a consistent split. The gate is HARD
+        # (not score-based) so a high ML score can never override a
+        # structural / MD failure - those are correctness conditions,
+        # not preferences.
+        def _blocked_with_reason(c: Candidate) -> tuple:
+            ec = c.scores.get("evidence_class") or c.details.get("evidence_class")
+            if ec == "Reject":
+                return True, "evidence_class=Reject"
+            pose = c.scores.get("pose_validity_status") or c.details.get(
+                "pose_validity_status"
+            )
+            if pose == "invalid":
+                return True, "pose_validity_status=invalid"
+            md_status = c.scores.get("md_status") or c.details.get("md_status")
+            if md_status == "failed":
+                return True, "md_status=failed"
+            return False, ""
         # P0.5: require a real per-mutant Boltz delta to earn Strong evidence
         # for top-ranked candidates. Below the rank threshold the requirement
         # is relaxed (a real Boltz delta would have been wasteful there).
@@ -155,13 +179,50 @@ class FinalRankingStage(Stage):
             cls = evidence_class(c)
             c.details["evidence_class"] = cls
             c.scores["evidence_class"] = cls
+        # P0a: apply the gate AFTER evidence_class is assigned so its
+        # decision flows into the block flag. Split into accepted (top
+        # of recommendation list) and blocked (still reported, but
+        # demoted to the bottom with a clear block_reason).
+        from collections import Counter
+        accepted: List[Candidate] = []
+        blocked: List[Candidate] = []
+        for c in ranked:
+            is_blocked, reason = _blocked_with_reason(c)
+            c.details["is_blocked"] = is_blocked
+            c.details["block_reason"] = reason
+            c.scores["is_blocked"] = int(is_blocked)
+            c.scores["block_reason"] = reason
+            (blocked if is_blocked else accepted).append(c)
+
+        block_counts = Counter(c.details["block_reason"] for c in blocked)
+        self.log.info(
+            "ranking gate: %d accepted, %d blocked %s",
+            len(accepted), len(blocked),
+            dict(block_counts) if blocked else "",
+        )
+        if not accepted and blocked:
+            self.log.warning(
+                "ranking gate: ALL %d candidates blocked - check "
+                "production for systematic failure (pose/MD/evidence)",
+                len(blocked),
+            )
+
+        # Re-sort within each group by final_score desc, then concat:
+        # accepted occupy rank 1..M, blocked rank M+1..N. So the top of
+        # the report is always trustworthy; blocked candidates remain
+        # auditable at the bottom with their block_reason.
+        accepted.sort(key=lambda c: -c.scores["final_score"])
+        blocked.sort(key=lambda c: -c.scores["final_score"])
+        ranked = accepted + blocked
+        for i, c in enumerate(ranked, 1):
+            c.details["rank"] = i
+
         # P0.5 (final library): exploit/explore split when uncertainty is
         # available (calibration on) - the strongest "exploit" pool is
         # capped to Strong/Promising; the "explore" pool brings in higher-
         # uncertainty candidates so the next DBTL round learns something
-        # new. The split itself is computed in the existing
-        # ml/active_learning helper; here we just record exploit/explore
-        # tags so the report can lay them out separately.
+        # new. ONLY accepted candidates feed select_focused_library so
+        # rejected/invalid never enter the experimental library.
         if adv.calibration:
             from evoliez.ml.active_learning import select_focused_library
             explore_n = min(
@@ -171,7 +232,7 @@ class FinalRankingStage(Stage):
             try:
                 explore = set(
                     c.candidate_id for c in select_focused_library(
-                        ranked, size=explore_n,
+                        accepted, size=explore_n,   # accepted-only, was: ranked
                     )
                 )
             except Exception:
@@ -358,24 +419,48 @@ class FinalRankingStage(Stage):
                 ]
 
         ctx.put("ranked_candidates", ranked)
+        ctx.put("accepted_candidates", accepted)
+        ctx.put("blocked_candidates", blocked)
         ctx.persist_meta("n_ranked", len(ranked))
+        ctx.persist_meta("n_accepted", len(accepted))
+        ctx.persist_meta("n_blocked", len(blocked))
+        ctx.persist_meta(
+            "block_reasons",
+            dict(block_counts) if blocked else {},
+        )
+        # P0a: top_candidate now reflects the top ACCEPTED candidate, not
+        # the top scoring one. Previously a Reject/invalid candidate with
+        # high ml_score (e.g. mut_00053 S335T in PseFDH production) could
+        # land here, misleading every downstream consumer.
         ctx.persist_meta(
             "top_candidate",
             {
-                "mutations": ranked[0].mutation_str,
-                "final_score": ranked[0].scores["final_score"],
+                "mutations": accepted[0].mutation_str,
+                "final_score": accepted[0].scores["final_score"],
+                "evidence_class": accepted[0].details.get("evidence_class"),
             }
-            if ranked
+            if accepted
             else None,
         )
         self.log.info(
-            "final ranking complete: %d candidates; reports: %s; "
-            "ml_datasets: %s",
-            len(ranked), [str(p) for p in written],
+            "final ranking complete: %d total (%d accepted, %d blocked); "
+            "reports: %s; ml_datasets: %s",
+            len(ranked), len(accepted), len(blocked),
+            [str(p) for p in written],
             [p.name for p in ds_written],
         )
-        if ranked:
+        if accepted:
             self.log.info(
-                "top: %s (score %.3f)",
-                ranked[0].mutation_str, ranked[0].scores["final_score"],
+                "top ACCEPTED: %s (score %.3f, evidence=%s)",
+                accepted[0].mutation_str,
+                accepted[0].scores["final_score"],
+                accepted[0].details.get("evidence_class"),
+            )
+        elif blocked:
+            self.log.warning(
+                "NO accepted candidates after gate - top of report is the "
+                "highest-scoring BLOCKED candidate (%s, reason=%s). Check "
+                "production for systematic failure (pose/MD/evidence).",
+                ranked[0].mutation_str,
+                ranked[0].details.get("block_reason"),
             )
