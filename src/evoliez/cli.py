@@ -288,6 +288,121 @@ def figures_cmd(
         typer.echo(f"Warnings:      {len(result['warnings'])}")
 
 
+@app.command(name="bench-summary")
+def bench_summary(
+    candidates: Path = typer.Option(
+        ..., "--candidates", "-C",
+        help="Path to final_candidates.csv (output of a previous pipeline run).",
+    ),
+    benchmark: Path = typer.Option(
+        ..., "--benchmark", "-B",
+        help="Path to benchmark.csv (mutation,label,activity[,source]).",
+    ),
+    md_root: Optional[Path] = typer.Option(
+        None, "--md-root",
+        help="Optional path to a directory of per-candidate MD outputs "
+        "(scans for analysis.json files to compute MD failure/timeout "
+        "rates when the CSV's md_status column is empty).",
+    ),
+    out: Optional[Path] = typer.Option(
+        None, "--out", "-o",
+        help="Write a markdown summary here (default: stdout only).",
+    ),
+    name: str = typer.Option(
+        "card", "--name", "-n",
+        help="Card name used in the markdown heading.",
+    ),
+    strict: bool = typer.Option(
+        False, "--strict",
+        help="Exit non-zero when the pass/fail check fails.",
+    ),
+) -> None:
+    """Post-hoc benchmark summary for one enzyme card.
+
+    Works on persisted artefacts (no pipeline re-run needed). Reports
+    the expert validation plan's metric set: recall@1/5/10/30,
+    deleterious bottom-quintile rate, valid top-K candidate rate,
+    Reject/invalid top leakage (P0a regression check), MD failure /
+    timeout rates.
+    """
+    import json as _json
+
+    from evoliez.ml.bench_summary import (
+        compute_summary, pass_fail, render_card_markdown,
+    )
+
+    summary = compute_summary(
+        Path(candidates), Path(benchmark), md_root=md_root,
+    )
+    pf = pass_fail(summary)
+    md = render_card_markdown(name, summary, pf)
+    if out is not None:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(md)
+        typer.echo(f"wrote {out}")
+    typer.echo(md)
+    # JSON to stderr so callers can pipe stdout to a file:
+    typer.echo(_json.dumps({"pass_fail": pf, "ok": summary.get("ok", False)},
+                           indent=2), err=True)
+    if strict and not pf.get("passed", False):
+        raise typer.Exit(code=2)
+
+
+@app.command(name="multi-bench-summary")
+def multi_bench_summary(
+    examples_root: Path = typer.Option(
+        Path("examples"), "--examples", "-E",
+        help="Directory holding one sub-dir per enzyme card; each must "
+        "contain benchmark.csv. The matching final_candidates.csv is "
+        "expected under <reports-root>/<slug>/final_candidates.csv.",
+    ),
+    reports_root: Path = typer.Option(
+        Path("runs"), "--reports", "-R",
+        help="Directory holding one sub-dir per enzyme card with the "
+        "pipeline reports (final_candidates.csv + optional md/). The "
+        "card slug must match the example slug.",
+    ),
+    out: Path = typer.Option(
+        Path("reports/multi_enzyme_summary.md"), "--out", "-o",
+        help="Where to write the aggregated markdown summary.",
+    ),
+    strict: bool = typer.Option(
+        False, "--strict",
+        help="Exit non-zero when ANY card fails the pass/fail check.",
+    ),
+) -> None:
+    """Walk ``examples/<slug>/`` and ``<reports>/<slug>/`` to produce a
+    multi-enzyme markdown summary (the cross-card view the expert
+    validation plan asks for).
+    """
+    from evoliez.ml.bench_summary import (
+        compute_summary, pass_fail, render_multi_card_markdown,
+    )
+
+    cards = []
+    any_failed = False
+    for slug_dir in sorted(Path(examples_root).iterdir()):
+        if not slug_dir.is_dir():
+            continue
+        bench_csv = slug_dir / "benchmark.csv"
+        if not bench_csv.exists():
+            continue
+        report_dir = Path(reports_root) / slug_dir.name
+        cand_csv = report_dir / "final_candidates.csv"
+        md_root = report_dir / "md" if (report_dir / "md").exists() else None
+        s = compute_summary(cand_csv, bench_csv, md_root=md_root)
+        pf = pass_fail(s)
+        if not pf["passed"]:
+            any_failed = True
+        cards.append((slug_dir.name, s, pf))
+
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(render_multi_card_markdown(cards))
+    typer.echo(f"wrote {out} ({len(cards)} card(s))")
+    if strict and any_failed:
+        raise typer.Exit(code=2)
+
+
 @app.command()
 def version() -> None:
     typer.echo(__version__)

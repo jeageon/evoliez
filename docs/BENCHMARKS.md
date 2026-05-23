@@ -35,12 +35,33 @@ auditable in one place.
 2. For each new card, run `evoliez bench --allow-no-overlap` first to
    confirm the card loads and reports zero schema warnings.
 3. Cheap run per enzyme (Boltz real, MD = mock or top-5 real MD) →
-   check recall@10, recall@30, Reject/invalid top-leakage, MD
+   `evoliez bench-summary --candidates <run>/reports/final_candidates.csv
+   --benchmark examples/<slug>/benchmark.csv --md-root <run>/md`. The
+   summary reports recall@1/5/10/30, deleterious bottom-quintile rate,
+   `Reject/invalid` top-leakage (must be 0 — P0a contract), MD
    failure/timeout rate. If those numbers look right, go to step 4.
 4. Full production run, one enzyme at a time, with output diffed
    against the cheap-run snapshot.
-5. Cross-enzyme summary (median recall@K, catalytic-avoidance rate)
-   reported in `reports/multi_enzyme_summary.md`.
+5. Cross-enzyme summary: `evoliez multi-bench-summary --examples
+   examples --reports runs --out reports/multi_enzyme_summary.md` —
+   walks the example cards + matching run output directories and
+   writes the aggregated cross-card markdown the paper figures
+   reference.
+
+### Metric harness — local-runnable, no pipeline re-run
+
+`evoliez bench-summary` (and the cross-card `multi-bench-summary`) are
+**post-hoc** scorers that operate on persisted artefacts. They never
+re-run the pipeline, so you can score a 4-hour production run in less
+than a second and iterate on threshold tuning without burning GPU
+time. The metric set (`recall@1/5/10/30`, deleterious bottom-quintile
+rate, valid top-K rate, Reject/invalid top-leakage = 0, MD failure /
+timeout rates) is the one the expert validation plan asks for.
+
+Default pass/fail thresholds live in
+`evoliez.ml.bench_summary.DEFAULT_THRESHOLDS`; override per call with
+the `--strict` flag + a custom config when the per-enzyme baseline
+moves.
 
 ## 2. Public mutation-fitness sets (user-supplied)
 `evoliez.ml.benchmark.load_external_benchmark(path, fmt=...)` maps a
