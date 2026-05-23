@@ -1,0 +1,139 @@
+# Cheap-run variant of configs/server_fdh_nadp.yaml — used to validate
+# the in-process MD cleanup + bench-summary harness on the server
+# WITHOUT burning the full multi-hour production budget.
+#
+# Differences from server_fdh_nadp.yaml (all numerical, no logic
+# changes):
+#   - Boltz ensemble: 30 → 8 diffusion samples (~4x faster on target)
+#   - representative homologs: 80 → 24
+#   - top_for_md: 30 → 5 (only 5 candidates get real OpenMM MD)
+#   - production_ns: 2.0 → 0.5 (4x shorter trajectories per replica)
+#   - max_candidates: 8000 → 1500 (smaller generator pool)
+#   - final_library: 96 → 24
+#   - GNN: disabled (no training, no inference) — cheap-run scopes
+#     the validation to "Boltz + ranking gate + MD subprocess
+#     stability", not GNN re-scoring.
+#
+# Pass criteria (run `evoliez bench-summary` on the output):
+#   - reject_top_leakage_count == 0    (P0a contract)
+#   - md_failure_rate < 0.3
+#   - md_timeout_rate < 0.15
+#   - recall@5 > 0 on the PseFDH benchmark
+#
+# If cheap-run passes, copy the relevant numerical knobs back to
+# server_fdh_nadp.yaml for the full prod run. If cheap-run fails on
+# MD stability, you need the MD subprocess isolation work BEFORE
+# scaling up.
+
+project:
+  name: psefdh_nad_to_nadp_cheap
+  objective: cofactor_switching
+  output_dir: /mnt/data/jglee/runs/psefdh_nad_to_nadp_cheap
+
+input:
+  target_id: PseFDH_P33160
+  target_fasta: examples/pseudomonas_fdh/target.fasta
+  ligand:
+    id: NADP_cofactor
+    type: cofactor
+    value: NADP
+  catalytic_residues: ["R285", "H333"]
+  fixed_residues: ["R285", "H333"]
+  known_binding_site:
+    - "S148"
+    - "R202"
+    - "I203"
+    - "D222"
+    - "P257"
+    - "L258"
+    - "H259"
+    - "P260"
+    - "E261"
+    - "T283"
+    - "D309"
+    - "H333"
+    - "I334"
+    - "S335"
+    - "G336"
+    - "S381"
+  cofactor: NADP
+  cofactor_redox: oxidized
+  target_ph: 7.4
+  organism: "Pseudomonas sp. 101"
+  ec_number: "1.17.1.9"
+
+homologs:
+  method: mmseqs2
+  database: /mnt/data2/evoligand/db/uniref30_2302/uniref30_2302_db
+  max_sequences: 5000                  # was 20000
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 24          # was 80
+  diffusion_samples: 8                 # was 30
+
+interaction_model:
+  enabled: true
+  representative_homologs: 24          # was 80
+  poses_per_homolog: 4                 # was 15
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: false                       # cheap-run skips GNN entirely
+
+data_scale:
+  target_diffusion_samples: 8          # was 30
+  homolog_diffusion_samples: 4         # was 15
+  mutant_diffusion_samples: 4          # was 10
+  top_for_redocking: 100               # was 500
+  top_for_stability: 30                # was 100
+  top_for_md: 5                        # was 30 — KEY cheap-run knob
+  final_library: 24                    # was 96
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler]   # ligandmpnn dropped (slow)
+  max_candidates: 1500                       # was 8000
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 100
+  top_for_md: 5                              # mirror data_scale
+
+validation:
+  redocking:
+    methods: [gnina]                         # diffdock dropped (slow)
+  stability:
+    method: foldx
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    protocol_level: 2
+    solvent: implicit
+    production_ns: 0.5                       # was 2.0 — KEY cheap-run knob
+    top_candidates: 5                        # was 30
+
+scoring:
+  gnn: 0.0                                   # disabled with gnn.enabled=false
+  family_interaction: 1.5                    # bumped to compensate
+
+output:
+  final_library_size: 24
+  top_single_mutants: 24
+  report_format: [markdown, csv]             # pymol session skipped
+
+backend: real
+backends:
+  # Real MD is the WHOLE POINT of cheap-run — validates in-process
+  # cleanup under real OpenMM load.
+  {}
+seed: 1234
