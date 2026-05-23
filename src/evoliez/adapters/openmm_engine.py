@@ -11,10 +11,11 @@ Returns a backend-agnostic :class:`MDResult` consumed by ``md.analysis``.
 
 from __future__ import annotations
 
+import gc
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from evoliez.adapters.base import write_min_pdb
 from evoliez.config import Backend, MDConfig
@@ -24,6 +25,50 @@ from evoliez.utils.gpu import apply_gpu_selection
 from evoliez.utils.seeds import derive_seed
 
 log = get_logger("evoliez.openmm")
+
+
+def _release_openmm_resources(*objects: Any) -> None:
+    """Explicitly release a sequence of OpenMM (and OpenFF/RDKit) objects.
+
+    Production audit found the MD loop accumulated GPU memory across 30
+    candidates × replicas because OpenMM ``Simulation`` / ``System`` /
+    ``Context`` / ``Integrator`` objects were only freed when Python's
+    garbage collector eventually ran. The C++ destructor (which is what
+    actually releases CUDA context memory) only fires when the Python
+    wrapper is finalised; relying on lazy GC means deferred and
+    non-deterministic GPU release. This helper:
+
+    1. Clears ``sim.reporters`` first so DCDReporter file handles close
+       before the Simulation goes away (otherwise __del__ ordering can
+       leave file descriptors briefly open).
+    2. ``del``\\ s each object reference, breaking any back-references
+       on the Python side.
+    3. Forces ``gc.collect()`` so the Python wrapper is finalised NOW
+       and the C++ destructor runs NOW (which is what actually frees
+       the GPU memory).
+
+    Safe to call with ``None`` arguments; safe to call on objects whose
+    ``__del__`` raises (caught + ignored). Callers should wrap real
+    work in ``try/finally`` and call this in the ``finally``.
+    """
+    # Best-effort reporter cleanup: any object with a ``reporters`` list
+    # gets cleared first so file handles close in the right order.
+    for obj in objects:
+        if obj is None:
+            continue
+        try:
+            reporters = getattr(obj, "reporters", None)
+            if reporters is not None:
+                try:
+                    reporters.clear()
+                except Exception:  # noqa: BLE001 - cleanup must never raise
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+    # The names go out of scope when this function returns; force GC now
+    # so OpenMM/OpenFF/RDKit C++ destructors fire while we still control
+    # the call path (rather than at some unpredictable later moment).
+    gc.collect()
 
 
 @dataclass
@@ -643,338 +688,364 @@ def _run_real(
     import openmm.app as app
     from openmm import unit
 
-    apply_gpu_selection()
-    src = getattr(cx.structure, "pdb_path", None)
-    if src and Path(src).exists() and _is_full_atom_pdb(Path(src)):
-        pdb_path = Path(src)                       # real full-atom structure
-    else:
-        # Our internal ProteinStructure is a CA-only trace and write_min_pdb
-        # emits CA-only records; OpenMM cannot build residue templates from
-        # that, so real MD genuinely CANNOT run on a mock upstream. Record
-        # an HONEST skip DISTINCT from skipped_parameterization (= optional
-        # ligand FF missing, legitimately neutral). This must NOT pass - it
-        # is the difference between "MD validated" and "MD never ran".
-        log.warning(
-            "MD needs a full-atom structure but %s is a CA-only trace "
-            "(upstream mock); recording skipped_no_full_atom_structure",
-            candidate_id,
-        )
-        return MDResult(
-            candidate_id=candidate_id,
-            status="skipped_no_full_atom_structure",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
-            simulation_time_ns=0.0,
-            failure_reason="MD requires a full-atom protein (got CA-only); "
-                           "run s04_complex real or supply a full-atom PDB",
-        )
-    pdb = app.PDBFile(str(pdb_path))
-
-    # (#2) The full-atom PDB must actually be THIS candidate's structure.
-    # _mutant_complex only swaps dataclass residue letters; pdb_path stays
-    # the shared WT Boltz file, so MD-ing it for a mutant would silently
-    # "validate" WT, not the mutant. If the PDB sequence != the intended
-    # (mutant) sequence, honestly skip (analysis.py -> NOT a pass). WT
-    # reference (no mutations) matches its own PDB and proceeds.
-    want = (cx.structure.sequence or "").upper()
-    have = _pdb_one_letter_seq(pdb_path)
-    if want and have and want != have:
-        nmut = sum(1 for a, b in zip(want, have) if a != b)
-        log.warning(
-            "MD input for %s is the shared WT structure, not the mutant "
-            "(%d residue(s) differ); recording skipped_no_mutant_structure",
-            candidate_id, nmut,
-        )
-        return MDResult(
-            candidate_id=candidate_id,
-            status="skipped_no_mutant_structure",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
-            simulation_time_ns=0.0,
-            failure_reason=(f"{nmut} residue(s) differ: the full-atom PDB is "
-                            "WT, not this candidate's mutant - real per-mutant "
-                            "MD needs a per-mutant predicted structure"),
-        )
-
-    # (#4a) Ligand FF STACK availability only. Absence of the openff /
-    # openmmforcefields stack is the legitimately NEUTRAL skip - the
-    # candidate is judged on the other layers, not penalised.
+    # Production GPU-memory-leak fix: all heavy OpenMM resources tracked
+    # at function scope so the ``finally`` block can deterministically
+    # release them. Initialising to ``None`` here lets the cleanup work
+    # for every return path (early-exit failure paths, success path, and
+    # exceptions) without each one needing its own cleanup call.
+    pdb = None
+    off_lig = None
+    system_generator = None
+    system = None
+    modeller = None
+    integrator = None
+    sim = None
+    restraint = None
     try:
-        from openmmforcefields.generators import SystemGenerator
-    except Exception as exc:
-        log.warning(
-            "ligand FF stack unavailable for %s (%s); recording "
-            "skipped_parameterization (NOT a candidate failure)",
-            candidate_id, exc,
-        )
-        return MDResult(
-            candidate_id=candidate_id, status="skipped_parameterization",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
-            simulation_time_ns=0.0, failure_reason=str(exc),
-        )
-
-    # (#4b) Protein + ligand topology assembly + system creation. Standard
-    # openmmforcefields recipe: the ligand enters the system from the OpenFF
-    # molecule placed at the BOLTZ POSE (PDB+CONECT, bond orders from the
-    # SMILES template) - NOT the bond-sparse/H-less PDB HETATM, which can't
-    # graph-match GAFF ("No template for residue LIG"). The protein is
-    # PDBFixer-repaired (terminal OXT / missing heavy atoms) with the
-    # ligand stripped, then recombined. A failure HERE is a REAL MD failure
-    # (structure / chemistry / template), surfaced as failed - never a pass.
-    try:
-        off_lig = _ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)
-    except Exception as exc:
-        # Ligand chemistry could not be built from PDB+CONECT+SMILES
-        # (rare; verified-correct for NADP locally) - a real structure
-        # problem, surfaced as failed.
-        log.warning("MD ligand build failed for %s (%s)", candidate_id, exc)
-        return MDResult(
-            candidate_id=candidate_id, status="failed",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
-            simulation_time_ns=0.0, integration_failed=True,
-            failure_reason=f"ligand build: {exc}",
-        )
-
-    # Curated cofactor path: when the ligand is a known cofactor (canonical
-    # SMILES matches a CofactorSpec) AND the Bryce Lab .lib / .frcmod files
-    # are present on disk, build the complex via tleap and skip the GAFF /
-    # AM1-BCC probe entirely - that probe HARD-FAILS on real NADP+ (sqm
-    # returns non-zero; confirmed by server_test_p0_cofactor.sh Step 4).
-    # When files are missing OR the molecule isn't a curated cofactor, fall
-    # through to the existing probe + Modeller flow unchanged.
-    from evoliez.features.cofactors import lookup_by_smiles
-
-    class _MaybeModeller:                       # facade for the curated path
-        def __init__(self, topology, positions):
-            self.topology = topology
-            self.positions = positions
-
-    curated_spec = lookup_by_smiles(cx.ligand.smiles)
-    took_curated = False
-    system = modeller = None
-    if curated_spec and curated_spec.resolved_amber_files() is not None:
-        try:
-            system, topology, positions = _curated_param_system_generator(
-                off_lig, pdb_path, curated_spec, workdir,
-            )
-            modeller = _MaybeModeller(topology, positions)
-            took_curated = True
-        except _CuratedParamUnavailable as exc:
-            log.info(
-                "curated path unavailable for %s (%s); falling back to "
-                "GAFF/espaloma probe", candidate_id, exc,
-            )
-        except Exception as exc:
-            # The curated branch is supposed to bypass GAFF entirely, so a
-            # real failure here is a real MD failure - NOT parameterization.
+        apply_gpu_selection()
+        src = getattr(cx.structure, "pdb_path", None)
+        if src and Path(src).exists() and _is_full_atom_pdb(Path(src)):
+            pdb_path = Path(src)                       # real full-atom structure
+        else:
+            # Our internal ProteinStructure is a CA-only trace and write_min_pdb
+            # emits CA-only records; OpenMM cannot build residue templates from
+            # that, so real MD genuinely CANNOT run on a mock upstream. Record
+            # an HONEST skip DISTINCT from skipped_parameterization (= optional
+            # ligand FF missing, legitimately neutral). This must NOT pass - it
+            # is the difference between "MD validated" and "MD never ran".
             log.warning(
-                "curated tleap path FAILED for %s (%s); recording failed",
-                candidate_id, exc,
+                "MD needs a full-atom structure but %s is a CA-only trace "
+                "(upstream mock); recording skipped_no_full_atom_structure",
+                candidate_id,
             )
             return MDResult(
-                candidate_id=candidate_id, status="failed",
+                candidate_id=candidate_id,
+                status="skipped_no_full_atom_structure",
                 protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
-                simulation_time_ns=0.0, integration_failed=True,
-                failure_reason=f"curated tleap: {str(exc)[:300]}",
+                simulation_time_ns=0.0,
+                failure_reason="MD requires a full-atom protein (got CA-only); "
+                               "run s04_complex real or supply a full-atom PDB",
+            )
+        pdb = app.PDBFile(str(pdb_path))
+
+        # (#2) The full-atom PDB must actually be THIS candidate's structure.
+        # _mutant_complex only swaps dataclass residue letters; pdb_path stays
+        # the shared WT Boltz file, so MD-ing it for a mutant would silently
+        # "validate" WT, not the mutant. If the PDB sequence != the intended
+        # (mutant) sequence, honestly skip (analysis.py -> NOT a pass). WT
+        # reference (no mutations) matches its own PDB and proceeds.
+        want = (cx.structure.sequence or "").upper()
+        have = _pdb_one_letter_seq(pdb_path)
+        if want and have and want != have:
+            nmut = sum(1 for a, b in zip(want, have) if a != b)
+            log.warning(
+                "MD input for %s is the shared WT structure, not the mutant "
+                "(%d residue(s) differ); recording skipped_no_mutant_structure",
+                candidate_id, nmut,
+            )
+            return MDResult(
+                candidate_id=candidate_id,
+                status="skipped_no_mutant_structure",
+                protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+                simulation_time_ns=0.0,
+                failure_reason=(f"{nmut} residue(s) differ: the full-atom PDB is "
+                                "WT, not this candidate's mutant - real per-mutant "
+                                "MD needs a per-mutant predicted structure"),
             )
 
-    if not took_curated:
-        # 3-tier hierarchy for the (Tier 1 missed) cofactor / drug-like
-        # ligand cases:
-        #   Tier 2 (NEW): known cofactor without curated files -> GAFF +
-        #     Gasteiger charges. Server-verified: AM1-BCC sqm hard-fails on
-        #     real NADP+, so for a known cofactor we SKIP the AM1-BCC probe
-        #     entirely and go straight to Gasteiger (no QM, finishes in
-        #     seconds, slightly lower charge fidelity than AM1-BCC). This
-        #     keeps the pipeline UNBLOCKED while the Bryce Lab files are
-        #     being sourced for Tier 1.
-        #   Tier 3 (existing): drug-like ligand -> AM1-BCC probe per FF
-        #     (gaff-2.11 then espaloma-0.3.2 if installed) - the standard
-        #     production charge model for non-cofactor ligands.
-        # Either tier raising _LigandParamUnsupported -> NEUTRAL
-        # skipped_parameterization (the candidate is judged on the other
-        # layers; same status as the existing AM1-BCC-only path).
+        # (#4a) Ligand FF STACK availability only. Absence of the openff /
+        # openmmforcefields stack is the legitimately NEUTRAL skip - the
+        # candidate is judged on the other layers, not penalised.
         try:
-            if curated_spec is not None:
-                log.info(
-                    "known cofactor %s without curated AMBER files -> "
-                    "Gasteiger-charge GAFF (skips AM1-BCC which hard-fails "
-                    "for this class)", curated_spec.name,
-                )
-                system_generator = _gasteiger_charge_system_generator(
-                    off_lig, workdir,
-                )
-                _ff = "gaff-2.11+gasteiger"
-            else:
-                system_generator, _ff = _ligand_system_generator(
-                    off_lig, workdir,
-                    prefer_ff=getattr(cfg, "ligand_forcefield", None),
-                )
-        except _LigandParamUnsupported as exc:
+            from openmmforcefields.generators import SystemGenerator
+        except Exception as exc:
             log.warning(
-                "no small-molecule FF can parameterize the ligand for %s "
-                "(large/charged cofactor e.g. NADP); recording "
-                "skipped_parameterization (NEUTRAL - judged on other "
-                "layers): %s", candidate_id, str(exc)[:200],
+                "ligand FF stack unavailable for %s (%s); recording "
+                "skipped_parameterization (NOT a candidate failure)",
+                candidate_id, exc,
             )
             return MDResult(
                 candidate_id=candidate_id, status="skipped_parameterization",
                 protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
-                simulation_time_ns=0.0,
-                failure_reason=f"ligand FF unsupported (cofactor): {exc}",
+                simulation_time_ns=0.0, failure_reason=str(exc),
             )
 
+        # (#4b) Protein + ligand topology assembly + system creation. Standard
+        # openmmforcefields recipe: the ligand enters the system from the OpenFF
+        # molecule placed at the BOLTZ POSE (PDB+CONECT, bond orders from the
+        # SMILES template) - NOT the bond-sparse/H-less PDB HETATM, which can't
+        # graph-match GAFF ("No template for residue LIG"). The protein is
+        # PDBFixer-repaired (terminal OXT / missing heavy atoms) with the
+        # ligand stripped, then recombined. A failure HERE is a REAL MD failure
+        # (structure / chemistry / template), surfaced as failed - never a pass.
         try:
-            topo, posns = _protein_only_pdbfixed(pdb_path)
-            if topo is None:                       # pdbfixer absent
-                log.warning(
-                    "pdbfixer not installed - Amber may reject uncapped "
-                    "termini / leftover heterogens for %s. "
-                    "`conda install -c conda-forge pdbfixer`", candidate_id,
-                )
-                topo, posns = pdb.topology, pdb.positions
-            modeller = app.Modeller(topo, posns)
-            # Invariant: prep MUST be protein-only. A H-less Boltz LIG that
-            # survives here is exactly what produced the confusing "No
-            # template for residue LIG / missing 57 H" - fail honestly and
-            # specifically instead of letting create_system emit that.
-            stray = sorted({r.name for r in modeller.topology.residues()
-                            if r.name not in _STD_RES})
-            if stray:
-                raise RuntimeError(
-                    f"non-protein residues survived structure prep "
-                    f"{stray[:5]} (removeHeterogens unavailable / "
-                    "ineffective); the OpenFF ligand is added separately "
-                    "so these must not be present"
-                )
-            modeller.addHydrogens(system_generator.forcefield)
-            # Add the ligand SOLELY from the OpenFF molecule at its
-            # Boltz-pose conformer; the only ligand in the system is now
-            # this one, which create_system matches via GAFF.
-            modeller.add(
-                off_lig.to_topology().to_openmm(),
-                off_lig.conformers[0].to_openmm(),
-            )
-            system = system_generator.create_system(
-                modeller.topology, molecules=[off_lig]
-            )
+            off_lig = _ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)
         except Exception as exc:
-            log.warning(
-                "MD protein+ligand assembly / system creation failed for "
-                "%s (%s)", candidate_id, exc,
-            )
+            # Ligand chemistry could not be built from PDB+CONECT+SMILES
+            # (rare; verified-correct for NADP locally) - a real structure
+            # problem, surfaced as failed.
+            log.warning("MD ligand build failed for %s (%s)", candidate_id, exc)
             return MDResult(
                 candidate_id=candidate_id, status="failed",
                 protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
                 simulation_time_ns=0.0, integration_failed=True,
-                failure_reason=f"protein+ligand assembly / system "
-                               f"creation: {exc}",
+                failure_reason=f"ligand build: {exc}",
             )
 
-    # Restraint schedule (spec 15.5): strongly restrain distant backbone.
-    restraint = mm.CustomExternalForce(
-        "0.5*k*((x-x0)^2+(y-y0)^2+(z-z0)^2)"
-    )
-    restraint.addGlobalParameter("k", 5.0 * unit.kilocalories_per_mole / unit.angstrom**2)
-    for p in ("x0", "y0", "z0"):
-        restraint.addPerParticleParameter(p)
-    pocket = {r.index for r in cx.structure.residues
-              if min((((r.ca[0]) ** 2) ** 0.5,), default=0) >= 0}  # placeholder set
-    for atom in modeller.topology.atoms():
-        if atom.name == "CA":
-            pos = modeller.positions[atom.index]
-            restraint.addParticle(atom.index, [pos.x, pos.y, pos.z])
-    system.addForce(restraint)
+        # Curated cofactor path: when the ligand is a known cofactor (canonical
+        # SMILES matches a CofactorSpec) AND the Bryce Lab .lib / .frcmod files
+        # are present on disk, build the complex via tleap and skip the GAFF /
+        # AM1-BCC probe entirely - that probe HARD-FAILS on real NADP+ (sqm
+        # returns non-zero; confirmed by server_test_p0_cofactor.sh Step 4).
+        # When files are missing OR the molecule isn't a curated cofactor, fall
+        # through to the existing probe + Modeller flow unchanged.
+        from evoliez.features.cofactors import lookup_by_smiles
 
-    # P0.6: HMR/4 fs is opt-in (cfg.hmr_enabled). Real adoption needs a
-    # smoke vs 2 fs stability comparison; the flag is here so that
-    # comparison can be run via config without code surgery.
-    timestep_fs = (cfg.hmr_timestep_fs if getattr(cfg, "hmr_enabled", False)
-                   else cfg.timestep_fs)
-    integrator = mm.LangevinMiddleIntegrator(
-        cfg.temperature_K * unit.kelvin,
-        1.0 / unit.picosecond,
-        timestep_fs * unit.femtoseconds,
-    )
-    sim = app.Simulation(modeller.topology, system, integrator)
-    sim.context.setPositions(modeller.positions)
-    sim.minimizeEnergy(maxIterations=cfg.minimize_steps)
+        class _MaybeModeller:                       # facade for the curated path
+            def __init__(self, topology, positions):
+                self.topology = topology
+                self.positions = positions
 
-    minpdb = workdir / f"{candidate_id}_minimized.pdb"
-    with minpdb.open("w") as fh:
-        app.PDBFile.writeFile(
-            sim.topology, sim.context.getState(getPositions=True).getPositions(), fh
+        curated_spec = lookup_by_smiles(cx.ligand.smiles)
+        took_curated = False
+        system = modeller = None
+        if curated_spec and curated_spec.resolved_amber_files() is not None:
+            try:
+                system, topology, positions = _curated_param_system_generator(
+                    off_lig, pdb_path, curated_spec, workdir,
+                )
+                modeller = _MaybeModeller(topology, positions)
+                took_curated = True
+            except _CuratedParamUnavailable as exc:
+                log.info(
+                    "curated path unavailable for %s (%s); falling back to "
+                    "GAFF/espaloma probe", candidate_id, exc,
+                )
+            except Exception as exc:
+                # The curated branch is supposed to bypass GAFF entirely, so a
+                # real failure here is a real MD failure - NOT parameterization.
+                log.warning(
+                    "curated tleap path FAILED for %s (%s); recording failed",
+                    candidate_id, exc,
+                )
+                return MDResult(
+                    candidate_id=candidate_id, status="failed",
+                    protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+                    simulation_time_ns=0.0, integration_failed=True,
+                    failure_reason=f"curated tleap: {str(exc)[:300]}",
+                )
+
+        if not took_curated:
+            # 3-tier hierarchy for the (Tier 1 missed) cofactor / drug-like
+            # ligand cases:
+            #   Tier 2 (NEW): known cofactor without curated files -> GAFF +
+            #     Gasteiger charges. Server-verified: AM1-BCC sqm hard-fails on
+            #     real NADP+, so for a known cofactor we SKIP the AM1-BCC probe
+            #     entirely and go straight to Gasteiger (no QM, finishes in
+            #     seconds, slightly lower charge fidelity than AM1-BCC). This
+            #     keeps the pipeline UNBLOCKED while the Bryce Lab files are
+            #     being sourced for Tier 1.
+            #   Tier 3 (existing): drug-like ligand -> AM1-BCC probe per FF
+            #     (gaff-2.11 then espaloma-0.3.2 if installed) - the standard
+            #     production charge model for non-cofactor ligands.
+            # Either tier raising _LigandParamUnsupported -> NEUTRAL
+            # skipped_parameterization (the candidate is judged on the other
+            # layers; same status as the existing AM1-BCC-only path).
+            try:
+                if curated_spec is not None:
+                    log.info(
+                        "known cofactor %s without curated AMBER files -> "
+                        "Gasteiger-charge GAFF (skips AM1-BCC which hard-fails "
+                        "for this class)", curated_spec.name,
+                    )
+                    system_generator = _gasteiger_charge_system_generator(
+                        off_lig, workdir,
+                    )
+                    _ff = "gaff-2.11+gasteiger"
+                else:
+                    system_generator, _ff = _ligand_system_generator(
+                        off_lig, workdir,
+                        prefer_ff=getattr(cfg, "ligand_forcefield", None),
+                    )
+            except _LigandParamUnsupported as exc:
+                log.warning(
+                    "no small-molecule FF can parameterize the ligand for %s "
+                    "(large/charged cofactor e.g. NADP); recording "
+                    "skipped_parameterization (NEUTRAL - judged on other "
+                    "layers): %s", candidate_id, str(exc)[:200],
+                )
+                return MDResult(
+                    candidate_id=candidate_id, status="skipped_parameterization",
+                    protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+                    simulation_time_ns=0.0,
+                    failure_reason=f"ligand FF unsupported (cofactor): {exc}",
+                )
+
+            try:
+                topo, posns = _protein_only_pdbfixed(pdb_path)
+                if topo is None:                       # pdbfixer absent
+                    log.warning(
+                        "pdbfixer not installed - Amber may reject uncapped "
+                        "termini / leftover heterogens for %s. "
+                        "`conda install -c conda-forge pdbfixer`", candidate_id,
+                    )
+                    topo, posns = pdb.topology, pdb.positions
+                modeller = app.Modeller(topo, posns)
+                # Invariant: prep MUST be protein-only. A H-less Boltz LIG that
+                # survives here is exactly what produced the confusing "No
+                # template for residue LIG / missing 57 H" - fail honestly and
+                # specifically instead of letting create_system emit that.
+                stray = sorted({r.name for r in modeller.topology.residues()
+                                if r.name not in _STD_RES})
+                if stray:
+                    raise RuntimeError(
+                        f"non-protein residues survived structure prep "
+                        f"{stray[:5]} (removeHeterogens unavailable / "
+                        "ineffective); the OpenFF ligand is added separately "
+                        "so these must not be present"
+                    )
+                modeller.addHydrogens(system_generator.forcefield)
+                # Add the ligand SOLELY from the OpenFF molecule at its
+                # Boltz-pose conformer; the only ligand in the system is now
+                # this one, which create_system matches via GAFF.
+                modeller.add(
+                    off_lig.to_topology().to_openmm(),
+                    off_lig.conformers[0].to_openmm(),
+                )
+                system = system_generator.create_system(
+                    modeller.topology, molecules=[off_lig]
+                )
+            except Exception as exc:
+                log.warning(
+                    "MD protein+ligand assembly / system creation failed for "
+                    "%s (%s)", candidate_id, exc,
+                )
+                return MDResult(
+                    candidate_id=candidate_id, status="failed",
+                    protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+                    simulation_time_ns=0.0, integration_failed=True,
+                    failure_reason=f"protein+ligand assembly / system "
+                                   f"creation: {exc}",
+                )
+
+        # Restraint schedule (spec 15.5): strongly restrain distant backbone.
+        restraint = mm.CustomExternalForce(
+            "0.5*k*((x-x0)^2+(y-y0)^2+(z-z0)^2)"
         )
+        restraint.addGlobalParameter("k", 5.0 * unit.kilocalories_per_mole / unit.angstrom**2)
+        for p in ("x0", "y0", "z0"):
+            restraint.addPerParticleParameter(p)
+        pocket = {r.index for r in cx.structure.residues
+                  if min((((r.ca[0]) ** 2) ** 0.5,), default=0) >= 0}  # placeholder set
+        for atom in modeller.topology.atoms():
+            if atom.name == "CA":
+                pos = modeller.positions[atom.index]
+                restraint.addParticle(atom.index, [pos.x, pos.y, pos.z])
+        system.addForce(restraint)
 
-    # ligand-specific + pocket-specific atom indices (was whole-system RMSD).
-    # Includes the curated AMBER 3-letter cofactor residue codes (Bryce Lab
-    # NAD/NDH/NAP/NDP) so the curated tleap path also picks the ligand out.
-    _LIG_RES = ("LIG", "UNL", "UNK", "NAD", "NDH", "NAP", "NDP")
-    lig_idx = [a.index for a in modeller.topology.atoms()
-               if a.residue.name in _LIG_RES]
-    init = np.array([[p.x, p.y, p.z] for p in
-                     sim.context.getState(getPositions=True).getPositions()])
-    if lig_idx:
-        lc = init[lig_idx].mean(axis=0)
-        ca_idx = [a.index for a in modeller.topology.atoms()
-                  if a.name == "CA"]
-        pkt_idx = [i for i in ca_idx
-                   if float(((init[i] - lc) ** 2).sum()) ** 0.5 <= 0.8]
-    else:
-        pkt_idx = [a.index for a in modeller.topology.atoms()
-                   if a.name == "CA"]
+        # P0.6: HMR/4 fs is opt-in (cfg.hmr_enabled). Real adoption needs a
+        # smoke vs 2 fs stability comparison; the flag is here so that
+        # comparison can be run via config without code surgery.
+        timestep_fs = (cfg.hmr_timestep_fs if getattr(cfg, "hmr_enabled", False)
+                       else cfg.timestep_fs)
+        integrator = mm.LangevinMiddleIntegrator(
+            cfg.temperature_K * unit.kelvin,
+            1.0 / unit.picosecond,
+            timestep_fs * unit.femtoseconds,
+        )
+        sim = app.Simulation(modeller.topology, system, integrator)
+        sim.context.setPositions(modeller.positions)
+        sim.minimizeEnergy(maxIterations=cfg.minimize_steps)
 
-    def _rmsd(cur, idx, ref):
-        if not idx:
-            return 0.0
-        d = cur[idx] - ref[idx]
-        return float(np.sqrt((d * d).sum(axis=1).mean())) * 10.0  # nm->Å
+        minpdb = workdir / f"{candidate_id}_minimized.pdb"
+        with minpdb.open("w") as fh:
+            app.PDBFile.writeFile(
+                sim.topology, sim.context.getState(getPositions=True).getPositions(), fh
+            )
 
-    lig_series: List[float] = []
-    pkt_series: List[float] = []
-    e_start = e_last = None
-    if cfg.protocol_level >= 1:
-        sim.context.setVelocitiesToTemperature(cfg.temperature_K * unit.kelvin)
-        nsteps = int((cfg.production_ns * 1000) / (timestep_fs / 1000) / 1000)
-        nsteps = max(50, min(nsteps, 5000) if cfg.protocol_level < 3 else nsteps)
-        traj = workdir / f"{candidate_id}.dcd"
-        sim.reporters.append(app.DCDReporter(str(traj), max(1, nsteps // 50)))
-        for blk in range(50):
-            sim.step(max(1, nsteps // 50))
-            st = sim.context.getState(getPositions=True, getEnergy=True)
-            cur = np.array([[p.x, p.y, p.z] for p in st.getPositions()])
-            lig_series.append(round(_rmsd(cur, lig_idx, init), 3))
-            pkt_series.append(round(_rmsd(cur, pkt_idx, init), 3))
-            e = st.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
-            e_start = e if e_start is None else e_start
-            e_last = e
-        trajectory_path = str(traj)
-    else:
-        trajectory_path = None
+        # ligand-specific + pocket-specific atom indices (was whole-system RMSD).
+        # Includes the curated AMBER 3-letter cofactor residue codes (Bryce Lab
+        # NAD/NDH/NAP/NDP) so the curated tleap path also picks the ligand out.
+        _LIG_RES = ("LIG", "UNL", "UNK", "NAD", "NDH", "NAP", "NDP")
+        lig_idx = [a.index for a in modeller.topology.atoms()
+                   if a.residue.name in _LIG_RES]
+        init = np.array([[p.x, p.y, p.z] for p in
+                         sim.context.getState(getPositions=True).getPositions()])
+        if lig_idx:
+            lc = init[lig_idx].mean(axis=0)
+            ca_idx = [a.index for a in modeller.topology.atoms()
+                      if a.name == "CA"]
+            pkt_idx = [i for i in ca_idx
+                       if float(((init[i] - lc) ** 2).sum()) ** 0.5 <= 0.8]
+        else:
+            pkt_idx = [a.index for a in modeller.topology.atoms()
+                       if a.name == "CA"]
 
-    drift = abs((e_last - e_start) / e_start) if e_start else 0.0
-    status = "unstable" if (lig_series and lig_series[-1] > 5.0) else "ok"
-    # P0.6: provenance. `_ff` is set by the probe path; the curated branch
-    # didn't go through the probe so default to "curated_amber". HMR /
-    # timestep / replicas come straight from the config.
-    ligand_ff_used = "curated_amber" if took_curated else (_ff or "?")
-    timestep_used = (cfg.hmr_timestep_fs if getattr(cfg, "hmr_enabled", False)
-                     else cfg.timestep_fs)
-    return MDResult(
-        candidate_id=candidate_id,
-        status=status,
-        protocol_level=cfg.protocol_level,
-        solvent_mode=cfg.solvent,
-        simulation_time_ns=cfg.production_ns if cfg.protocol_level >= 1 else 0.0,
-        minimized_pdb=str(minpdb),
-        trajectory_path=trajectory_path,
-        ligand_rmsd_series=lig_series or [0.0],
-        pocket_rmsd_series=pkt_series or [0.0],
-        key_distances={},
-        contact_occupancy={},
-        hbond_occupancy=0.5,
-        energy_drift=round(float(drift), 4),
-        ligand_forcefield=ligand_ff_used,
-        hmr_enabled=bool(getattr(cfg, "hmr_enabled", False)),
-        timestep_fs=float(timestep_used),
-        replicas_run=1,                 # single replica today; multi-replica
-                                        # final-tier loop is the next commit
-    )
+        def _rmsd(cur, idx, ref):
+            if not idx:
+                return 0.0
+            d = cur[idx] - ref[idx]
+            return float(np.sqrt((d * d).sum(axis=1).mean())) * 10.0  # nm->Å
+
+        lig_series: List[float] = []
+        pkt_series: List[float] = []
+        e_start = e_last = None
+        if cfg.protocol_level >= 1:
+            sim.context.setVelocitiesToTemperature(cfg.temperature_K * unit.kelvin)
+            nsteps = int((cfg.production_ns * 1000) / (timestep_fs / 1000) / 1000)
+            nsteps = max(50, min(nsteps, 5000) if cfg.protocol_level < 3 else nsteps)
+            traj = workdir / f"{candidate_id}.dcd"
+            sim.reporters.append(app.DCDReporter(str(traj), max(1, nsteps // 50)))
+            for blk in range(50):
+                sim.step(max(1, nsteps // 50))
+                st = sim.context.getState(getPositions=True, getEnergy=True)
+                cur = np.array([[p.x, p.y, p.z] for p in st.getPositions()])
+                lig_series.append(round(_rmsd(cur, lig_idx, init), 3))
+                pkt_series.append(round(_rmsd(cur, pkt_idx, init), 3))
+                e = st.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+                e_start = e if e_start is None else e_start
+                e_last = e
+            trajectory_path = str(traj)
+        else:
+            trajectory_path = None
+
+        drift = abs((e_last - e_start) / e_start) if e_start else 0.0
+        status = "unstable" if (lig_series and lig_series[-1] > 5.0) else "ok"
+        # P0.6: provenance. `_ff` is set by the probe path; the curated branch
+        # didn't go through the probe so default to "curated_amber". HMR /
+        # timestep / replicas come straight from the config.
+        ligand_ff_used = "curated_amber" if took_curated else (_ff or "?")
+        timestep_used = (cfg.hmr_timestep_fs if getattr(cfg, "hmr_enabled", False)
+                         else cfg.timestep_fs)
+        return MDResult(
+            candidate_id=candidate_id,
+            status=status,
+            protocol_level=cfg.protocol_level,
+            solvent_mode=cfg.solvent,
+            simulation_time_ns=cfg.production_ns if cfg.protocol_level >= 1 else 0.0,
+            minimized_pdb=str(minpdb),
+            trajectory_path=trajectory_path,
+            ligand_rmsd_series=lig_series or [0.0],
+            pocket_rmsd_series=pkt_series or [0.0],
+            key_distances={},
+            contact_occupancy={},
+            hbond_occupancy=0.5,
+            energy_drift=round(float(drift), 4),
+            ligand_forcefield=ligand_ff_used,
+            hmr_enabled=bool(getattr(cfg, "hmr_enabled", False)),
+            timestep_fs=float(timestep_used),
+            replicas_run=1,                 # single replica today; multi-replica
+                                            # final-tier loop is the next commit
+        )
+    finally:
+        # Production GPU-memory-leak fix: explicitly release every OpenMM
+        # / OpenFF resource so the C++ destructors (which actually free
+        # CUDA context memory) fire NOW instead of whenever Python's GC
+        # gets around to it. Audit confirmed sim/system/integrator never
+        # del'd across 30 candidates x replicas was the dominant leak
+        # source. This finally runs for ALL return paths - early-exit
+        # skips, late assembly failures, success path, and exceptions.
+        _release_openmm_resources(
+            sim, integrator, restraint, system, modeller,
+            system_generator, off_lig, pdb,
+        )

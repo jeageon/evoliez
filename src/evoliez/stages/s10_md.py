@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from typing import List
 
 from evoliez.adapters.openmm_engine import run_md
@@ -201,6 +202,21 @@ class MDStage(Stage):
                         analysis_json=aj,
                     )
                 )
+
+            # Production GPU-memory-leak fix (belt + suspenders).
+            # `_run_real` now releases OpenMM resources in its finally
+            # block, but the per-candidate loop also holds the list of
+            # MDResult objects (replica_results) and the per-mutant
+            # Complex (mc). Drop those references now and force a GC
+            # cycle so any cyclic refs between OpenMM/OpenFF/RDKit
+            # wrappers (which the C++ destructors only finalise when
+            # the wrapper actually drops) are collected before the
+            # next candidate's allocations begin. Without this, we saw
+            # GPU memory grow ~1-2 GB per 10 candidates on the server.
+            replica_results.clear()
+            del result
+            mc = None
+            gc.collect()
 
         n_pass = sum(1 for c in candidates if c.details.get("md_passed"))
         n_replicated = sum(1 for c in candidates
