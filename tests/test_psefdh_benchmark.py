@@ -36,8 +36,19 @@ def _load_rows() -> List[dict]:
 
 def test_psefdh_benchmark_loads_via_load_benchmark():
     rows = _load_rows()
-    # Scaffold contract: small but non-empty (5-10 rows per the task spec).
-    assert 1 <= len(rows) <= 10, f"unexpected scaffold size: {len(rows)}"
+    # Scaffold contract: non-empty and bounded by a reasonable maximum.
+    # Originally a 5-10 row sketch; expanded to ~15 mutations to give
+    # Figure 3 (Benchmark Recovery) enough beneficial + deleterious +
+    # neutral rows to show a meaningful recall@K curve. The 50-row upper
+    # bound stops the scaffold from quietly becoming an enzyme-specific
+    # mega-table (cross-enzyme work goes in a separate dataset).
+    assert 1 <= len(rows) <= 50, f"unexpected scaffold size: {len(rows)}"
+    # Figure-3 minimum: at least 3 beneficial + at least 3 deleterious so
+    # the rank-distribution / recall@K / percentile panels have signal.
+    n_ben = sum(1 for r in rows if r["label"] == "beneficial")
+    n_del = sum(1 for r in rows if r["label"] == "deleterious")
+    assert n_ben >= 3, f"need >=3 beneficial rows for Figure 3 (got {n_ben})"
+    assert n_del >= 3, f"need >=3 deleterious rows for Figure 3 (got {n_del})"
     for row in rows:
         assert row["mutation"], f"empty mutation in row {row}"
         assert row["label"] in _VALID_LABELS, (

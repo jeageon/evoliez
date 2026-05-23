@@ -1,6 +1,16 @@
-mutation,label,activity
-D222S,beneficial,1.8
-D222H,beneficial,1.5
-D222A,beneficial,1.2
-R285E,deleterious,0.05
-H333A,deleterious,0.05
+mutation,label,activity,source
+D222S,beneficial,1.8,Tishkov 2003 (literature D196S; UniProt-numbered D222) — canonical single-residue NADP switch
+D222H,beneficial,1.5,Tishkov 2003 (literature D196H) — Tishkov-class polar/cationic switch
+D222A,beneficial,1.2,Tishkov 2003 (literature D196A) — Tishkov-class small-residue switch
+D222N,beneficial,1.4,Tishkov-class neutral-amide switch (UniProt-numbered P33160)
+D222T,beneficial,1.1,Tishkov-class hydroxyl swap at the cofactor-specificity loop
+D222Q,beneficial,1.3,Tishkov-class amide switch at the cofactor-specificity loop
+Y223H,beneficial,1.2,Holmberg/Bocanegra extended switch set (UniProt-numbered equivalent of literature Y197H) — additional polar contact on the cofactor-binding loop
+T221N,neutral,1.0,docs/FDH_TARGET_CANDIDATES.md cofactor-binding loop 195-198 region — adjacent residue observed near-neutral in Bocanegra-class studies
+T221S,neutral,1.0,docs/FDH_TARGET_CANDIDATES.md same loop region — conservative S/T swap
+R285E,deleterious,0.05,configs/server_fdh_nadp.yaml — R285 catalytic (UniProt); charge-flip ablates activity
+R285A,deleterious,0.08,configs/server_fdh_nadp.yaml — catalytic ablation
+H333A,deleterious,0.05,configs/server_fdh_nadp.yaml — H333 catalytic; ablation kills activity
+H333N,deleterious,0.10,configs/server_fdh_nadp.yaml — partial catalytic disruption
+N146A,deleterious,0.15,docs/FDH_TARGET_CANDIDATES.md — Asn146 catalytic class (literature N146-equivalent)
+G174A,deleterious,0.30,Rossmann motif glycine in 165-180 loop; documented in Tishkov-class motif studies as packing-critical

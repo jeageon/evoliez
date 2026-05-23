@@ -196,58 +196,158 @@ def test_score_waterfall_missing_csv(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _write_benchmark_csv(path: Path, rows: list) -> Path:
+    """Helper: write a ``mutation,label,activity,source`` benchmark CSV."""
+    lines = ["mutation,label,activity,source"]
+    for mut, lab, act in rows:
+        lines.append(f"{mut},{lab},{act},test-fixture")
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _make_candidates_with_blocked(path: Path, accepted: list, blocked: list) -> Path:
+    """Helper: write a final_candidates.csv that includes ``is_blocked`` so
+    benchmark_recovery's accepted-only ranking actually filters."""
+    cols = [
+        "rank", "candidate_id", "mutations", "evidence_class",
+        "final_score", "is_blocked", "block_reason",
+    ]
+    lines = [",".join(cols)]
+    rank = 1
+    for mut, ev, score in accepted:
+        lines.append(f"{rank},cand_{rank:03d},{mut},{ev},{score:.3f},0,")
+        rank += 1
+    for mut, ev, score in blocked:
+        lines.append(f"{rank},cand_{rank:03d},{mut},{ev},{score:.3f},1,evidence_reject")
+        rank += 1
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
 def test_benchmark_recovery_valid(tmp_path: Path) -> None:
     pytest.importorskip("matplotlib")
     from evoliez.figures.plots import benchmark_recovery
 
-    bench_json = tmp_path / "benchmark.json"
-    bench_csv = tmp_path / "benchmark.csv"
-    bench_csv.write_text("mutation,activity\nA1K,1\nA2L,0\n")
-    bench_json.write_text(
-        json.dumps(
-            {
-                "valid": True,
-                "n_total": 100,
-                "n_positives": 10,
-                "recall_at_k": {"1": 0.1, "5": 0.4, "10": 0.6, "30": 0.85, "100": 1.0},
-            }
-        )
+    # 4-panel render needs: benchmark.csv (mutation,label,activity) and
+    # final_candidates.csv (with the P0a is_blocked gate column).
+    bench_csv = _write_benchmark_csv(
+        tmp_path / "benchmark.csv",
+        rows=[
+            ("D222S", "beneficial", 1.8),
+            ("D222H", "beneficial", 1.5),
+            ("R285E", "deleterious", 0.05),
+            ("T221N", "neutral", 1.0),
+        ],
+    )
+    final_csv = _make_candidates_with_blocked(
+        tmp_path / "final_candidates.csv",
+        # accepted: top picks include one of the beneficial mutations
+        accepted=[
+            ("D222S", "Strong", 1.20),
+            ("D222H", "Strong", 1.10),
+            ("X999Y", "Promising", 0.90),
+            ("T221N", "Uncertain", 0.50),
+        ],
+        # blocked: deleterious R285E correctly gated out
+        blocked=[("R285E", "Reject", 0.10)],
     )
 
     art = _empty_artifacts(tmp_path / "run")
-    art.benchmark_json = bench_json
     art.benchmark_csv = bench_csv
+    art.final_candidates_csv = final_csv
     out = tmp_path / "bench.png"
     spec = benchmark_recovery.render(art, out)
 
     assert isinstance(spec, FigureSpec)
     assert spec.figure_id == "00_benchmark_recovery"
     assert spec.section == "overview"
+    # Universal-tool guarantees: panel counts + recovered count derived
+    # from the inputs (not hard-coded), and the figure uses both CSVs.
+    assert spec.params["n_benchmark"] == 4
+    assert spec.params["n_beneficial"] == 2
+    assert spec.params["n_deleterious"] == 1
+    assert spec.params["n_candidates"] == 5
+    # D222S + D222H both in accepted ranks 1-2 → both beneficial recovered.
+    assert spec.params["n_recovered"] >= 2
     assert _png_ok(out)
 
 
-def test_benchmark_recovery_invalid_returns_none(tmp_path: Path) -> None:
+def test_benchmark_recovery_with_ablation_panel(tmp_path: Path) -> None:
+    """Panel D fires when benchmark.json carries an ablation_study dict."""
     pytest.importorskip("matplotlib")
     from evoliez.figures.plots import benchmark_recovery
 
+    bench_csv = _write_benchmark_csv(
+        tmp_path / "benchmark.csv",
+        rows=[("D222S", "beneficial", 1.8), ("R285E", "deleterious", 0.05)],
+    )
+    final_csv = _make_candidates_with_blocked(
+        tmp_path / "final_candidates.csv",
+        accepted=[("D222S", "Strong", 1.2), ("X1Y", "Promising", 0.9)],
+        blocked=[("R285E", "Reject", 0.1)],
+    )
     bench_json = tmp_path / "benchmark.json"
-    bench_csv = tmp_path / "benchmark.csv"
-    bench_csv.write_text("mutation,activity\n")
-    bench_json.write_text(json.dumps({"valid": False, "recall_at_k": {"1": 0.1}}))
+    bench_json.write_text(json.dumps({
+        "ablation_study": {
+            "full": {"auroc_beneficial": 0.82},
+            "no_md": {"auroc_beneficial": 0.71},
+            "no_boltz": {"auroc_beneficial": 0.55},
+        }
+    }))
 
     art = _empty_artifacts(tmp_path / "run")
-    art.benchmark_json = bench_json
     art.benchmark_csv = bench_csv
+    art.final_candidates_csv = final_csv
+    art.benchmark_json = bench_json
+    out = tmp_path / "bench_with_ablation.png"
+    spec = benchmark_recovery.render(art, out)
+    assert spec is not None
+    assert spec.params["ablation_panel"] is True
+    assert _png_ok(out)
+
+
+def test_benchmark_recovery_empty_benchmark_returns_none(tmp_path: Path) -> None:
+    """Header-only benchmark CSV → no rows → skip the figure."""
+    pytest.importorskip("matplotlib")
+    from evoliez.figures.plots import benchmark_recovery
+
+    bench_csv = tmp_path / "benchmark.csv"
+    bench_csv.write_text("mutation,label,activity,source\n")
+    final_csv = _make_candidates_with_blocked(
+        tmp_path / "final_candidates.csv",
+        accepted=[("A1K", "Strong", 1.0)],
+        blocked=[],
+    )
+
+    art = _empty_artifacts(tmp_path / "run")
+    art.benchmark_csv = bench_csv
+    art.final_candidates_csv = final_csv
     out = tmp_path / "bench.png"
     assert benchmark_recovery.render(art, out) is None
     assert not out.exists()
 
 
 def test_benchmark_recovery_missing_inputs(tmp_path: Path) -> None:
+    """No artifacts at all → return None (figure is opportunistic)."""
     pytest.importorskip("matplotlib")
     from evoliez.figures.plots import benchmark_recovery
 
     art = _empty_artifacts(tmp_path / "run")
+    out = tmp_path / "bench.png"
+    assert benchmark_recovery.render(art, out) is None
+
+
+def test_benchmark_recovery_missing_final_csv_returns_none(tmp_path: Path) -> None:
+    """benchmark.csv alone is not enough — we need the pipeline output too."""
+    pytest.importorskip("matplotlib")
+    from evoliez.figures.plots import benchmark_recovery
+
+    bench_csv = _write_benchmark_csv(
+        tmp_path / "benchmark.csv",
+        rows=[("D222S", "beneficial", 1.8)],
+    )
+    art = _empty_artifacts(tmp_path / "run")
+    art.benchmark_csv = bench_csv
     out = tmp_path / "bench.png"
     assert benchmark_recovery.render(art, out) is None
 

@@ -42,8 +42,10 @@
   {% endif %}
 
   {% set overview_figs = section.figures if section is defined and section.figures else [] %}
-  {% set benchmark_figs = overview_figs|selectattr('figure_id', 'equalto', 'benchmark_recovery')|list %}
-  {% set other_figs = overview_figs|rejectattr('figure_id', 'equalto', 'benchmark_recovery')|list %}
+  {# Match on the real figure_id (the renderer emits '00_benchmark_recovery').
+     Also tolerate the legacy bare name so older snapshots still display. #}
+  {% set benchmark_figs = overview_figs|selectattr('figure_id', 'in', ['00_benchmark_recovery', 'benchmark_recovery'])|list %}
+  {% set other_figs = overview_figs|rejectattr('figure_id', 'in', ['00_benchmark_recovery', 'benchmark_recovery'])|list %}
 
   {% for fig in other_figs %}
     {% include 'components/figure_card.html' %}
