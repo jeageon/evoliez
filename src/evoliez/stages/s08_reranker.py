@@ -87,6 +87,17 @@ _FEATURE_KEYS = [
     "d_key_distance",
     "d_pocket_plddt",
     "specificity_divergence",
+    # Cheap-run discovery: the conservation penalty (`- 0.8 * cons`)
+    # was burying the Tishkov D222S/N/T/Q family because D222 is a
+    # well-conserved NAD-binding-loop residue. But the user explicitly
+    # marked D222 (and the other 16 NAD-binding residues) in
+    # `known_binding_site` exactly BECAUSE those positions are
+    # engineering-relevant. Adding `at_binding_site` lets the heuristic
+    # and the xgboost path both lift binding-site mutations so they
+    # actually reach the top-K cut and get real Boltz/MD evaluation.
+    # 1.0 when the mutation's position is in ctx["known_binding_site"],
+    # 0.0 otherwise. Multi-mutants: average across positions.
+    "at_binding_site",
 ]
 
 
@@ -99,6 +110,10 @@ class RerankerStage(Stage):
         contacts = ctx.require("contacts")
         candidates: List[Candidate] = ctx.require("candidates")
         catalytic = ctx.get("catalytic_positions", [])
+        # Cheap-run discovery: surface user-declared binding-site
+        # positions into the feature row so the reranker can lift them
+        # past the conservation penalty (see _FEATURE_KEYS comment).
+        binding_site = set(ctx.get("known_binding_site", []) or [])
         rcfg = ctx.config.reranking
 
         res_by_pos = {r.index: r for r in cx.structure.residues}
@@ -150,7 +165,10 @@ class RerankerStage(Stage):
         ctx.put("wt_delta_cache", wt_delta_cache)
 
         for cand in candidates:
-            feat = self._features(cand, res_by_pos, pf_by_pos, nearest, atom_by_id)
+            feat = self._features(
+                cand, res_by_pos, pf_by_pos, nearest, atom_by_id,
+                binding_site=binding_site,
+            )
 
             # ONE lightweight approx-mutant build, reused for the family
             # interaction score, the WT-delta features and the GNN (was two
@@ -236,8 +254,11 @@ class RerankerStage(Stage):
         )
 
     # ------------------------------------------------------------------ #
-    def _features(self, cand, res_by_pos, pf_by_pos, nearest, atom_by_id) -> dict:
+    def _features(self, cand, res_by_pos, pf_by_pos, nearest, atom_by_id,
+                  *, binding_site=None) -> dict:
+        binding_site = binding_site or set()
         perms, cons, buried, dligand, gain = [], [], [], [], 0.0
+        n_at_bs = 0
         for m in cand.mutations:
             pf = pf_by_pos.get(m.position)
             r = res_by_pos.get(m.position)
@@ -251,6 +272,8 @@ class RerankerStage(Stage):
                 atom = atom_by_id.get(c.ligand_atom_id)
                 if atom is not None and m.mut in _RULE_POOL[_ligand_role(atom)]:
                     gain += max(0.0, 1.0 - c.distance / 5.0)
+            if m.position in binding_site:
+                n_at_bs += 1
         n = len(cand.mutations)
         return {
             "msa_permissiveness": float(cand.details.get("msa_permissiveness", 0.0)),
@@ -259,15 +282,35 @@ class RerankerStage(Stage):
             "n_mutations": n,
             "buried_fraction": round(sum(buried) / max(1, len(buried)), 4),
             "dist_to_ligand": round(min(dligand) if dligand else 99.0, 3),
+            # Fraction of the candidate's mutated positions that the
+            # user marked as known_binding_site. 1.0 for single-mutants
+            # at a binding-site position, 0.0 otherwise; multi-mutants
+            # get the mean. The heuristic adds +0.6 × this so the
+            # conservation penalty (which is high for binding-loop
+            # residues like PseFDH D222) doesn't bury the very mutations
+            # the user is asking about.
+            "at_binding_site": round(n_at_bs / max(1, n), 4),
         }
 
     def _score_heuristic(self, candidates: List[Candidate]) -> None:
         for c in candidates:
             f = c.details["features"]
+            # Cheap-run PseFDH discovery: the conservation penalty
+            # (`- 0.8 * (cons - 0.55)`) was pushing the Tishkov D222
+            # family below the top_for_redocking cut because D222 is a
+            # well-conserved NAD-binding-loop residue. Adding a +0.6
+            # bonus for user-declared known_binding_site positions
+            # neutralises that penalty for the residues the operator
+            # explicitly asked the pipeline to mutate. Calibrated so a
+            # binding-site mutation with cons=0.85 still scores higher
+            # than a non-binding-site mutation at cons=0.55 with the
+            # same other features. Universal — every enzyme card
+            # declares known_binding_site.
             score = (
                 1.5 * f.get("family_interaction_score", 0.5)
                 + 1.2 * f["interaction_gain"]
                 + 0.9 * f["msa_permissiveness"]
+                + 0.6 * f.get("at_binding_site", 0.0)
                 - 0.8 * max(0.0, f["conservation"] - 0.55)
                 - 0.15 * (f["n_mutations"] - 1)
                 - 0.05 * max(0.0, f["dist_to_ligand"] - 6.0)
@@ -313,6 +356,10 @@ class RerankerStage(Stage):
             "d_key_distance":              -1,
             "d_pocket_plddt":              +1,
             "specificity_divergence":      -1,
+            # User-declared binding-site positions are engineering
+            # targets, not residues to avoid. +1: higher → higher score
+            # so the xgboost path agrees with the heuristic boost.
+            "at_binding_site":             +1,
         }
         mono_tuple = tuple(monotone[k] for k in _FEATURE_KEYS)
         model = xgb.XGBRegressor(
