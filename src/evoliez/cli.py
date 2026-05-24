@@ -325,6 +325,13 @@ def bench_summary(
         "supposed to refuse those, so counting them as 'not recovered' is "
         "dishonest.",
     ),
+    profile: str = typer.Option(
+        "prod", "--profile",
+        help="Threshold profile: 'prod' (strict — full-prod recall@K) "
+        "or 'cheap' (relaxed — cheap-run validates pipeline correctness, "
+        "not recall, so the gate is benchmark_in_pool_rate instead of "
+        "recall@K).",
+    ),
 ) -> None:
     """Post-hoc benchmark summary for one enzyme card.
 
@@ -337,8 +344,14 @@ def bench_summary(
     import json as _json
 
     from evoliez.ml.bench_summary import (
-        compute_summary, pass_fail, render_card_markdown,
+        PROFILES, compute_summary, pass_fail, render_card_markdown,
     )
+
+    if profile not in PROFILES:
+        raise typer.BadParameter(
+            f"unknown --profile {profile!r}; valid: {sorted(PROFILES)}"
+        )
+    thresholds = PROFILES[profile]
 
     protected: list = []
     if config is not None:
@@ -356,7 +369,7 @@ def bench_summary(
         Path(candidates), Path(benchmark), md_root=md_root,
         protected_positions=protected,
     )
-    pf = pass_fail(summary)
+    pf = pass_fail(summary, thresholds=thresholds)
     md = render_card_markdown(name, summary, pf)
     if out is not None:
         Path(out).parent.mkdir(parents=True, exist_ok=True)

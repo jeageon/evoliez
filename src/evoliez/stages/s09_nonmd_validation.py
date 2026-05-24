@@ -62,13 +62,20 @@ def _apply_binding_site_floor(
             if cand_promote is None:
                 break
             # Lowest-scoring top entry NOT covering ANY binding site →
-            # displace it. If everyone in top covers some binding site,
-            # displace the lowest top regardless (keeps top_n size stable).
+            # displace it. NON-DESTRUCTIVE: if every top entry covers
+            # SOME binding-site position, abort this position's
+            # promotion rather than overwriting an already-promoted BS
+            # candidate. This is the cheap-run-4 fix: the previous
+            # fallback (`len(top)-1`) silently replaced earlier
+            # promotions, so 16 "promoted" log lines turned into only
+            # 1 net BS addition in top-12.
             displace_idx = next(
                 (i for i in range(len(top) - 1, -1, -1)
                  if not (_positions(top[i]) & binding_site)),
-                len(top) - 1,
+                None,
             )
+            if displace_idx is None:
+                break  # honestly out of non-BS displacement targets
             top[displace_idx] = cand_promote
             tail.remove(cand_promote)
             coverage[pos] += 1
