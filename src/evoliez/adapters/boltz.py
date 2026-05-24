@@ -466,11 +466,18 @@ def _scan_output_dir(outdir: Path) -> dict:
     Lossless: the categorisation uses the same name patterns the old
     code used (`confidence*model_*.json`, `confidence*.json`,
     `affinity*.json`, `plddt*.npz`), so the set of files matched is
-    identical."""
+    identical.
+
+    Adds `model_struct`: per-sample structure files (`*_model_<k>.cif`
+    or `*_model_<k>.pdb`, excluding `*_complex.pdb`) so per-sample pose
+    HETATMs can be parsed without re-walking the tree (A1 fix: the
+    ensemble was collapsing because every sample shared the same ligand
+    coords from the top-level structure)."""
     confidence_model: List[Path] = []
     confidence_generic: List[Path] = []
     affinity: List[Path] = []
     plddt_npz: List[Path] = []
+    model_struct: List[Path] = []
     for p in outdir.rglob("*"):
         if not p.is_file():
             continue
@@ -484,19 +491,84 @@ def _scan_output_dir(outdir: Path) -> dict:
             affinity.append(p)
         elif name.startswith("plddt") and name.endswith(".npz"):
             plddt_npz.append(p)
+        elif (name.endswith((".cif", ".pdb"))
+              and "_model_" in name
+              and not name.endswith("_complex.pdb")):
+            model_struct.append(p)
     return {
         "confidence_model": sorted(confidence_model),
         "confidence_generic": sorted(confidence_generic),
         "affinity": sorted(affinity),
         "plddt_npz": sorted(plddt_npz),
+        "model_struct": sorted(model_struct),
     }
+
+
+def _model_index(path: Path) -> Optional[int]:
+    """Extract k from a Boltz model filename `..._model_<k>.<ext>`.
+
+    Returns None for filenames that don't match the convention (so callers
+    can skip the file rather than misalign samples)."""
+    stem = path.stem  # strip extension
+    marker = "_model_"
+    pos = stem.rfind(marker)
+    if pos < 0:
+        return None
+    tail = stem[pos + len(marker):]
+    try:
+        return int(tail)
+    except ValueError:
+        return None
+
+
+def _parse_ligand_atoms_from_struct(path: Path) -> List[LigandAtom]:
+    """Parse HETATM coords from a Boltz per-sample structure file.
+
+    Pure-text PDB/CIF parsing - no rdkit / openff dependency, so this
+    runs in any local venv. Returns the raw atoms in file order; the
+    caller is responsible for `relabel_to_canonical` to lock to the
+    canonical chemistry-graph atom ids."""
+    if path.suffix.lower() in (".cif", ".mmcif"):
+        _, lig = _parse_cif_atoms(path)
+        return list(lig)
+    # PDB: HETATM lines only
+    atoms: List[LigandAtom] = []
+    try:
+        text = path.read_text()
+    except OSError:
+        return atoms
+    for line in text.splitlines():
+        if not line.startswith("HETATM"):
+            continue
+        try:
+            x = float(line[30:38])
+            y = float(line[38:46])
+            z = float(line[46:54])
+        except (ValueError, IndexError):
+            continue
+        el = line[76:78].strip() if len(line) >= 78 else ""
+        if not el:
+            el = line[12:14].strip() or "C"
+        atoms.append(
+            LigandAtom(id=f"{el}{len(atoms)}", element=el, coord=(x, y, z))
+        )
+    return atoms
 
 
 def _parse_real_samples(outdir: Path, lig_atoms) -> List[BoltzSample]:
     """Build BoltzSample list from boltz's per-sample output. One
     directory walk feeds confidence + affinity + plddt parsing
     (previously 3+ rglobs; on a 30-sample run that's ~90 redundant
-    tree walks)."""
+    tree walks).
+
+    A1 fix: each confidence JSON is paired with its sibling
+    `*_model_<k>.{cif,pdb}` structure file and the HETATM coordinates
+    from THAT file populate the sample's `ligand_atoms`. Previously
+    every sample shared the same `lig_atoms` (parsed once from the
+    top-level structure), so `pose_consensus` saw zero variance even
+    though Boltz had produced N distinct diffusion poses on disk."""
+    from evoliez.features.ligand import relabel_to_canonical
+
     samples: List[BoltzSample] = []
     files = _scan_output_dir(outdir)
     conf_files = files["confidence_model"] or files["confidence_generic"]
@@ -511,6 +583,16 @@ def _parse_real_samples(outdir: Path, lig_atoms) -> List[BoltzSample]:
         except Exception:
             continue
     plddt_npzs = files["plddt_npz"]
+    # Index per-sample structure files by (parent_dir, model_idx) so a
+    # confidence_*_model_<k>.json finds its matching <name>_model_<k>.cif
+    # in the SAME predictions/<name>/ subdirectory. Cross-directory
+    # matching would silently mix up samples from different mutants.
+    struct_by_key: dict = {}
+    for sp in files.get("model_struct", []):
+        mi = _model_index(sp)
+        if mi is None:
+            continue
+        struct_by_key.setdefault((sp.parent, mi), sp)
     for i, jf in enumerate(conf_files):
         try:
             d = json.loads(jf.read_text())
@@ -526,7 +608,30 @@ def _parse_real_samples(outdir: Path, lig_atoms) -> List[BoltzSample]:
             0.8 * m.get("complex_plddt", 0.0) + 0.2 * m.get("iptm", 0.0),
         )
         rp = _load_plddt_from_list(plddt_npzs, i)
-        samples.append(BoltzSample(idx=i, ligand_atoms=lig_atoms, metrics=m,
+        # Per-sample ligand atoms (A1): prefer the matching model
+        # structure HETATMs; fall back to the ensemble lig_atoms when
+        # the file is missing/unreadable so we never produce an empty
+        # ligand (downstream features key on atoms.coord).
+        sample_lig = lig_atoms
+        mi = _model_index(jf)
+        if mi is not None:
+            sp = struct_by_key.get((jf.parent, mi))
+            if sp is not None:
+                parsed = _parse_ligand_atoms_from_struct(sp)
+                if parsed:
+                    locked_atoms, locked = relabel_to_canonical(
+                        parsed, lig_atoms
+                    )
+                    if locked_atoms:
+                        sample_lig = locked_atoms
+                        if not locked:
+                            log.debug(
+                                "boltz per-sample ligand id-lock unverified "
+                                "for %s (canonical=%d parsed=%d); coords "
+                                "adopted positionally",
+                                sp.name, len(lig_atoms), len(parsed),
+                            )
+        samples.append(BoltzSample(idx=i, ligand_atoms=sample_lig, metrics=m,
                                    residue_plddt=rp))
     samples.sort(key=lambda s: -s.metrics.get("confidence_score", 0.0))
     for j, s in enumerate(samples):
