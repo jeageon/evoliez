@@ -180,6 +180,51 @@ def test_compute_summary_basic_metrics(tmp_path: Path):
     assert s["md_timeout_rate"] == 0.0
 
 
+def test_compute_summary_excludes_catalytic_protected_from_denominator(
+    tmp_path: Path,
+):
+    """Benchmark mutations at catalytic / fixed positions are EXPECTED to
+    be blocked by the pipeline (s07 never proposes them) - counting them
+    as 'not recovered' is dishonest. With protected_positions=[285,333],
+    R285E + H333A drop out of the denominator and the chase labels them
+    'catalytic-protected'. The recall jumps because the dishonest miss
+    count is gone, even with zero pipeline changes."""
+    accepted = [
+        ("D222S", "Strong",     1.5),
+        ("D222N", "Strong",     1.3),
+        ("X1Y",   "Promising",  0.7),
+    ]
+    cand = _write_candidates(tmp_path / "fc.csv", accepted, [])
+    bench = _write_benchmark(
+        tmp_path / "b.csv",
+        [("D222S", "beneficial", 1.8),
+         ("D222N", "beneficial", 1.4),
+         ("R285E", "deleterious", 0.05),     # catalytic R285 (protected)
+         ("H333A", "deleterious", 0.05)],    # catalytic H333 (protected)
+    )
+
+    s_no = compute_summary(cand, bench)
+    assert s_no["n_deleterious"] == 2                 # before: both counted
+    assert s_no["n_benchmark_protected"] == 0
+
+    s = compute_summary(cand, bench, protected_positions=[285, 333])
+    assert s["n_benchmark_protected"] == 2
+    assert s["n_deleterious"] == 0                    # both excluded
+    assert s["n_beneficial"] == 2                     # D222S/N stay
+    assert sorted(s["protected_positions"]) == [285, 333]
+    # The per-mutation chase now labels R285E / H333A as protected and
+    # leaves them out of recall computation (denominator is beneficial).
+    by = {r["mutation"]: r for r in s["per_mutation"]}
+    assert by["R285E"]["protected"] is True
+    assert by["H333A"]["protected"] is True
+    assert "catalytic-protected" in by["R285E"]["evidence_class"]
+
+    from evoliez.ml.bench_summary import render_card_markdown, pass_fail
+    md = render_card_markdown("test", s, pass_fail(s))
+    assert "Catalytic-protected" in md and "285" in md and "333" in md
+    assert "catalytic-protected" in md.lower()        # chase row label
+
+
 def test_compute_summary_detects_p0a_regression(tmp_path: Path):
     """If a Reject row sneaks into accepted, reject_top_leakage_count > 0."""
     accepted = [

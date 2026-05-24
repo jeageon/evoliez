@@ -316,6 +316,15 @@ def bench_summary(
         False, "--strict",
         help="Exit non-zero when the pass/fail check fails.",
     ),
+    config: Optional[Path] = typer.Option(
+        None, "--config",
+        help="Optional pipeline YAML. When given, benchmark mutations whose "
+        "position is in input.catalytic_residues or input.fixed_residues are "
+        "EXCLUDED from the recall denominator and labelled "
+        "'catalytic-protected (excluded)' in the chase — the pipeline is "
+        "supposed to refuse those, so counting them as 'not recovered' is "
+        "dishonest.",
+    ),
 ) -> None:
     """Post-hoc benchmark summary for one enzyme card.
 
@@ -331,8 +340,21 @@ def bench_summary(
         compute_summary, pass_fail, render_card_markdown,
     )
 
+    protected: list = []
+    if config is not None:
+        from evoliez.config import load_config
+        from evoliez.stages.s01_input_preprocess import parse_residue_tokens
+        cfg = load_config(config)
+        ic = cfg.input
+        protected = sorted(set(
+            parse_residue_tokens(getattr(ic, "catalytic_residues", []) or [])
+        ) | set(
+            parse_residue_tokens(getattr(ic, "fixed_residues", []) or [])
+        ))
+
     summary = compute_summary(
         Path(candidates), Path(benchmark), md_root=md_root,
+        protected_positions=protected,
     )
     pf = pass_fail(summary)
     md = render_card_markdown(name, summary, pf)

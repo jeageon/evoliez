@@ -284,12 +284,22 @@ def _md_rate(rows: Sequence[Dict[str, Any]], target: str,
     return round(sum(1 for s in statuses if s == target) / len(statuses), 4)
 
 
+_MUT_RE = __import__("re").compile(r"^([A-Z])(\d+)([A-Z])$")
+
+
+def _mut_position(mutation: str) -> Optional[int]:
+    """`'D222S'` -> 222, multi-residue or malformed -> None."""
+    m = _MUT_RE.match((mutation or "").strip())
+    return int(m.group(2)) if m else None
+
+
 def compute_summary(
     final_candidates_csv: Path,
     benchmark_csv: Path,
     *,
     md_root: Optional[Path] = None,
     ks: Sequence[int] = DEFAULT_KS,
+    protected_positions: Optional[Sequence[int]] = None,
 ) -> Dict[str, Any]:
     """Compute the expert-recommended metric set for one enzyme card.
 
@@ -315,8 +325,20 @@ def compute_summary(
     n_accepted = len(accepted)
     n_blocked = len(blocked)
 
-    beneficial = [b["mutation"] for b in bench_rows if b["label"] == "beneficial"]
-    deleterious = [b["mutation"] for b in bench_rows
+    # Benchmark mutations at catalytic / fixed positions are EXPECTED to be
+    # blocked by the pipeline (s07 never proposes a mutation at a residue in
+    # `fixed_positions`). Counting them as "not recovered" is dishonest -
+    # the pipeline did the right thing. Split them out and exclude from the
+    # recall / percentile denominators; the per-mutation chase still lists
+    # them with a clear "expected-blocked (catalytic-protected)" reason.
+    protected = set(int(p) for p in (protected_positions or []) if p)
+    def _is_protected(b):
+        p = _mut_position(b.get("mutation", ""))
+        return p is not None and p in protected
+    bench_active = [b for b in bench_rows if not _is_protected(b)]
+    bench_protected = [b for b in bench_rows if _is_protected(b)]
+    beneficial = [b["mutation"] for b in bench_active if b["label"] == "beneficial"]
+    deleterious = [b["mutation"] for b in bench_active
                    if b["label"] in ("deleterious", "inactive")]
 
     # Clamp K-set to the accepted-list size so recall@30 on an 8-row
@@ -347,6 +369,7 @@ def compute_summary(
     per_mutation: List[Dict[str, Any]] = []
     for b in bench_rows:
         row = by_mut_full.get(b["mutation"])
+        prot = _is_protected(b)
         if row is None:
             per_mutation.append({
                 "mutation": b["mutation"],
@@ -354,8 +377,9 @@ def compute_summary(
                 "rank": None,
                 "percentile": 0.0,
                 "is_blocked": False,
-                "evidence_class": "",
+                "evidence_class": "catalytic-protected (excluded)" if prot else "",
                 "in_pipeline": False,
+                "protected": prot,
             })
         else:
             per_mutation.append({
@@ -366,6 +390,7 @@ def compute_summary(
                 "is_blocked": bool(row["is_blocked"]),
                 "evidence_class": row.get("evidence_class", "").strip(),
                 "in_pipeline": True,
+                "protected": prot,
             })
 
     return {
@@ -383,8 +408,11 @@ def compute_summary(
         "n_candidates_accepted": n_accepted,
         "n_candidates_blocked": n_blocked,
         "n_benchmark": len(bench_rows),
+        "n_benchmark_active": len(bench_active),
+        "n_benchmark_protected": len(bench_protected),
         "n_beneficial": len(beneficial),
         "n_deleterious": len(deleterious),
+        "protected_positions": sorted(protected),
         "per_mutation": per_mutation,
         "inputs": {
             "final_candidates_csv": str(final_candidates_csv),
@@ -498,6 +526,14 @@ def render_card_markdown(name: str, summary: Dict[str, Any],
         f"{summary['n_benchmark']} "
         f"({summary['n_beneficial']} / {summary['n_deleterious']}) |",
     ]
+    n_prot = int(summary.get("n_benchmark_protected", 0))
+    if n_prot:
+        prot_pos = summary.get("protected_positions", [])
+        lines.append(
+            f"| Catalytic-protected benchmark rows (excluded from "
+            f"recall denominator) | {n_prot} at positions "
+            f"{','.join(str(p) for p in prot_pos)} |"
+        )
     for k, v in sorted(summary["beneficial_recall_at_k"].items()):
         lines.append(f"| Recall@{k} | {v:.3f} |")
     lines.extend([
@@ -529,7 +565,10 @@ def render_card_markdown(name: str, summary: Dict[str, Any],
                   "|---|---|---|---|---|---|"])
     for r in summary["per_mutation"]:
         rank = r["rank"] if r["in_pipeline"] else "—"
-        blocked = "yes" if r["is_blocked"] else ""
+        if r.get("protected"):
+            blocked = "catalytic-protected"
+        else:
+            blocked = "yes" if r["is_blocked"] else ""
         lines.append(
             f"| {r['mutation']} | {r['label']} | {rank} | "
             f"{r['percentile']:.1f} | {blocked} | {r['evidence_class']} |"
