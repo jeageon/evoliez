@@ -95,7 +95,14 @@ data_scale:
   mutant_diffusion_samples: 4          # was 10
   top_for_redocking: 100               # was 500
   top_for_stability: 30                # was 100
-  top_for_md: 5                        # was 30 — KEY cheap-run knob
+  # 5 → 12: cheap-run-2 finding. With top_for_md=5, only 5 candidates
+  # get real Boltz+MD scoring, and that's exactly where the
+  # Strong-evidence boost comes from. D222 family (binding-site
+  # candidates) consistently lose the top-5 fight against G336/T144
+  # (chemistry_rules favourites with stronger pre-Boltz signal). At
+  # 12, the binding-site reserved-slots floor (n_reserve=3) can
+  # guarantee 3 D222-family members reach real MD evaluation.
+  top_for_md: 12                       # was 30 — KEY cheap-run knob
   final_library: 24                    # was 96
 
 mutation_generation:
@@ -117,7 +124,13 @@ reranking:
   model: xgboost
   use_experimental_labels: false
   top_for_redocking: 100
-  top_for_md: 5                              # mirror data_scale
+  top_for_md: 12                             # mirror data_scale
+  # Reserved slots per known_binding_site position. Bumped to 3 so
+  # the Tishkov D222S/H/N/T/Q/A family (all 6 at the same position)
+  # can land MULTIPLE members in top_for_redocking - the 1-per-position
+  # default only saved D222Q from being cut, leaving the other five
+  # D222 mutations unevaluated.
+  binding_site_reserved_per_position: 3
 
 validation:
   redocking:
@@ -130,13 +143,22 @@ validation:
     protocol_level: 2
     solvent: implicit
     production_ns: 0.5                       # was 2.0 — KEY cheap-run knob
-    top_candidates: 5                        # was 30
+    # Mirror data_scale.top_for_md (5 → 12). Real-MD wall time grows
+    # linearly with this; at 12 × ~150s × ~1.6 avg replicas ≈ 50 min
+    # of MD, vs ~25 min at 5. Still well under "production" scale (30
+    # at 3 replicas each = 270 min on real-prod settings).
+    top_candidates: 12                       # was 30
     # P0 from the expert validation plan: per-candidate subprocess
     # isolation + hard timeout so an OpenMM / CUDA leak or hang on
     # one candidate can't take the stage with it. Cheap-run validates
     # this path under real OpenMM load.
     subprocess_isolation: true
     subprocess_timeout_seconds: 900          # 15 min/candidate for cheap-run
+    # s09→s10 floor: guarantee at least 2 binding-site candidates per
+    # position reach real MD. Pairs with rerank's reservation (3 at
+    # s08) so the D222 family doesn't lose the top-12 fight against
+    # chemistry_rules-favoured non-binding-site mutations.
+    binding_site_reserved_per_position: 2
 
 scoring:
   gnn: 0.0                                   # disabled with gnn.enabled=false

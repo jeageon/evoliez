@@ -183,6 +183,18 @@ class MDConfig(_Base):
     # legitimate long MD run isn't killed; tune down per enzyme once
     # cheap-run wall times are known.
     subprocess_timeout_seconds: int = 1800
+    # Mirrors RerankConfig.binding_site_reserved_per_position but for
+    # the s09→s10 transition. Cheap-run-3 finding: the +0.6 prior in
+    # s08 lifts binding-site candidates into top_for_redocking, but
+    # the s09→s10 cut at top_candidates=5 is by ml_score, and that
+    # still favours chemistry_rules favourites. Without an explicit
+    # reservation here, the only way for a binding-site candidate to
+    # reach real Boltz+MD evaluation is to OUTSCORE the chemistry
+    # picks — which is exactly what we can't expect at cheap scale
+    # (8 Boltz samples / mock homologs). 0 = off; cheap configs ship
+    # ≥1 so the D222-family-style benchmark mutations actually get
+    # the Strong-evidence boost from real MD.
+    binding_site_reserved_per_position: int = 0
 
 
 class ValidationConfig(_Base):

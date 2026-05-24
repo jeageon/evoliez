@@ -18,6 +18,75 @@ from evoliez.stages.s05_docking import redock_with
 from evoliez.types import Candidate, Complex, LigandAtom, Pose, ProteinStructure
 
 
+def _apply_binding_site_floor(
+    ranked: List[Candidate],
+    *,
+    top_n: int,
+    binding_site: set,
+    n_reserve: int,
+):
+    """For each ``binding_site`` position with fewer than ``n_reserve``
+    candidates in the current top-N, promote the best-ranked tail
+    candidate touching that position, displacing the lowest-ranked
+    top-N entry that is NOT itself covering a binding-site position.
+
+    Same shape as
+    :func:`evoliez.stages.s08_reranker._promote_binding_site_reservations`
+    but operates on the s09→s10 transition (post nonmd_validation, pre
+    real MD). Returns ``(new_top, n_promoted)``.
+    """
+    if n_reserve <= 0 or not binding_site or not ranked:
+        return ranked[:top_n], 0
+
+    def _positions(c):
+        return {m.position for m in c.mutations}
+
+    top = list(ranked[:top_n])
+    tail = list(ranked[top_n:])
+
+    # Count current coverage per binding-site position in top-N.
+    coverage = {pos: 0 for pos in binding_site}
+    for c in top:
+        for p in _positions(c) & binding_site:
+            coverage[p] += 1
+
+    n_promoted = 0
+    for pos in sorted(binding_site):
+        need = n_reserve - coverage[pos]
+        while need > 0:
+            # Best-scoring tail candidate touching this position.
+            cand_promote = next(
+                (c for c in tail if pos in _positions(c)),
+                None,
+            )
+            if cand_promote is None:
+                break
+            # Lowest-scoring top entry NOT covering ANY binding site →
+            # displace it. If everyone in top covers some binding site,
+            # displace the lowest top regardless (keeps top_n size stable).
+            displace_idx = next(
+                (i for i in range(len(top) - 1, -1, -1)
+                 if not (_positions(top[i]) & binding_site)),
+                len(top) - 1,
+            )
+            top[displace_idx] = cand_promote
+            tail.remove(cand_promote)
+            coverage[pos] += 1
+            need -= 1
+            n_promoted += 1
+
+    # Resort by ml_score so the new top stays rank-ordered.
+    top.sort(
+        key=lambda c: (
+            c.scores.get("ml_score", 0.0)
+            + c.scores.get("redocking_consistency", 0.0)
+            - 0.2 * max(0.0, c.scores.get("ddg_fold", 0.0))
+        ),
+        reverse=True,
+    )
+    return top, n_promoted
+
+
 def _mutant_complex(wt: Complex, cand: Candidate) -> Complex:
     """Approximate mutant complex: WT geometry with substituted residue
     identities (coords unchanged). Cheap proxy for pre-MD filtering; MD then
@@ -246,7 +315,31 @@ class NonMDValidationStage(Stage):
             ),
             reverse=True,
         )
-        md_top = kept[: ctx.config.validation.md.top_candidates]
+        top_n = ctx.config.validation.md.top_candidates
+        md_top = kept[: top_n]
+        # Binding-site reserved-slots floor (mirrors s08_reranker.
+        # _promote_binding_site_reservations). Guarantees at least N
+        # candidates per known_binding_site position reach real MD even
+        # when the s08 ml_score puts them below the top_candidates cut.
+        # Without this, cheap-run cannot evaluate the literature D222
+        # family with real Boltz+MD because chemistry_rules favourites
+        # consistently outscore binding-site mutations at cheap scale.
+        n_reserve_md = int(getattr(
+            ctx.config.validation.md,
+            "binding_site_reserved_per_position", 0,
+        ))
+        binding_site = set(ctx.get("known_binding_site", []) or [])
+        if n_reserve_md > 0 and binding_site and kept:
+            md_top, n_promoted = _apply_binding_site_floor(
+                ranked=kept, top_n=top_n,
+                binding_site=binding_site, n_reserve=n_reserve_md,
+            )
+            if n_promoted:
+                self.log.info(
+                    "MD binding-site reserved-slots: promoted %d "
+                    "candidate(s) into top-%d (n_reserve=%d per position)",
+                    n_promoted, top_n, n_reserve_md,
+                )
         ctx.put("candidates", candidates)
         ctx.put("validated_candidates", kept)
         ctx.put("md_candidates", md_top)

@@ -141,6 +141,10 @@ validation:
     # cheap-run validation (scripts/server_cheap_run_psefdh.sh).
     subprocess_isolation: true
     subprocess_timeout_seconds: 3600         # 1 h/candidate at production ns
+    # Guarantee at least 3 binding-site candidates per known_binding_site
+    # position reach real MD. Same rationale as the cheap config; at
+    # production scale (top_candidates=30) there's plenty of room.
+    binding_site_reserved_per_position: 3
 
 scoring:
   gnn: 1.5                               # EvoLigand-GNN as a primary term
