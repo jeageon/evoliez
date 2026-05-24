@@ -375,10 +375,16 @@ MD_ARG=()
 [ -d "$MD_DIR" ] && MD_ARG=( "--md-root" "$MD_DIR" )
 
 set +e
+# Pass --config so bench-summary can read input.catalytic_residues +
+# input.fixed_residues and exclude them from the recall denominator
+# (commit 1098e5e). Without --config, R285 / H333-class mutations
+# stay in the denominator and silently drag recall down even though
+# the pipeline correctly *designed* them as protected.
 evoliez bench-summary \
     --candidates "$CAND_CSV" \
     --benchmark  "$BENCH" \
     --name       "$NAME" \
+    --config     "$CFG" \
     ${MD_ARG[@]+"${MD_ARG[@]}"} \
     --out        "$SUMMARY_MD" \
     --strict
