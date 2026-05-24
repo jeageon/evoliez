@@ -101,6 +101,62 @@ _FEATURE_KEYS = [
 ]
 
 
+def _promote_binding_site_reservations(top, candidates, binding_site, n_reserve):
+    """Guarantee `n_reserve` candidates per `known_binding_site` position
+    survive the top_for_redocking cut, even if the heuristic score put them
+    below. Cheap-run diagnosis: even with the +0.6 at_binding_site prior the
+    Tishkov D222S/H/A/N/T/Q family was being cut by s08 (~conservation
+    penalty), giving recall@10 = 0. This is the FLOOR (the prior was the
+    lift); together they cover the recurring D222 miss.
+
+    Logic: for each binding-site position with deficit, find the
+    best-ranked tail candidate (assumed pre-sorted by ml_score desc)
+    touching that position and swap it in for the lowest-ranked top entry
+    that is NOT itself a binding-site reserver. Returns (new_top, n_promoted).
+    No-op when n_reserve <= 0 or binding_site is empty.
+    """
+    if n_reserve <= 0 or not binding_site:
+        return list(top), 0
+    binding_site = {int(p) for p in binding_site}
+    top = list(top)
+    top_ids = {id(c) for c in top}
+    in_top: Dict[int, int] = {p: 0 for p in binding_site}
+    for c in top:
+        for m in c.mutations:
+            if m.position in binding_site:
+                in_top[m.position] = in_top.get(m.position, 0) + 1
+    promoted = 0
+    for pos in sorted(binding_site):
+        deficit = n_reserve - in_top.get(pos, 0)
+        if deficit <= 0:
+            continue
+        for c in candidates:                              # pre-sorted desc
+            if id(c) in top_ids:
+                continue
+            if any(m.position == pos for m in c.mutations):
+                displ = next(
+                    (x for x in sorted(
+                        top, key=lambda x: x.scores.get("ml_score", 0.0))
+                     if not any(m.position in binding_site
+                                for m in x.mutations)),
+                    None,
+                )
+                if displ is None:
+                    break
+                top.remove(displ)
+                top_ids.discard(id(displ))
+                top.append(c)
+                top_ids.add(id(c))
+                in_top[pos] = in_top.get(pos, 0) + 1
+                promoted += 1
+                deficit -= 1
+                if deficit <= 0:
+                    break
+    if promoted:
+        top.sort(key=lambda c: -c.scores.get("ml_score", 0.0))
+    return top, promoted
+
+
 class RerankerStage(Stage):
     name = "s08_reranker"
 
@@ -241,7 +297,19 @@ class RerankerStage(Stage):
             self._score_heuristic(candidates)
 
         candidates.sort(key=lambda c: -c.scores.get("ml_score", 0.0))
-        top = candidates[: rcfg.top_for_redocking]
+        top = list(candidates[: rcfg.top_for_redocking])
+
+        n_reserve = max(0, int(getattr(rcfg, "binding_site_reserved_per_position", 1)))
+        top, promoted = _promote_binding_site_reservations(
+            top, candidates, binding_site, n_reserve,
+        )
+        if promoted:
+            self.log.info(
+                "binding-site reserved-slots: promoted %d candidate(s) "
+                "into top-%d (n_reserve=%d per position)",
+                promoted, rcfg.top_for_redocking, n_reserve,
+            )
+
         ctx.put("candidates", candidates)
         ctx.put("redock_candidates", top)
         ctx.persist_meta("reranker_model", rcfg.model if labels else "heuristic")

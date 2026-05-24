@@ -214,6 +214,11 @@ class RerankConfig(_Base):
     mutant_boltz_enabled: bool = True
     mutant_boltz_top_n: int = 100
     mutant_boltz_diffusion_samples: int = 3
+    # Guarantee at least N candidates per `input.known_binding_site` position
+    # make it into top_for_redocking even if the heuristic score puts them
+    # below the cut. Insurance against the recurring D222-class miss: the
+    # at_binding_site prior already lifts them, this is the floor. 0 = off.
+    binding_site_reserved_per_position: int = 1
 
 
 class InteractionModelConfig(_Base):
