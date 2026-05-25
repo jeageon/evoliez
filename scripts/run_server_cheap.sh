@@ -227,8 +227,13 @@ python -c "from evoliez.adapters.openmm_subprocess import run_md_in_subprocess" 
     || die "openmm_subprocess module STILL missing after pip install -e ."
 python -c "from evoliez.ml.bench_summary import compute_summary" \
     || die "bench_summary module missing"
-evoliez --help | grep -q bench-summary \
-    || die "bench-summary subcommand not registered"
+# More robust than `evoliez --help | grep bench-summary` — typer wraps
+# help output to terminal width, so the literal "bench-summary" string
+# can be hyphenated when the column is narrow. Invoking the subcommand
+# directly with --help returns 0 if it exists, non-zero otherwise,
+# independent of terminal formatting.
+evoliez bench-summary --help >/dev/null 2>&1 \
+    || die "bench-summary subcommand not registered (try: pip install -e . --no-deps)"
 ok "all expected new modules + CLI commands resolve"
 
 say "Phase 0d — target FASTA + cheap config sanity"
