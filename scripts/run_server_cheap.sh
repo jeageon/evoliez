@@ -341,26 +341,35 @@ if [ "${ALL_REAL:-0}" = "1" ]; then
     warn "ALL_REAL=1 set — running every stage at backend=real (needs UniRef30 DB)"
 fi
 
-# RERANK_ONLY=1 → re-run JUST the final-ranking stage on top of the
-# existing per-stage output (Boltz / MD outputs on disk are unchanged).
-# Use this when a bug fix touched ONLY s11_final or io/report, so we
-# don't re-pay the 2-hour Boltz+MD cost just to regenerate the CSV.
-# Wall time: ~2 seconds.
-if [ "${RERANK_ONLY:-0}" = "1" ]; then
-    EVOLIEZ_STAGE_OVERRIDES+=( --from s11_final --resume )
-    warn "RERANK_ONLY=1 — re-running only s11_final on existing pipeline output"
-    echo "   expected wall time: <5 s (no Boltz / MD re-execution)"
+# BENCH_ONLY=1 → skip Phase 2 entirely; re-score the EXISTING
+# final_candidates.csv via Phase 3 only. Use when a bug fix touched
+# ONLY the bench-summary scorer / thresholds / cheap profile, so we
+# don't need to re-run the pipeline at all. Wall time: ~1 s.
+#
+# (RERANK_ONLY=1 was the old name for this — but `evoliez run
+# --from s11_final --resume` doesn't work in practice because s11
+# requires upstream in-memory `candidates` that aren't reloaded from
+# disk. BENCH_ONLY skips the pipeline entirely instead.)
+if [ "${BENCH_ONLY:-${RERANK_ONLY:-0}}" = "1" ]; then
+    warn "BENCH_ONLY=1 — skipping Phase 2 entirely; rescoring existing CSV"
+    echo "   expected wall time: <5 s (Phase 3 only)"
+    SKIP_PIPELINE_RUN=1
 else
     echo "   expected wall time: 30-60 min on 1 A6000 (PseFDH cheap)"
+    SKIP_PIPELINE_RUN=0
 fi
 
-START_TS="$(date +%s)"
-if ! evoliez run -c "$CFG" "${EVOLIEZ_STAGE_OVERRIDES[@]}"; then
-    die "evoliez run exited non-zero. Inspect the log at $_LOG_FILE."
+if [ "$SKIP_PIPELINE_RUN" = "0" ]; then
+    START_TS="$(date +%s)"
+    if ! evoliez run -c "$CFG" "${EVOLIEZ_STAGE_OVERRIDES[@]}"; then
+        die "evoliez run exited non-zero. Inspect the log at $_LOG_FILE."
+    fi
+    END_TS="$(date +%s)"
+    ELAPSED=$(( END_TS - START_TS ))
+    ok "pipeline finished in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
+else
+    ok "Phase 2 skipped (BENCH_ONLY)"
 fi
-END_TS="$(date +%s)"
-ELAPSED=$(( END_TS - START_TS ))
-ok "pipeline finished in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
 
 CAND_CSV="$OUTPUT_DIR/reports/final_candidates.csv"
 [ -f "$CAND_CSV" ] || die "no $CAND_CSV — pipeline produced no ranking"
