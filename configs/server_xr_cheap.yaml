@@ -24,21 +24,50 @@ input:
     id: NADPH_cofactor
     type: cofactor
     value: NADP                           # resolver picks reduced form via cofactor_redox below
-  catalytic_residues: ["Y51", "K80", "D46", "H110"]
-  fixed_residues:    ["Y51", "K80", "D46", "H110"]
+  # IMPORTANT: residue positions are UniProt O74237 1-based, NOT
+  # Kavanagh / Petschacher paper numbering. The paper-numbered values
+  # (Y51 / K80 / D46 / H110 — Kavanagh 2002 PNAS; S277 — Petschacher
+  # 2008) DO NOT match this UniProt sequence. UniProt-authoritative
+  # equivalents (verified via scripts/fetch_target_fasta.sh O74237):
+  #   Kavanagh Y51 → UniProt Y52 (ACT_SITE: Proton donor)
+  #   Kavanagh K80 → UniProt K81 (SITE: lowers pKa of active-site Tyr)
+  #   Kavanagh H110 → UniProt H114 (BINDING: substrate)
+  #   Petschacher S277 → UniProt L277 (paper used a different strain
+  #     variant; the cofactor-switch loop K274/N276 is the same)
+  # Y52 + K81 + H114 are the catalytic triad in this numbering; D46
+  # has no UniProt annotation here and isn't included as catalytic.
+  catalytic_residues: ["Y52", "K81", "H114"]
+  fixed_residues:    ["Y52", "K81", "H114"]
   known_binding_site:
-    # AKR-family cofactor (NADP/H)-binding loop + catalytic tetrad
-    - "D46"
-    - "Y51"
-    - "K80"
-    - "H110"
-    - "W23"       # substrate-pocket Trp (Kratzer/Nidetzky 2006)
-    - "F128"      # pocket hydrophobic packing
-    # Cofactor-specificity loop (Petschacher 2008 K274R/N276D/S277R)
+    # AKR-superfamily catalytic + substrate-binding residues (per
+    # UniProt O74237 BINDING / SITE / ACT_SITE features).
+    - "Y52"      # ACT_SITE Proton donor
+    - "K81"      # SITE Lowers pKa of active Tyr
+    - "H114"     # BINDING substrate
+    # NAD/NADP-binding loop (UniProt BINDING NAD+ annotations)
+    - "S169"
+    - "N170"
+    - "S218"
+    - "S219"
+    - "F220"
+    - "G221"
+    - "P222"
+    - "Q223"
+    - "S224"
+    - "F225"
+    - "V226"
+    - "E227"
+    # Cofactor-specificity loop (Petschacher 2008 K274R/N276D switch +
+    # neighbouring UniProt BINDING residues). Petschacher's S277 is
+    # L277 in O74237 — engineering that position is still meaningful
+    # but the WT letter is L, not S.
     - "K274"
+    - "S275"
     - "N276"
-    - "S277"
-    - "P275"
+    - "L277"
+    - "P278"
+    - "E279"
+    - "R280"
   cofactor: NADP
   cofactor_redox: reduced                  # WT XR uses NADPH; engineered prefers NADH
   target_ph: 7.4

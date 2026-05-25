@@ -1,15 +1,15 @@
 mutation,label,activity,source
-K274R,beneficial,1.8,Petschacher & Nidetzky 2008 — Candida tenuis XR triple mutant (K274R/N276D/S277R) breaks NADPH preference; K274R is the primary specificity-shift residue — PMID 18752648
-N276D,beneficial,1.4,Petschacher & Nidetzky 2008 — Candida tenuis XR cofactor-binding pocket N→D charge introduction — PMID 18752648
-S277R,beneficial,1.3,Petschacher & Nidetzky 2008 — Candida tenuis XR; additive with K274R/N276D — PMID 18752648
-K270R,beneficial,1.5,Liang/Bao/Jin 2007 Biotechnol Bioeng — Pichia stipitis XR equivalent of the Candida K274R switch; NADH preference engineered — PMID 17436318
-K270M,beneficial,1.2,Bengtsson/Karhumaa/Hahn-Hagerdal 2009 Biotechnol Biofuels — P. stipitis XR alternative hydrophobic swap also lifts NADH activity — PMC2698887
-N272D,beneficial,1.3,Watanabe & Kodaki 2007 J Biol Chem — P. stipitis XR mutant with engineered NADH preference (combined with K270R) — PMID 17331942
-P275L,neutral,1.0,Petschacher/Nidetzky 2008 supplementary — neighbouring Pro near cofactor loop; modest effect — PMID 18752648
-S275A,neutral,1.0,Liang/Bao/Jin 2007 control mutation — adjacent residue conservative swap — PMID 17436318
-Y51F,deleterious,0.05,Kavanagh 2002 PNAS — aldose reductase / XR family conserved catalytic Tyr; ablation kills hydride transfer — PMID 12446840
-K80M,deleterious,0.05,Kavanagh 2002 PNAS — AKR-superfamily conserved Lys that lowers Tyr pKa; ablation kills activity — PMID 12446840
-D46N,deleterious,0.10,Kavanagh 2002 PNAS — AKR-superfamily Asp residue of catalytic Tyr-Lys-Asp-His tetrad — PMID 12446840
-H110N,deleterious,0.10,Kavanagh 2002 PNAS — catalytic-tetrad His of AKR superfamily — PMID 12446840
-W23A,deleterious,0.15,Kratzer/Nidetzky 2006 FEBS J — substrate-binding Trp on the xylose face; ablation breaks substrate orientation — PMID 16367942
-F128A,deleterious,0.20,Kratzer/Nidetzky 2006 FEBS J — hydrophobic packing of the substrate pocket — PMID 16367942
+K274R,beneficial,1.8,Petschacher & Nidetzky 2008 — UniProt K274 = paper K274; primary cofactor-switch residue — PMID 18752648
+N276D,beneficial,1.4,Petschacher & Nidetzky 2008 — UniProt N276 = paper N276; charge introduction at switch loop — PMID 18752648
+L277R,beneficial,1.3,Petschacher & Nidetzky 2008 — UniProt L277 corresponds to paper S277R (strain-variant numbering); additive switch-loop mutation — PMID 18752648
+K274M,beneficial,1.2,Bengtsson 2009 Biotechnol Biofuels — alternative hydrophobic swap at the cofactor-switch residue — PMC2698887
+N276H,beneficial,1.2,Liang/Bao/Jin 2007 family-equivalent NADH-preference variant at the switch loop — PMID 17436318
+S275A,neutral,1.0,Liang/Bao/Jin 2007 control — adjacent residue conservative swap — PMID 17436318
+P278A,neutral,1.0,Petschacher 2008 supplementary — neighbouring Pro near cofactor loop; modest effect — PMID 18752648
+F225A,neutral,1.0,UniProt BINDING NAD+ adjacent — conservative aromatic→small swap — UniProt O74237
+Y52F,deleterious,0.05,Kavanagh 2002 PNAS — UniProt Y52 = paper Y51 (ACT_SITE Proton donor); ablation kills hydride transfer — PMID 12446840
+K81M,deleterious,0.05,Kavanagh 2002 PNAS — UniProt K81 = paper K80 (SITE lowers Tyr pKa); ablation kills activity — PMID 12446840
+H114N,deleterious,0.10,Kavanagh 2002 PNAS — UniProt H114 = paper H110 (BINDING substrate); catalytic-tetrad His ablation — PMID 12446840
+Y52A,deleterious,0.02,Kavanagh 2002 PNAS — proton donor full ablation — PMID 12446840
+K81A,deleterious,0.02,Kavanagh 2002 PNAS — pKa Lys full ablation — PMID 12446840
+H114A,deleterious,0.05,Kavanagh 2002 PNAS — substrate-binding His full ablation — PMID 12446840

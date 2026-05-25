@@ -245,6 +245,67 @@ fi
     && ok "FASTA at $FASTA_PATH ($(wc -l < "$FASTA_PATH") lines)" \
     || warn "no FASTA at $FASTA_PATH; config may rely on a different path"
 
+# CHEAP-RUN-6 LESSON: a config can pass YAML validation but silently
+# carry wrong residue numbering (e.g. literature paper numbering vs.
+# UniProt numbering). When this happens, evoliez warns at s01 but
+# proceeds — burning 1-3 hours of Boltz+MD on a wrong-position run.
+# Fail HARD here instead. Same check evoliez doctor does post-Phase-1,
+# pulled forward so we never waste pipeline time.
+if [ -f "$FASTA_PATH" ]; then
+    say "Phase 0d-2 — residue-token validation against target.fasta"
+    PYRES=$(python - "$CFG" "$FASTA_PATH" <<'PYEOF'
+import sys, yaml
+from pathlib import Path
+
+cfg_path, fasta_path = sys.argv[1], sys.argv[2]
+cfg = yaml.safe_load(open(cfg_path))
+seq = "".join(
+    l.strip() for l in open(fasta_path)
+    if l and not l.startswith(">")
+)
+n = len(seq)
+mismatches = []
+for kind in ("catalytic_residues", "fixed_residues", "known_binding_site"):
+    for tok in cfg.get("input", {}).get(kind, []) or []:
+        try:
+            wt, pos = tok[0], int(tok[1:])
+        except ValueError:
+            continue
+        if pos < 1 or pos > n:
+            mismatches.append(f"  {kind:>20} {tok}  position out of range (seq len {n})")
+            continue
+        actual = seq[pos - 1]
+        if actual != wt:
+            mismatches.append(f"  {kind:>20} {tok}  asserts {wt} but seq has {actual} at position {pos}")
+if mismatches:
+    print("MISMATCH")
+    for m in mismatches[:30]:
+        print(m)
+    if len(mismatches) > 30:
+        print(f"  ... ({len(mismatches) - 30} more)")
+else:
+    print("OK")
+PYEOF
+)
+    if echo "$PYRES" | head -1 | grep -q "^MISMATCH$"; then
+        echo "$PYRES" | tail -n +2
+        die "$(cat <<EOF
+residue tokens in $CFG don't match $FASTA_PATH.
+
+This is the cheap-run-6 lesson: literature paper numbering often
+DOESN'T match UniProt numbering. Run
+
+    bash scripts/fetch_target_fasta.sh $UNIPROT $SLUG <residue tokens>
+
+and look at the "UniProt feature annotations (authoritative)"
+section it prints — copy those positions into $CFG and re-run.
+Do NOT proceed with a wrong-numbering run; it burns 1-3 hours.
+EOF
+)"
+    fi
+    ok "residue tokens all match $FASTA_PATH"
+fi
+
 # Auto-rewrite output_dir for the current user (jglee → $USER), idempotent.
 if grep -q "/mnt/data/jglee/" "$CFG" && [ "$USER" != "jglee" ]; then
     sed -i.bak "s|/mnt/data/jglee/|/mnt/data/${USER}/|g" "$CFG"
