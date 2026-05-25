@@ -416,7 +416,7 @@ if [ "${BENCH_ONLY:-${RERANK_ONLY:-0}}" = "1" ]; then
     echo "   expected wall time: <5 s (Phase 3 only)"
     SKIP_PIPELINE_RUN=1
 else
-    echo "   expected wall time: 30-60 min on 1 A6000 (PseFDH cheap)"
+    echo "   expected wall time: 30-90 min on 1 A6000 ($NAME)"
     SKIP_PIPELINE_RUN=0
 fi
 
