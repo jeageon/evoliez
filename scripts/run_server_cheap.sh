@@ -474,31 +474,48 @@ _check "final_report.md" "$OUTPUT_DIR/reports/final_report.md" 200
 _check "ml_datasets/" "$OUTPUT_DIR/ml_datasets"
 _check "complexes/boltz (WT)" "$OUTPUT_DIR/complexes/boltz"
 
-# Per-candidate MD outputs — count MD subprocess dirs with both
-# analysis.json AND a non-empty trajectory.
+# Per-candidate MD outputs — count PRIMARY candidate dirs with a
+# non-empty analysis.json. Skip replica dirs (mut_XXXXX_r1 / _r2):
+# by design they hold replica trajectories but only the primary dir
+# gets the to_json() summary. Counting them as "missing" would
+# falsely flag 6 of 18 dirs on a 3-final-tier-replicas run.
+#
+# `set +e` around this block: a bad bash glob OR an `ls | wc -l`
+# pipeline can pipefail-kill the script silently. Disable strict
+# mode for the inventory check; re-enable after.
+set +e
 if [ -d "$OUTPUT_DIR/md" ]; then
-    _ok_md=0; _bad_md=0
+    _ok_md=0; _bad_md=0; _replica=0
     for d in "$OUTPUT_DIR/md/"*/; do
-        [ -f "$d/analysis.json" ] || { _bad_md=$((_bad_md+1)); continue; }
-        [ -s "$d/analysis.json" ] || { _bad_md=$((_bad_md+1)); continue; }
-        _ok_md=$((_ok_md+1))
+        bname="$(basename "$d")"
+        # Skip replicas (anything ending in _r<digit>); they don't
+        # carry their own analysis.json by design.
+        case "$bname" in *_r[0-9]*) _replica=$((_replica + 1)); continue ;; esac
+        if [ ! -f "$d/analysis.json" ] || [ ! -s "$d/analysis.json" ]; then
+            _bad_md=$((_bad_md + 1)); continue
+        fi
+        _ok_md=$((_ok_md + 1))
     done
     if [ "$_bad_md" -gt 0 ]; then
-        warn "md/  $_ok_md ok, $_bad_md missing/empty analysis.json"
+        warn "md/  $_ok_md primary ok / $_bad_md primary missing analysis.json (+ $_replica replica dirs)"
         _missing=$((_missing + 1))
     else
-        ok "md/  $_ok_md candidates, all with analysis.json"
+        ok "md/  $_ok_md primary candidates ok (+ $_replica replica dirs)"
     fi
 else
     warn "MISSING  md/ directory ($OUTPUT_DIR/md)"
     _missing=$((_missing + 1))
 fi
 
-# Per-candidate mutant Boltz outputs.
+# Per-candidate mutant Boltz outputs. Boltz writes either flat files
+# (mut_NNNNN_*.pdb) or per-input subdirs (mut_NNNNN/) depending on
+# config — count both. `find` returns 0 on no-match (unlike ls), so
+# it's pipefail-safe.
 if [ -d "$OUTPUT_DIR/complexes/mutant_boltz" ]; then
-    _n_mb=$(ls -d "$OUTPUT_DIR/complexes/mutant_boltz/mut_"*/ 2>/dev/null | wc -l)
+    _n_mb=$(find "$OUTPUT_DIR/complexes/mutant_boltz" -maxdepth 1 \
+                 -name "mut_*" 2>/dev/null | wc -l)
     if [ "$_n_mb" -gt 0 ]; then
-        ok "complexes/mutant_boltz  $_n_mb candidates"
+        ok "complexes/mutant_boltz  $_n_mb entries (mix of files / dirs)"
     else
         warn "complexes/mutant_boltz empty"
         _missing=$((_missing + 1))
@@ -507,6 +524,7 @@ else
     warn "MISSING  complexes/mutant_boltz/"
     _missing=$((_missing + 1))
 fi
+set -e
 
 if [ "$_missing" -gt 0 ]; then
     warn "$_missing artefact(s) missing or too small — bench-summary may"
