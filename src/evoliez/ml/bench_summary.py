@@ -214,15 +214,21 @@ def _bottom_quintile_rate(
     deleterious_muts: Sequence[str],
     ranked_rows: Sequence[Dict[str, Any]],
     quintile: float = 0.20,
-) -> float:
+) -> Optional[float]:
     """Fraction of deleterious mutations that land in the bottom
     ``quintile`` of the full ranking (default = bottom 20 %).
 
     Mutations missing from the ranking get a rank of N+1 (i.e. land in
     the bottom by definition).
+
+    Returns ``None`` (not 0.0) when there are no deleterious rows to
+    evaluate. The previous 0.0 return tripped the pass/fail check on
+    enzymes whose entire deleterious set was catalytic-protected (e.g.
+    XR: all 6 deleterious rows at Y52/K81/H114, all excluded), making
+    them FAIL on a metric that literally couldn't be measured.
     """
     if not deleterious_muts:
-        return 0.0
+        return None
     n = len(ranked_rows)
     by_mut = {r["mutation"]: r["rank"] for r in ranked_rows}
     threshold = n * (1.0 - quintile)
@@ -236,9 +242,12 @@ def _bottom_quintile_rate(
 def _mean_percentile(
     muts: Sequence[str],
     ranked_rows: Sequence[Dict[str, Any]],
-) -> float:
+) -> Optional[float]:
+    """Mean rank percentile (100 = best, 0 = worst). Returns ``None``
+    when there are no mutations to evaluate so the markdown reads
+    "N/A" instead of a misleading 0.0."""
     if not muts:
-        return 0.0
+        return None
     n = len(ranked_rows)
     by_mut = {r["mutation"]: r["rank"] for r in ranked_rows}
     pcts = [
@@ -520,10 +529,16 @@ def pass_fail(
         failures.append(
             f"recall@30 = {r30:.3f} < {th['min_recall_at_30']}"
         )
-    if summary["deleterious_bottom_quintile_rate"] < th["min_deleterious_bottom_quintile"]:
+    # `deleterious_bottom_quintile_rate` is None when there are no
+    # active deleterious rows to evaluate (XR case: every deleterious
+    # is at a catalytic-protected position). Skip the threshold check
+    # in that case rather than failing on a metric that can't be
+    # measured — the operator sees "N/A" in the markdown instead.
+    del_bq = summary["deleterious_bottom_quintile_rate"]
+    if del_bq is not None and del_bq < th["min_deleterious_bottom_quintile"]:
         failures.append(
             f"deleterious bottom-quintile rate = "
-            f"{summary['deleterious_bottom_quintile_rate']:.3f} "
+            f"{del_bq:.3f} "
             f"< {th['min_deleterious_bottom_quintile']}"
         )
     if summary["valid_top_candidate_rate"] < th["min_valid_top_rate"]:
@@ -604,13 +619,17 @@ def render_card_markdown(name: str, summary: Dict[str, Any],
         )
     for k, v in sorted(summary["beneficial_recall_at_k"].items()):
         lines.append(f"| Recall@{k} | {v:.3f} |")
+    # Helpers to render None as "N/A" (e.g. when all deleterious rows
+    # are catalytic-protected and the metric has no denominator).
+    def _f3(x): return "N/A" if x is None else f"{x:.3f}"
+    def _f1(x): return "N/A" if x is None else f"{x:.1f}"
     lines.extend([
         f"| Deleterious bottom-quintile rate | "
-        f"{summary['deleterious_bottom_quintile_rate']:.3f} |",
+        f"{_f3(summary['deleterious_bottom_quintile_rate'])} |",
         f"| Deleterious mean percentile (lower = better) | "
-        f"{summary['deleterious_mean_percentile']:.1f} |",
+        f"{_f1(summary['deleterious_mean_percentile'])} |",
         f"| Beneficial mean percentile (higher = better) | "
-        f"{summary['beneficial_mean_percentile']:.1f} |",
+        f"{_f1(summary['beneficial_mean_percentile'])} |",
         f"| Valid top-K candidate rate | "
         f"{summary['valid_top_candidate_rate']:.3f} |",
         f"| Reject/invalid top-leakage (must be 0) | "
@@ -677,10 +696,12 @@ def render_multi_card_markdown(
         recall = s["beneficial_recall_at_k"]
         r10 = recall.get(10, recall.get(max(recall.keys())))
         r30 = recall.get(30, r10)
+        del_bq = s["deleterious_bottom_quintile_rate"]
+        del_bq_s = "N/A" if del_bq is None else f"{del_bq:.3f}"
         lines.append(
             f"| {name} | {_PASS_BADGE if pf['passed'] else _FAIL_BADGE} "
             f"| {r10:.3f} | {r30:.3f} "
-            f"| {s['deleterious_bottom_quintile_rate']:.3f} "
+            f"| {del_bq_s} "
             f"| {s['valid_top_candidate_rate']:.3f} "
             f"| {s['reject_top_leakage_count']} "
             f"| {s['md_failure_rate']:.3f} "

@@ -407,3 +407,53 @@ def test_render_multi_card_markdown_overview(tmp_path: Path):
         if ln.startswith("| enzyme_B |")
     ]
     assert failed_line and "–" in failed_line[0]
+
+
+# ---------------------------------------------------------------------------
+# Cheap-run #8 lesson: all-catalytic-protected deleterious → N/A, no FAIL
+# ---------------------------------------------------------------------------
+
+
+def test_xr_pattern_all_deleterious_protected_doesnt_fail(tmp_path):
+    """XR scenario: all 6 deleterious benchmark rows at catalytic
+    positions Y52/K81/H114 → all excluded → 0 active deleterious to
+    score. Previous behaviour: returned 0.0, tripped the 0.5 threshold,
+    misleading FAIL. Fix: return None, skip threshold check, render
+    "N/A" in markdown."""
+    from evoliez.ml.bench_summary import (
+        PROFILES, compute_summary, pass_fail, render_card_markdown,
+    )
+    # XR-like fixture: 100 accepted (no Reject rows for simplicity).
+    cand = tmp_path / "fc.csv"
+    cand.write_text(
+        "rank,candidate_id,mutations,evidence_class,final_score,"
+        "is_blocked,block_reason,pose_validity_status,md_status\n"
+        "1,c001,K274R,Strong,1.5,0,,valid,ok\n"
+        "2,c002,N276D,Promising,1.4,0,,valid,ok\n"
+        "3,c003,X3Y,Strong,1.3,0,,valid,ok\n"
+    )
+    bench = tmp_path / "bench.csv"
+    bench.write_text(
+        "mutation,label,activity,source\n"
+        "K274R,beneficial,1.8,test\n"
+        "N276D,beneficial,1.4,test\n"
+        "Y52F,deleterious,0.05,test\n"        # all catalytic-protected
+        "K81M,deleterious,0.05,test\n"
+        "H114N,deleterious,0.10,test\n"
+    )
+    s = compute_summary(cand, bench, protected_positions=[52, 81, 114])
+    assert s["ok"] is True
+    assert s["n_deleterious"] == 0      # all 3 deleterious excluded
+    # Metric is N/A (None), not 0.0 — previously it was 0.0 which
+    # tripped the 0.5 threshold.
+    assert s["deleterious_bottom_quintile_rate"] is None
+    assert s["deleterious_mean_percentile"] is None
+    # pass_fail should NOT flag a missing-denominator metric as failure.
+    pf = pass_fail(s, thresholds=PROFILES["cheap"])
+    assert "deleterious bottom-quintile" not in "; ".join(pf["failures"]), (
+        f"deleterious metric mis-fired on all-protected case: {pf['failures']}"
+    )
+    # Markdown should render "N/A" instead of "0.000".
+    md = render_card_markdown("XR_test", s, pf)
+    assert "N/A" in md
+    assert "0.000 |" not in md.split("Deleterious")[1].split("|")[0]
