@@ -157,29 +157,34 @@ def _try_extract_mid_end_pdbs(
         )
         return out
 
+    # openmm.app.DCDFile is officially a WRITER class only; older
+    # OpenMM versions silently let you call __init__(file, topology)
+    # to "read" but newer versions require dt as a positional arg AND
+    # only open for writing. There is no first-party DCD reader in
+    # openmm.app. Use mdtraj when available (truly pure-python DCD
+    # reader); otherwise fall back to start-frame-only render so the
+    # figure card still appears in the dashboard.
+    positions_list = []
     try:
-        with open(trajectory_path, "rb") as fh:
-            dcd = app.DCDFile(fh, topology)
-            n_frames = getattr(dcd, "_numFrames", None)
-            if n_frames is None:
-                # Older OpenMM exposes ``numFrames`` differently; defer
-                # to readAllFrames as the safe fallback.
-                positions_list = []
-                while True:
-                    try:
-                        positions_list.append(dcd.getPositions())
-                    except Exception:  # noqa: BLE001
-                        break
-            else:
-                positions_list = []
-                for _ in range(int(n_frames)):
-                    try:
-                        positions_list.append(dcd.getPositions())
-                    except Exception:  # noqa: BLE001
-                        break
+        import mdtraj as _md   # noqa: WPS433  - optional, fall back if missing
+        traj = _md.load(str(trajectory_path), top=str(topology_pdb))
+        # mdtraj coords are (n_frames, n_atoms, 3) in nanometres; convert
+        # back to OpenMM-style (nanometres * unit).
+        from openmm import unit as _u   # noqa: WPS433
+        for xyz in traj.xyz:
+            positions_list.append([
+                (float(x), float(y), float(z)) for x, y, z in xyz
+            ] * _u.nanometre)
+    except ImportError:
+        _LOGGER.info(
+            "md_frames: mdtraj not installed; rendering start-frame only "
+            "for %s (openmm.app has no DCD reader)", trajectory_path,
+        )
+        return out
     except Exception as exc:  # noqa: BLE001
-        _LOGGER.warning(
-            "md_frames: could not read DCD %s: %s", trajectory_path, exc
+        _LOGGER.info(
+            "md_frames: could not read DCD via mdtraj (%s); "
+            "rendering start-frame only", exc,
         )
         return out
 
