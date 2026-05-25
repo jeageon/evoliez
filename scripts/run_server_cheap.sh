@@ -436,6 +436,80 @@ CAND_CSV="$OUTPUT_DIR/reports/final_candidates.csv"
 [ -f "$CAND_CSV" ] || die "no $CAND_CSV — pipeline produced no ranking"
 
 # ===========================================================
+# Phase 2b -- output-package inventory check
+# ===========================================================
+# Catch silent partial failures (Boltz wrote 0 of 12 PDBs, MD
+# analysis.json empty, ml_datasets/ missing, etc.) BEFORE the
+# bench-summary makes pass/fail noise about metrics that may be
+# downstream consequences of a missing artefact.
+say "Phase 2b — output-package inventory"
+_missing=0
+_check() {
+    local label="$1"; local path="$2"; local min_bytes="${3:-1}"
+    if [ ! -e "$path" ]; then
+        warn "MISSING  $label  ($path)"
+        _missing=$((_missing + 1))
+    elif [ -f "$path" ]; then
+        local sz="$(stat -c%s "$path" 2>/dev/null || stat -f%z "$path" 2>/dev/null || echo 0)"
+        if [ "$sz" -lt "$min_bytes" ]; then
+            warn "TOO SMALL $label  ($sz bytes < $min_bytes; $path)"
+            _missing=$((_missing + 1))
+        else
+            ok "$label  ($sz bytes)"
+        fi
+    elif [ -d "$path" ]; then
+        local nf="$(find "$path" -maxdepth 2 -type f 2>/dev/null | wc -l)"
+        ok "$label  ($nf files in $path)"
+    fi
+}
+
+_check "final_candidates.csv" "$CAND_CSV" 500
+_check "focused_library.csv" "$OUTPUT_DIR/reports/focused_library.csv" 100
+_check "final_report.md" "$OUTPUT_DIR/reports/final_report.md" 200
+_check "ml_datasets/" "$OUTPUT_DIR/ml_datasets"
+_check "complexes/boltz (WT)" "$OUTPUT_DIR/complexes/boltz"
+
+# Per-candidate MD outputs — count MD subprocess dirs with both
+# analysis.json AND a non-empty trajectory.
+if [ -d "$OUTPUT_DIR/md" ]; then
+    _ok_md=0; _bad_md=0
+    for d in "$OUTPUT_DIR/md/"*/; do
+        [ -f "$d/analysis.json" ] || { _bad_md=$((_bad_md+1)); continue; }
+        [ -s "$d/analysis.json" ] || { _bad_md=$((_bad_md+1)); continue; }
+        _ok_md=$((_ok_md+1))
+    done
+    if [ "$_bad_md" -gt 0 ]; then
+        warn "md/  $_ok_md ok, $_bad_md missing/empty analysis.json"
+        _missing=$((_missing + 1))
+    else
+        ok "md/  $_ok_md candidates, all with analysis.json"
+    fi
+else
+    warn "MISSING  md/ directory ($OUTPUT_DIR/md)"
+    _missing=$((_missing + 1))
+fi
+
+# Per-candidate mutant Boltz outputs.
+if [ -d "$OUTPUT_DIR/complexes/mutant_boltz" ]; then
+    _n_mb=$(ls -d "$OUTPUT_DIR/complexes/mutant_boltz/mut_"*/ 2>/dev/null | wc -l)
+    if [ "$_n_mb" -gt 0 ]; then
+        ok "complexes/mutant_boltz  $_n_mb candidates"
+    else
+        warn "complexes/mutant_boltz empty"
+        _missing=$((_missing + 1))
+    fi
+else
+    warn "MISSING  complexes/mutant_boltz/"
+    _missing=$((_missing + 1))
+fi
+
+if [ "$_missing" -gt 0 ]; then
+    warn "$_missing artefact(s) missing or too small — bench-summary may"
+    warn "  reflect partial-pipeline output. Inspect $OUTPUT_DIR before"
+    warn "  trusting the cheap-run pass/fail."
+fi
+
+# ===========================================================
 # Phase 3  --  bench-summary (post-hoc metrics)
 # ===========================================================
 say "Phase 3 — evoliez bench-summary --strict"
@@ -466,15 +540,45 @@ RC=$?
 set -e
 
 # ===========================================================
+# Phase 4 -- HTML report package (only on PASS; opt-out via SKIP_HTML=1)
+# ===========================================================
+HTML_ZIP="$OUTPUT_DIR/report_package.zip"
+HTML_DIR="$OUTPUT_DIR/report_package"      # builder also leaves an unzipped tree
+if [ "$RC" -eq 0 ] && [ "${SKIP_HTML:-0}" != "1" ]; then
+    say "Phase 4 — HTML report package"
+    set +e
+    evoliez figures \
+        -c "$CFG" \
+        -o "$HTML_ZIP" \
+        --benchmark "$BENCH" 2>&1 | tail -20
+    _html_rc=$?
+    set -e
+    if [ "$_html_rc" -eq 0 ] && [ -f "$HTML_ZIP" ]; then
+        _html_size="$(stat -c%s "$HTML_ZIP" 2>/dev/null \
+                     || stat -f%z "$HTML_ZIP" 2>/dev/null || echo 0)"
+        ok "HTML zip:      $HTML_ZIP ($((_html_size / 1024)) KB)"
+        # The builder also leaves an unzipped tree alongside (typically).
+        _html_idx="$(find "$OUTPUT_DIR" -name index.html -path '*/report_package*' 2>/dev/null | head -1)"
+        [ -n "$_html_idx" ] && ok "HTML index:    $_html_idx"
+    else
+        warn "evoliez figures exited rc=$_html_rc — HTML package may be incomplete"
+        warn "  inspect $OUTPUT_DIR for partial output"
+    fi
+fi
+
+# ===========================================================
 # Summary
 # ===========================================================
 say "Result"
 if [ "$RC" -eq 0 ]; then
     printf '\033[1;42m PASS \033[0m  cheap-run met every threshold (%s)\n' "$NAME"
     echo "   markdown report: $SUMMARY_MD"
+    [ -f "$HTML_ZIP" ] && \
+        echo "   HTML zip:        $HTML_ZIP"
     echo
     echo "   Next:"
     echo "     - cat \"$SUMMARY_MD\"     # full metric card"
+    [ -f "$HTML_ZIP" ] && echo "     - unzip \"$HTML_ZIP\" -d /tmp/${NAME} && open /tmp/${NAME}/index.html"
     echo "     - then either repeat with ENZYME=xr/tem1/bgl3/p450 ./$(basename "$0"),"
     echo "       or run scripts/server_production_run.sh for full prod."
     exit 0
