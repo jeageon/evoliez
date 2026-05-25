@@ -43,34 +43,54 @@ scaffold.
 
 ## Sources used (every row cited)
 
+**Cheap-run-6 finding:** Ambler numbering (every β-lactamase paper)
+differs from UniProt P62593 numbering by **−2** (UniProt = Ambler − 2).
+Rows below use **UniProt P62593 1-based positions** (verified via
+`scripts/fetch_target_fasta.sh P62593`). The original card listed
+Ambler positions which all failed validation against the P62593
+sequence.
+
+  Ambler ↔ UniProt mapping for cited residues:
+    Ambler S70  → UniProt S68  (ACT_SITE Nucleophile)
+    Ambler K73  → UniProt K71  (ACT_SITE Proton acceptor)
+    Ambler S130 → UniProt S128 (ACT_SITE Proton donor)
+    Ambler E166 → UniProt E164 (ACT_SITE Proton acceptor)
+    Ambler N170 → UniProt N168
+    Ambler K234 → UniProt K232 (BINDING substrate)
+    Ambler G238 → UniProt G236
+    Ambler M182 → UniProt M180
+    Ambler M69  → UniProt M67
+    Ambler E104 → UniProt E102
+    Ambler R164 → UniProt R162
+
 ### Beneficial (clinical / lab ESBL gateways + global stabiliser)
 
 | Mutation | Source |
 |---|---|
-| `M182T` | Huang & Palzkill 1997 *PNAS* — PMID 9050851; global stabilising mutation that compensates fold-stability defects of resistance mutations |
-| `M69L` | Stiffler/Hekstra/Ranganathan 2015 *Cell* DMS — PMID 25723163; IRT-class beneficial under amp+inhibitor, AmbF table |
-| `G238S` | Hall & Barlow 2004 *J Mol Evol* — PMID 15136889; classic ESBL gateway, TEM-19 |
-| `E104K` | Hall 2002 — PMC2566518; TEM-17 ESBL component, additive with G238S |
-| `R164S` | Hall 2002 — PMC2566518; TEM-12 ESBL component, Omega-loop expansion |
+| `M180T` | Huang & Palzkill 1997 *PNAS* — PMID 9050851; global stabilising mutation (Ambler M182T → UniProt M180T) |
+| `M67L` | Stiffler/Hekstra/Ranganathan 2015 *Cell* DMS — PMID 25723163; IRT-class beneficial (Ambler M69L → UniProt M67L) |
+| `G236S` | Hall & Barlow 2004 *J Mol Evol* — PMID 15136889; TEM-19 ESBL gateway (Ambler G238S → UniProt G236S) |
+| `E102K` | Hall 2002 — PMC2566518; TEM-17 ESBL component (Ambler E104K → UniProt E102K) |
+| `R162S` | Hall 2002 — PMC2566518; TEM-12 Omega-loop expansion (Ambler R164S → UniProt R162S) |
 
 ### Neutral (DMS near-mean-fitness controls)
 
 | Mutation | Source |
 |---|---|
-| `N175S` | Stiffler/Hekstra/Ranganathan 2015 DMS — PMID 25723163; buffer-region |
-| `V216A` | Stiffler/Hekstra/Ranganathan 2015 DMS — PMID 25723163; buried small→small |
-| `A237T` | Stiffler/Hekstra/Ranganathan 2015 DMS — PMID 25723163; near G238S but conservative |
+| `N173S` | Stiffler/Hekstra/Ranganathan 2015 DMS — PMID 25723163; buffer-region (Ambler N175S) |
+| `V214A` | Stiffler/Hekstra/Ranganathan 2015 DMS — PMID 25723163; buried small→small (Ambler V216A) |
+| `A235T` | Stiffler/Hekstra/Ranganathan 2015 DMS — PMID 25723163; near G236S (Ambler A237T) |
 
 ### Deleterious (active-site catalytic ablations)
 
 | Mutation | Source |
 |---|---|
-| `S70A` | Strynadka 1992 *Nature* — PMID 1538780; serine nucleophile ablation |
-| `K73A` | Lenfant 1991 — PMID 1825695; general-base K73 ablation |
-| `E166A` | Strynadka 1992 *Nature* — PMID 1538780; Omega-loop acid/base |
-| `N170A` | Damblon 1996 *PNAS* — PMID 8757758; oxyanion-hole H-bond donor |
-| `K234A` | Lenfant 1991 — PMID 1825695; SDN-loop Lys |
-| `S130A` | Lamotte-Brasseur 1991 — PMID 1893393; covalent-intermediate hydrolysis |
+| `S68A` | Strynadka 1992 *Nature* — PMID 1538780; serine nucleophile ablation (Ambler S70A) |
+| `K71A` | Lenfant 1991 — PMID 1825695; general-base K71 ablation (Ambler K73A) |
+| `E164A` | Strynadka 1992 *Nature* — PMID 1538780; Omega-loop acid/base (Ambler E166A) |
+| `N168A` | Damblon 1996 *PNAS* — PMID 8757758; oxyanion-hole H-bond donor (Ambler N170A) |
+| `K232A` | Lenfant 1991 — PMID 1825695; SDN-loop Lys (Ambler K234A) |
+| `S128A` | Lamotte-Brasseur 1991 — PMID 1893393; covalent-intermediate hydrolysis (Ambler S130A) |
 
 ## Substrate / ligand
 

@@ -29,24 +29,36 @@ input:
     type: smiles
     # Penicillin G (benzylpenicillin) — canonical class-A substrate.
     value: "CC1(C)S[C@@H]2[C@H](NC(=O)Cc3ccccc3)C(=O)N2[C@H]1C(=O)O"
-  catalytic_residues: ["S70", "K73", "E166", "N170", "K234", "S130"]
-  fixed_residues:    ["S70", "K73", "E166"]
+  # IMPORTANT: residue positions are UniProt P62593 1-based. The
+  # **Ambler paper numbering** that every β-lactamase paper uses
+  # differs by -2 (UniProt = paper - 2). Verified via
+  # scripts/fetch_target_fasta.sh P62593:
+  #   Ambler S70 → UniProt S68 (ACT_SITE Nucleophile)
+  #   Ambler K73 → UniProt K71 (ACT_SITE Proton acceptor)
+  #   Ambler S130 → UniProt S128 (ACT_SITE Proton donor)
+  #   Ambler E166 → UniProt E164 (ACT_SITE Proton acceptor)
+  #   Ambler N170 → UniProt N168
+  #   Ambler K234 → UniProt K232 (BINDING substrate)
+  #   Ambler G238 → UniProt G236
+  catalytic_residues: ["S68", "K71", "S128", "E164"]
+  fixed_residues:    ["S68", "K71", "E164"]
   known_binding_site:
-    # Class-A serine β-lactamase active site (Strynadka 1992).
-    - "S70"      # nucleophile (catalytic, fixed)
-    - "K73"      # general base (catalytic, fixed)
-    - "S130"     # SDN loop hydrolysis catalyst
-    - "N132"
-    - "E166"     # Omega-loop acid/base (catalytic, fixed)
-    - "N170"     # oxyanion-hole H-bond donor
-    - "K234"     # SDN-loop Lys
-    - "G236"     # adjacent to ESBL G238S gateway
-    - "G238"     # ESBL gateway (Hall & Barlow 2004)
-    - "E240"
-    # ESBL-related distal residues + global stabiliser
-    - "E104"     # ESBL component (Hall 2002)
-    - "R164"     # ESBL Omega-loop expansion (Hall 2002)
-    - "M182"     # global stabiliser (Huang & Palzkill 1997)
+    # Class-A active-site core (UniProt-renumbered from Strynadka 1992).
+    - "S68"      # ACT_SITE Nucleophile
+    - "K71"      # ACT_SITE Proton acceptor
+    - "S128"     # ACT_SITE Proton donor
+    - "E164"     # ACT_SITE Proton acceptor (Omega loop)
+    # Substrate-binding loop (UniProt BINDING annotations)
+    - "K232"     # BINDING substrate
+    - "S233"     # BINDING substrate
+    - "G234"     # BINDING substrate
+    # ESBL-engineering ring (UniProt-renumbered from Hall 2002 / 2004)
+    - "G236"     # Ambler G238 ESBL gateway
+    - "M180"     # Ambler M182 global stabiliser
+    - "E102"     # Ambler E104 ESBL component
+    - "R162"     # Ambler R164 Omega-loop expansion
+    - "N168"     # Ambler N170 oxyanion-hole donor
+    - "M67"      # Ambler M69 IRT-class beneficial
   cofactor: null
   target_ph: 7.4
   organism: "Escherichia coli"

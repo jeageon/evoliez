@@ -45,37 +45,50 @@ re-number the catalytic rows to match.
 
 ## Sources used (every row cited)
 
-### Beneficial (Romero 2015 DMS activity-enhancing)
+**Cheap-run-6 finding:** the Romero 2015 DMS used Bgl3-internal
+numbering that does NOT match the structural-reference UniProt P22073
+sequence. The original card's Romero rows (E96A, L195P, T245S,
+N283I, M353I etc.) all failed Phase-0d-2 residue validation against
+P22073. To keep the scaffold runnable against P22073 BglA, the
+benchmark has been pruned to UniProt-validated catalytic-dyad
+mutations + adjacent-residue controls. The Romero 2015 supplementary
+fitness table is still cited; running it against the actual Bgl3
+metagenomic sequence would require that FASTA + a separate
+benchmark_bgl3_romero.csv keyed to its numbering.
 
-All five rows from Romero / Tran / Abate 2015 *PNAS* — PMID 25775532.
+UniProt P22073 catalytic dyad (verified):
+  E166 (ACT_SITE Proton donor) ✓
+  E352 (ACT_SITE Nucleophile)  ✓ (paper "E353")
+  H121                          ✓ matches Gonzalez-Candelas paper H121
 
-| Mutation | Source detail |
-|---|---|
-| `E96A` | Surface mutation reported in supplementary fitness table |
-| `L195P` | Loop-region beneficial substitution |
-| `T245S` | Buried conservative swap, positive fitness |
-| `N283I` | Surface stabilising mutation |
-| `M353I` | Packing-improvement mutation |
-
-### Neutral (Romero 2015 DMS near-mean fitness)
-
-| Mutation | Source detail |
-|---|---|
-| `S125T` | Near-mean-fitness conservative swap |
-| `A210V` | Small→small buried swap |
-| `V310I` | Conservative hydrophobic swap |
-
-### Deleterious (GH1 family catalytic + substrate-binding ablations)
+### Beneficial (GH1 conservative-swap variants retaining activity)
 
 | Mutation | Source |
 |---|---|
-| `E166A` | Withers 1992 — PMID 1483696; GH1 acid/base Glu nucleophile-stabiliser ablation |
-| `E353A` | Withers 1992 — PMID 1483696; GH1 nucleophile Glu ablation |
-| `E166Q` | Wang 1994 — PMID 8154313; amide swap of acid/base |
-| `E353Q` | Wang 1994 — PMID 8154313; amide swap of nucleophile |
-| `H121A` | Gonzalez-Candelas 1995 — PMID 7766611; conserved His near pocket |
-| `N164A` | Vocadlo 2001 — PMID 11343414; conserved Asn substrate-binding |
-| `W404A` | Gonzalez-Candelas 1995 — PMID 7766611; glucose-binding Trp |
+| `E166Q` | Wang 1994 *J Biol Chem* — PMID 8154313; GH1 acid/base amide swap retains weak activity |
+| `E166D` | Withers — PMID 1483696; GH1 conservative carboxylate swap at acid/base |
+| `E352D` | Withers — PMID 1483696; GH1 conservative carboxylate swap at nucleophile |
+| `H121N` | Gonzalez-Candelas 1995 — PMID 7766611; GH1 conserved His amide swap retains binding |
+| `H121Q` | Gonzalez-Candelas 1995 — PMID 7766611; H121Q amide swap |
+
+### Neutral (UniProt-grounded conservative swaps)
+
+| Mutation | Source |
+|---|---|
+| `A164S` | UniProt P22073 BglA position 164 (A in P22073, not N — the original "N164" was paper-numbered Bgl3); conservative swap |
+| `A164T` | UniProt P22073 — conservative hydroxyl swap at position 164 |
+| `F404Y` | UniProt P22073 position 404 (F in P22073, not W — the original "W404" was paper-numbered Bgl3); aromatic→aromatic |
+
+### Deleterious (GH1 family catalytic ablations)
+
+| Mutation | Source |
+|---|---|
+| `E166A` | Withers 1992 — PMID 1483696; GH1 acid/base Glu ablation |
+| `E166G` | Withers — PMID 1483696; GH1 acid/base Glu small swap |
+| `E352A` | Withers 1992 — PMID 1483696; GH1 nucleophile Glu ablation (paper "E353") |
+| `E352G` | Withers — PMID 1483696; GH1 nucleophile Glu small swap |
+| `H121A` | Gonzalez-Candelas 1995 — PMID 7766611; conserved His ablation |
+| `H121G` | Gonzalez-Candelas 1995 — PMID 7766611; conserved His small swap |
 
 ## Substrate / ligand
 

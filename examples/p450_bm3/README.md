@@ -37,35 +37,56 @@ heme-thiolate, R398 / F393 are heme-anchoring residues.
 
 ## Sources used (every row cited)
 
+**Cheap-run-6 finding:** every published P450 BM3 paper uses BM3
+numbering that differs from UniProt P14779 by **−1** (UniProt =
+paper + 1). Rows below use **UniProt P14779 1-based positions**
+(verified via `scripts/fetch_target_fasta.sh P14779`). The original
+card listed paper positions which all failed validation against the
+P14779 sequence.
+
+  Paper ↔ UniProt mapping for cited residues:
+    paper F87  → UniProt F88   (gating Phe)
+    paper A82  → UniProt A83
+    paper V78  → UniProt V79
+    paper L188 → UniProt L189
+    paper A328 → UniProt A329
+    paper C400 → UniProt C401  (BINDING heme axial)
+    paper T268 → UniProt T269  (SITE Important for catalytic activity)
+    paper D251 → UniProt D251  (lucky position match)
+    paper E267 → UniProt E268
+    paper R398 → UniProt R399
+    paper F393 → UniProt F394
+    paper S72  → UniProt S73
+
 ### Beneficial (active-site / substrate-channel engineering)
 
 | Mutation | Source |
 |---|---|
-| `F87V` | Oliver/Wong 1997, Graham-Lorence 1997 — PMID 9261177; F87 gating Phe, broadens substrates |
-| `F87A` | Carmichael & Wong 2001 — PMID 11355923; canonical permissive mutation |
-| `A82F` | Whitehouse 2009 / Huang 2007 — PMID 19288486; decoy-molecule design |
-| `A328V` | Lewis 2009 / Glieder 2002 — PMID 19260689; distal-pocket reshaping |
-| `L188Q` | Glieder/Farinas/Arnold 2002 *Nat Biotechnol* — PMID 12099294; 21B3 variant component |
-| `V78A` | Carmichael & Wong 2001 — PMID 11355923; pocket-expanding |
+| `F88V` | Oliver/Wong 1997 — PMID 9261177; F88 gating Phe broadens substrates (paper F87V) |
+| `F88A` | Carmichael & Wong 2001 — PMID 11355923; canonical permissive mutation (paper F87A) |
+| `A83F` | Whitehouse 2009 — PMID 19288486; decoy-molecule design (paper A82F) |
+| `A329V` | Lewis 2009 / Glieder 2002 — PMID 19260689; distal-pocket reshaping (paper A328V) |
+| `L189Q` | Glieder/Farinas/Arnold 2002 *Nat Biotechnol* — PMID 12099294; 21B3 variant (paper L188Q) |
+| `V79A` | Carmichael & Wong 2001 — PMID 11355923; pocket-expanding (paper V78A) |
 
 ### Neutral (small-effect controls)
 
 | Mutation | Source |
 |---|---|
-| `T268A` | Yeom/Sligar 1997 — PMID 9224621; I-helix Thr; standard-substrate effect modest |
-| `S72A` | Whitehouse/Bell/Wong 2008 *ChemBioChem* — PMID 18348137; near-mean fitness |
+| `T269A` | Yeom/Sligar 1997 — PMID 9224621; I-helix Thr; modest standard-substrate effect (paper T268A) |
+| `S73A` | Whitehouse/Bell/Wong 2008 *ChemBioChem* — PMID 18348137; near-mean fitness (paper S72A) |
 
 ### Deleterious (heme + I-helix + heme-anchoring ablations)
 
 | Mutation | Source |
 |---|---|
-| `C400A` | Yoshioka 2001 / Munro 2002 — PMID 11418624; proximal heme-thiolate; absolute requirement |
-| `C400S` | Auclair 2001 — PMID 11589701; Cys→Ser breaks Fe-S coordination |
-| `T268N` | Yeom & Sligar 1997 — PMID 9224621; disrupts proton-relay water network |
-| `E267A` | Clark 2006 — PMID 16650706; distal acid/base, breaks coupling |
-| `D251A` | Yeom & Sligar 1997 — PMID 9224621; I-helix proton donor for Fe-O-O-H |
-| `R398A` | Munro 2002 review — PMID 12191604; propionate-anchoring Arg |
-| `F393A` | Ost/Munro 2001 — PMID 11551203; tunes Fe-S covalency / heme reduction potential |
+| `C401A` | Yoshioka 2001 / Munro 2002 — PMID 11418624; proximal heme-thiolate, absolute requirement (paper C400A) |
+| `C401S` | Auclair 2001 — PMID 11589701; Cys→Ser breaks Fe-S coordination (paper C400S) |
+| `T269N` | Yeom & Sligar 1997 — PMID 9224621; disrupts proton-relay water network (paper T268N) |
+| `E268A` | Clark 2006 — PMID 16650706; distal acid/base, breaks coupling (paper E267A) |
+| `D251A` | Yeom & Sligar 1997 — PMID 9224621; I-helix proton donor; D251 matches both numberings |
+| `R399A` | Munro 2002 review — PMID 12191604; propionate-anchoring Arg (paper R398A) |
+| `F394A` | Ost/Munro 2001 — PMID 11551203; tunes Fe-S covalency (paper F393A) |
 
 ## Substrate / cofactors
 

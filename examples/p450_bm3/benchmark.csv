@@ -1,16 +1,16 @@
 mutation,label,activity,source
-F87V,beneficial,2.0,Oliver/Wong 1997 / Graham-Lorence 1997 — substrate-access gating Phe; F87V broadens substrate range + improves activity on non-native substrates — PMID 9261177
-F87A,beneficial,1.8,Carmichael & Wong 2001 — F87A unlocks small/medium substrates; canonical permissive mutation — PMID 11355923
-A82F,beneficial,1.5,Whitehouse 2009 / Huang 2007 — A82F (decoy-molecule-driven) couples efficient turnover with non-native substrates — PMID 19288486
-A328V,beneficial,1.4,Lewis 2009 / Glieder 2002 — distal pocket reshaping; expands substrate envelope — PMID 19260689
-L188Q,beneficial,1.3,Glieder/Farinas/Arnold 2002 Nat Biotechnol — P450 BM3 21B3 variant component; rate-enhancing on small alkanes — PMID 12099294
-V78A,beneficial,1.2,Carmichael & Wong 2001 — pocket-expanding variant — PMID 11355923
-T268A,neutral,1.0,Yeom/Sligar 1997 — distal I-helix Thr that aids O–O cleavage; alone has modest effect on standard substrates — PMID 9224621
-S72A,neutral,1.0,Whitehouse 2008 reference (Whitehouse/Bell/Wong 2008 ChemBioChem) near-mean-fitness substitution — PMID 18348137
-C400A,deleterious,0.01,Yoshioka 2001 / Munro 2002 — proximal heme-thiolate Cys; absolute requirement for P450 fold + catalysis — PMID 11418624
-C400S,deleterious,0.02,Auclair 2001 — Cys→Ser breaks Fe–S coordination — PMID 11589701
-T268N,deleterious,0.10,Yeom & Sligar 1997 — disrupts proton-relay water network of O–O cleavage — PMID 9224621
-E267A,deleterious,0.15,Clark 2006 — distal acid/base near heme; breaks coupling — PMID 16650706
-D251A,deleterious,0.05,Yeom & Sligar 1997 — acid-base in I-helix that protonates Fe-O–O–H intermediate — PMID 9224621
-R398A,deleterious,0.10,Munro 2002 review — propionate-anchoring Arg; heme dissociation — PMID 12191604
-F393A,deleterious,0.15,Ost/Munro 2001 — controls Fe–S bond covalency; tunes heme reduction potential — PMID 11551203
+F88V,beneficial,2.0,Oliver/Wong 1997 (paper F87V → UniProt F88V) — gating Phe broadens substrates — PMID 9261177
+F88A,beneficial,1.8,Carmichael & Wong 2001 (paper F87A → UniProt F88A) — canonical permissive mutation — PMID 11355923
+A83F,beneficial,1.5,Whitehouse 2009 (paper A82F → UniProt A83F) — decoy-molecule design — PMID 19288486
+A329V,beneficial,1.4,Lewis 2009 / Glieder 2002 (paper A328V → UniProt A329V) — distal pocket reshaping — PMID 19260689
+L189Q,beneficial,1.3,Glieder/Farinas/Arnold 2002 (paper L188Q → UniProt L189Q) — 21B3 variant component — PMID 12099294
+V79A,beneficial,1.2,Carmichael & Wong 2001 (paper V78A → UniProt V79A) — pocket expansion — PMID 11355923
+T269A,neutral,1.0,Yeom/Sligar 1997 (paper T268A → UniProt T269A) — I-helix Thr; modest standard-substrate effect — PMID 9224621
+S73A,neutral,1.0,Whitehouse 2008 (paper S72A → UniProt S73A) — near-mean fitness — PMID 18348137
+C401A,deleterious,0.01,Yoshioka 2001 / Munro 2002 (paper C400A → UniProt C401A) — proximal heme-thiolate; absolute requirement — PMID 11418624
+C401S,deleterious,0.02,Auclair 2001 (paper C400S → UniProt C401S) — Cys→Ser breaks Fe–S coordination — PMID 11589701
+T269N,deleterious,0.10,Yeom & Sligar 1997 (paper T268N → UniProt T269N) — disrupts proton-relay water network — PMID 9224621
+E268A,deleterious,0.15,Clark 2006 (paper E267A → UniProt E268A) — distal acid/base; breaks coupling — PMID 16650706
+D251A,deleterious,0.05,Yeom & Sligar 1997 (D251 matches both numberings) — I-helix proton donor for Fe-O-O-H — PMID 9224621
+R399A,deleterious,0.10,Munro 2002 (paper R398A → UniProt R399A) — propionate-anchoring Arg — PMID 12191604
+F394A,deleterious,0.15,Ost/Munro 2001 (paper F393A → UniProt F394A) — tunes Fe-S covalency — PMID 11551203

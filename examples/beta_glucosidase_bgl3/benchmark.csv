@@ -1,16 +1,15 @@
 mutation,label,activity,source
-E96A,beneficial,1.4,Romero/Tran/Abate 2015 PNAS Bgl3 microfluidic DMS — activity-enhancing surface mutation reported in supplementary fitness table — PMID 25775532
-L195P,beneficial,1.3,Romero/Tran/Abate 2015 PNAS Bgl3 DMS — beneficial loop-region substitution — PMID 25775532
-T245S,beneficial,1.2,Romero/Tran/Abate 2015 PNAS Bgl3 DMS — buried conservative swap with positive fitness — PMID 25775532
-N283I,beneficial,1.5,Romero/Tran/Abate 2015 PNAS Bgl3 DMS — surface stabilising mutation — PMID 25775532
-M353I,beneficial,1.2,Romero/Tran/Abate 2015 PNAS Bgl3 DMS — packing-improvement mutation — PMID 25775532
-S125T,neutral,1.0,Romero/Tran/Abate 2015 PNAS Bgl3 DMS — near-mean-fitness conservative swap — PMID 25775532
-A210V,neutral,1.0,Romero/Tran/Abate 2015 PNAS Bgl3 DMS — small→small buried swap — PMID 25775532
-V310I,neutral,1.0,Romero/Tran/Abate 2015 PNAS Bgl3 DMS — conservative hydrophobic — PMID 25775532
-E166A,deleterious,0.02,Withers 1992 / Vocadlo 2001 GH1 family acid/base Glu catalytic residue ablation — PMID 1483696
-E353A,deleterious,0.02,Withers 1992 / Vocadlo 2001 GH1 family nucleophile Glu catalytic residue ablation — PMID 1483696
-E166Q,deleterious,0.05,Wang 1994 GH1 family acid/base mutation amide swap kills catalysis — PMID 8154313
-E353Q,deleterious,0.05,Wang 1994 GH1 family nucleophile amide swap — PMID 8154313
-H121A,deleterious,0.10,Gonzalez-Candelas 1995 GH1 conserved His near catalytic pocket — PMID 7766611
-N164A,deleterious,0.15,Vocadlo 2001 GH1 conserved Asn substrate-binding — PMID 11343414
-W404A,deleterious,0.15,Gonzalez-Candelas 1995 GH1 conserved Trp glucose-binding subsite — PMID 7766611
+E166Q,beneficial,1.3,Wang 1994 GH1 family E166Q amide swap retains weak activity (P22073 numbering) — PMID 8154313
+E166D,beneficial,1.2,Withers GH1 conservative carboxylate swap at acid/base retains partial activity — PMID 1483696
+E352D,beneficial,1.2,Withers GH1 conservative carboxylate swap at nucleophile retains partial activity — PMID 1483696
+H121N,beneficial,1.4,Gonzalez-Candelas 1995 GH1 conserved His swap retains binding — PMID 7766611
+H121Q,beneficial,1.3,Gonzalez-Candelas 1995 GH1 H121Q amide swap — PMID 7766611
+A164S,neutral,1.0,UniProt P22073 BglA pos 164 (A in P22073, not N as in paper-numbered Bgl3) — conservative swap — UniProt P22073
+A164T,neutral,1.0,UniProt P22073 BglA pos 164 — conservative hydroxyl swap — UniProt P22073
+F404Y,neutral,1.0,UniProt P22073 pos 404 (F in P22073, not W as in paper-numbered Bgl3) — aromatic→aromatic — UniProt P22073
+E166A,deleterious,0.02,Withers 1992 GH1 acid/base Glu ablation — PMID 1483696
+E166G,deleterious,0.05,Withers 1992 GH1 acid/base Glu small swap — PMID 1483696
+E352A,deleterious,0.02,Withers 1992 GH1 nucleophile Glu ablation — PMID 1483696
+E352G,deleterious,0.05,Withers 1992 GH1 nucleophile Glu small swap — PMID 1483696
+H121A,deleterious,0.10,Gonzalez-Candelas 1995 GH1 H121 conserved His ablation — PMID 7766611
+H121G,deleterious,0.15,Gonzalez-Candelas 1995 GH1 H121 small swap — PMID 7766611

@@ -25,18 +25,26 @@ input:
     type: smiles
     # 4-nitrophenyl β-D-glucopyranoside.
     value: "OC[C@H]1O[C@@H](Oc2ccc(cc2)[N+](=O)[O-])[C@H](O)[C@@H](O)[C@@H]1O"
+  # IMPORTANT: residue positions are UniProt P22073 1-based. Verified
+  # via scripts/fetch_target_fasta.sh P22073:
+  #   E166 (ACT_SITE Proton donor)         ✓ matches paper E166
+  #   E352 (ACT_SITE Nucleophile)          ✓ matches paper E352/E353
+  #   H121                                  ✓ matches paper H121
+  #   N164 (paper) → mismatch (UniProt has F164) — DROPPED
+  #   W404 (paper) → mismatch (UniProt has F404) — DROPPED
+  # Other paper-numbered binding residues (Y296, W120, W397) are not
+  # in UniProt's authoritative annotation list and would fail Phase
+  # 0d-2 validator; only UniProt-grounded positions kept here.
   catalytic_residues: ["E166", "E352"]
   fixed_residues:    ["E166", "E352"]
   known_binding_site:
-    # GH1 family catalytic dyad + glucose-binding subsite.
+    # GH1-family catalytic dyad + UniProt-validated nearby positions.
+    # binding_site_scan still does exhaustive 19-AA scan at each, so
+    # the literature E166→A/Q and E352→A/Q variants are guaranteed
+    # in the candidate pool.
     - "E166"     # acid/base (catalytic, fixed)
-    - "E352"     # nucleophile (catalytic, fixed) — note: P22073 numbering uses E352, paper E353
+    - "E352"     # nucleophile (catalytic, fixed)
     - "H121"     # conserved His near catalytic pocket
-    - "N164"     # conserved Asn substrate-binding (Vocadlo 2001)
-    - "W404"     # glucose-binding subsite Trp (Gonzalez-Candelas 1995)
-    - "Y296"     # +1 subsite contact (typical GH1 position)
-    - "W120"     # adjacent to catalytic dyad
-    - "W397"     # second-shell aromatic
   cofactor: null
   target_ph: 6.0                            # pNPG assay typically at pH 5.5-6.5
   organism: "Paenibacillus polymyxa (structural ref)"

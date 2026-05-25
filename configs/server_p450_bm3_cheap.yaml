@@ -32,25 +32,42 @@ input:
     type: smiles
     # Lauric acid (dodecanoic acid) — native long-chain fatty acid substrate.
     value: "CCCCCCCCCCCC(=O)O"
-  catalytic_residues: ["C400", "D251", "T268"]
-  fixed_residues:    ["C400", "D251", "T268", "E267", "R398", "F393"]
+  # IMPORTANT: residue positions are UniProt P14779 1-based. The
+  # **paper numbering** (Oliver, Carmichael, Arnold, Whitehouse,
+  # Munro) differs by -1 (UniProt = paper + 1). Verified via
+  # scripts/fetch_target_fasta.sh P14779:
+  #   paper F87  → UniProt F88
+  #   paper A82  → UniProt A83
+  #   paper V78  → UniProt V79
+  #   paper L188 → UniProt L189
+  #   paper A328 → UniProt A329
+  #   paper C400 → UniProt C401 (BINDING heme axial)
+  #   paper T268 → UniProt T269 (SITE: Important for catalytic activity)
+  #   paper D251 → UniProt D251 (lucky position)
+  #   paper E267 → UniProt E268
+  #   paper R398 → UniProt R399
+  #   paper F393 → UniProt F394
+  catalytic_residues: ["C401", "D251", "T269"]
+  fixed_residues:    ["C401", "D251", "T269", "E268", "R399", "F394"]
   known_binding_site:
-    # Substrate-channel gating + active-site reshaping ring
-    - "F87"      # gating Phe (Oliver/Wong 1997) — Arnold/Wong canonical
-    - "A82"      # decoy-molecule design (Whitehouse 2009)
-    - "V78"      # pocket expansion (Carmichael/Wong 2001)
-    - "L188"     # 21B3 variant component (Arnold 2002)
-    - "A328"     # distal pocket reshaping (Lewis 2009)
-    - "I263"
-    - "T260"
-    - "S72"
+    # Substrate-channel gating + active-site engineering ring
+    - "F88"      # Arnold/Wong paper F87 gating Phe
+    - "A83"      # Whitehouse paper A82 decoy design
+    - "V79"      # Carmichael paper V78 pocket expansion
+    - "L189"     # Arnold paper L188 (21B3 variant)
+    - "A329"     # Lewis paper A328 distal pocket
+    - "I264"     # adjacent
+    - "T261"     # adjacent
+    - "S73"      # paper S72 near-mean variant
     # Heme + I-helix + reduction-potential residues (catalytic / fixed)
-    - "C400"     # proximal heme-thiolate (catalytic, fixed)
-    - "T268"     # I-helix Thr (catalytic-relay, fixed)
-    - "D251"     # I-helix acid/base (catalytic, fixed)
-    - "E267"     # distal acid/base (fixed)
-    - "R398"     # propionate-anchoring Arg (fixed)
-    - "F393"     # heme reduction potential (fixed)
+    - "C401"     # BINDING heme axial (catalytic, fixed)
+    - "T269"     # SITE Important for catalytic activity (catalytic, fixed)
+    - "D251"     # paper D251 acid/base (catalytic, fixed)
+    - "E268"     # paper E267 distal (fixed)
+    - "R399"     # paper R398 propionate Arg (fixed)
+    - "F394"     # paper F393 heme reduction potential (fixed)
+    # UniProt-annotated substrate-binding residue
+    - "Y52"      # BINDING (9Z)-hexadecenoate substrate
   cofactor: null                          # docked ligand is substrate, not NADPH
   target_ph: 7.4
   organism: "Bacillus megaterium"
