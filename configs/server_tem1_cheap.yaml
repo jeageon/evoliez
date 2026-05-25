@@ -1,0 +1,130 @@
+# Cheap-run config for TEM-1 β-lactamase (UniProt P62593).
+#
+# TEM-1 is the NO-COFACTOR balance card in the multi-enzyme suite. The
+# ligand is the β-lactam substrate (benzylpenicillin by default — the
+# canonical class-A substrate; swap to cefotaxime for ESBL-style
+# discrimination). Catalytic residues: S70 (nucleophile), K73
+# (general base), E166 (Omega-loop acid/base) per Strynadka 1992 /
+# Lenfant 1991. Beneficial mutations: ESBL gateways (G238S, E104K,
+# R164S) + global stabiliser M182T (Huang & Palzkill 1997).
+#
+# NUMBERING: this config uses **Ambler numbering** to match every
+# β-lactamase paper. UniProt P62593 ships the sequence with a 23-aa
+# Sec signal peptide; strip the signal peptide from target.fasta
+# (`tail -n +24` after the header line, or use a script that fetches
+# the mature chain only) so that Ambler position N matches FASTA
+# index N. See examples/tem1_betalactamase/README.md for the
+# numbering caveat.
+
+project:
+  name: tem1_betalactamase_cheap
+  objective: activity_engineering
+  output_dir: /mnt/data/jglee/runs/tem1_betalactamase_cheap
+
+input:
+  target_id: TEM1_P62593
+  target_fasta: examples/tem1_betalactamase/target.fasta
+  ligand:
+    id: benzylpenicillin
+    type: smiles
+    # Penicillin G (benzylpenicillin) — canonical class-A substrate.
+    value: "CC1(C)S[C@@H]2[C@H](NC(=O)Cc3ccccc3)C(=O)N2[C@H]1C(=O)O"
+  catalytic_residues: ["S70", "K73", "E166", "N170", "K234", "S130"]
+  fixed_residues:    ["S70", "K73", "E166"]
+  known_binding_site:
+    # Class-A serine β-lactamase active site (Strynadka 1992).
+    - "S70"      # nucleophile (catalytic, fixed)
+    - "K73"      # general base (catalytic, fixed)
+    - "S130"     # SDN loop hydrolysis catalyst
+    - "N132"
+    - "E166"     # Omega-loop acid/base (catalytic, fixed)
+    - "N170"     # oxyanion-hole H-bond donor
+    - "K234"     # SDN-loop Lys
+    - "G236"     # adjacent to ESBL G238S gateway
+    - "G238"     # ESBL gateway (Hall & Barlow 2004)
+    - "E240"
+    # ESBL-related distal residues + global stabiliser
+    - "E104"     # ESBL component (Hall 2002)
+    - "R164"     # ESBL Omega-loop expansion (Hall 2002)
+    - "M182"     # global stabiliser (Huang & Palzkill 1997)
+  cofactor: null
+  target_ph: 7.4
+  organism: "Escherichia coli"
+  ec_number: "3.5.2.6"
+
+homologs:
+  method: mmseqs2
+  database: /mnt/data2/evoligand/db/uniref30_2302/uniref30_2302_db
+  max_sequences: 5000
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 24
+  diffusion_samples: 8
+
+interaction_model:
+  enabled: true
+  representative_homologs: 24
+  poses_per_homolog: 4
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: false
+
+data_scale:
+  target_diffusion_samples: 8
+  homolog_diffusion_samples: 4
+  mutant_diffusion_samples: 4
+  top_for_redocking: 100
+  top_for_stability: 30
+  top_for_md: 12
+  final_library: 24
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, binding_site_scan]
+  max_candidates: 1500
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 100
+  top_for_md: 12
+  binding_site_reserved_per_position: 3
+
+validation:
+  redocking:
+    methods: [gnina]
+  stability:
+    method: foldx
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    protocol_level: 2
+    solvent: implicit
+    production_ns: 0.5
+    top_candidates: 12
+    subprocess_isolation: true
+    subprocess_timeout_seconds: 900
+    binding_site_reserved_per_position: 2
+
+scoring:
+  gnn: 0.0
+  family_interaction: 1.5
+
+output:
+  final_library_size: 24
+  top_single_mutants: 24
+  report_format: [markdown, csv]
+
+backend: mock
+backends: {}
+seed: 1234

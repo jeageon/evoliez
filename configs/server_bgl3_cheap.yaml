@@ -1,0 +1,120 @@
+# Cheap-run config for β-glucosidase Bgl3 (GH1 family).
+#
+# Structural reference: Paenibacillus polymyxa BglA (UniProt P22073) —
+# a well-characterised GH1 with the same E166 / E352 catalytic dyad
+# that every published GH1 paper cites. The Romero 2015 PNAS DMS used
+# a metagenomic Bgl3 whose exact UniProt isn't checked in here;
+# beneficial mutations (E96A / L195P / T245S / N283I / M353I) are in
+# Romero numbering and may not pass WT-letter validation against the
+# P. polymyxa FASTA — that's expected, see
+# examples/beta_glucosidase_bgl3/README.md for the numbering caveat.
+#
+# Substrate: 4-nitrophenyl β-D-glucopyranoside (pNPG) — the standard
+# β-glucosidase assay substrate.
+
+project:
+  name: bgl3_cheap
+  objective: activity_engineering
+  output_dir: /mnt/data/jglee/runs/bgl3_cheap
+
+input:
+  target_id: Bgl3_P22073
+  target_fasta: examples/beta_glucosidase_bgl3/target.fasta
+  ligand:
+    id: pNPG
+    type: smiles
+    # 4-nitrophenyl β-D-glucopyranoside.
+    value: "OC[C@H]1O[C@@H](Oc2ccc(cc2)[N+](=O)[O-])[C@H](O)[C@@H](O)[C@@H]1O"
+  catalytic_residues: ["E166", "E352"]
+  fixed_residues:    ["E166", "E352"]
+  known_binding_site:
+    # GH1 family catalytic dyad + glucose-binding subsite.
+    - "E166"     # acid/base (catalytic, fixed)
+    - "E352"     # nucleophile (catalytic, fixed) — note: P22073 numbering uses E352, paper E353
+    - "H121"     # conserved His near catalytic pocket
+    - "N164"     # conserved Asn substrate-binding (Vocadlo 2001)
+    - "W404"     # glucose-binding subsite Trp (Gonzalez-Candelas 1995)
+    - "Y296"     # +1 subsite contact (typical GH1 position)
+    - "W120"     # adjacent to catalytic dyad
+    - "W397"     # second-shell aromatic
+  cofactor: null
+  target_ph: 6.0                            # pNPG assay typically at pH 5.5-6.5
+  organism: "Paenibacillus polymyxa (structural ref)"
+  ec_number: "3.2.1.21"
+
+homologs:
+  method: mmseqs2
+  database: /mnt/data2/evoligand/db/uniref30_2302/uniref30_2302_db
+  max_sequences: 5000
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 24
+  diffusion_samples: 8
+
+interaction_model:
+  enabled: true
+  representative_homologs: 24
+  poses_per_homolog: 4
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: false
+
+data_scale:
+  target_diffusion_samples: 8
+  homolog_diffusion_samples: 4
+  mutant_diffusion_samples: 4
+  top_for_redocking: 100
+  top_for_stability: 30
+  top_for_md: 12
+  final_library: 24
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, binding_site_scan]
+  max_candidates: 1500
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 100
+  top_for_md: 12
+  binding_site_reserved_per_position: 3
+
+validation:
+  redocking:
+    methods: [gnina]
+  stability:
+    method: foldx
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    protocol_level: 2
+    solvent: implicit
+    production_ns: 0.5
+    top_candidates: 12
+    subprocess_isolation: true
+    subprocess_timeout_seconds: 900
+    binding_site_reserved_per_position: 2
+
+scoring:
+  gnn: 0.0
+  family_interaction: 1.5
+
+output:
+  final_library_size: 24
+  top_single_mutants: 24
+  report_format: [markdown, csv]
+
+backend: mock
+backends: {}
+seed: 1234

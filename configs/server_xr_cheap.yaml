@@ -1,0 +1,123 @@
+# Cheap-run config for Xylose Reductase (XR, UniProt O74237 — Candida tenuis)
+# Mirrors configs/server_fdh_nadp_cheap.yaml; only the input section
+# (sequence + ligand + residue annotations) is enzyme-specific.
+#
+# XR is the SIBLING cofactor-switch case to PseFDH (NADPH → NADH
+# direction instead of NAD → NADP). Same Tishkov-class
+# binding-loop-engineering pattern: K274R / N276D / S277R (Petschacher
+# 2008). Catalytic tetrad is Y51 / K80 / D46 / H110 (Kavanagh 2002 PNAS,
+# universally conserved across the AKR superfamily).
+#
+# Substrate: D-xylose. Cofactor (WT-preferred): NADPH.
+# See examples/xylose_reductase/README.md for the full residue +
+# mutation rationale + benchmark source list.
+
+project:
+  name: xr_nadph_to_nadh_cheap
+  objective: cofactor_switching
+  output_dir: /mnt/data/jglee/runs/xr_nadph_to_nadh_cheap
+
+input:
+  target_id: XR_O74237
+  target_fasta: examples/xylose_reductase/target.fasta
+  ligand:
+    id: NADPH_cofactor
+    type: cofactor
+    value: NADP                           # resolver picks reduced form via cofactor_redox below
+  catalytic_residues: ["Y51", "K80", "D46", "H110"]
+  fixed_residues:    ["Y51", "K80", "D46", "H110"]
+  known_binding_site:
+    # AKR-family cofactor (NADP/H)-binding loop + catalytic tetrad
+    - "D46"
+    - "Y51"
+    - "K80"
+    - "H110"
+    - "W23"       # substrate-pocket Trp (Kratzer/Nidetzky 2006)
+    - "F128"      # pocket hydrophobic packing
+    # Cofactor-specificity loop (Petschacher 2008 K274R/N276D/S277R)
+    - "K274"
+    - "N276"
+    - "S277"
+    - "P275"
+  cofactor: NADP
+  cofactor_redox: reduced                  # WT XR uses NADPH; engineered prefers NADH
+  target_ph: 7.4
+  organism: "Candida tenuis"
+  ec_number: "1.1.1.21"
+
+homologs:
+  method: mmseqs2
+  database: /mnt/data2/evoligand/db/uniref30_2302/uniref30_2302_db
+  max_sequences: 5000
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 24
+  diffusion_samples: 8
+
+interaction_model:
+  enabled: true
+  representative_homologs: 24
+  poses_per_homolog: 4
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: false
+
+data_scale:
+  target_diffusion_samples: 8
+  homolog_diffusion_samples: 4
+  mutant_diffusion_samples: 4
+  top_for_redocking: 100
+  top_for_stability: 30
+  top_for_md: 12
+  final_library: 24
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, binding_site_scan]
+  max_candidates: 1500
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 100
+  top_for_md: 12
+  binding_site_reserved_per_position: 3
+
+validation:
+  redocking:
+    methods: [gnina]
+  stability:
+    method: foldx
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    protocol_level: 2
+    solvent: implicit
+    production_ns: 0.5
+    top_candidates: 12
+    subprocess_isolation: true
+    subprocess_timeout_seconds: 900
+    binding_site_reserved_per_position: 2
+
+scoring:
+  gnn: 0.0
+  family_interaction: 1.5
+
+output:
+  final_library_size: 24
+  top_single_mutants: 24
+  report_format: [markdown, csv]
+
+backend: mock
+backends: {}
+seed: 1234

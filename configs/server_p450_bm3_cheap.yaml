@@ -1,0 +1,137 @@
+# Cheap-run config for Cytochrome P450 BM3 (CYP102A1, UniProt P14779).
+#
+# Bacillus megaterium P450 BM3 is the "hard case" in the multi-enzyme
+# suite — substrate promiscuity + heme + I-helix proton relay all
+# matter. The substrate at the heme-domain active site is what we
+# dock here (default: lauric acid, the WT native substrate). NADPH is
+# the electron donor but binds the reductase domain, not the heme
+# domain we're scoring against — it's NOT the docked ligand.
+#
+# Heme-thiolate Cys400 is the most rigorously documented catalytically-
+# essential residue in the whole P450 superfamily (Yoshioka 2001,
+# Auclair 2001, Munro 2002). Beneficial mutations are the active-site
+# engineering ring: F87/A82/V78 (substrate-channel) + L188/A328
+# (pocket reshaping) per Arnold 2002 / Whitehouse 2009.
+#
+# NOTE: full-length BM3 is 1049 aa (heme + FMN/FAD reductase fused).
+# Boltz may have trouble with that scale at cheap settings; if the
+# pipeline times out at s04, restrict target.fasta to the heme domain
+# (~ residues 1-470) — the catalytic + binding-site residues are all
+# in that range. See examples/p450_bm3/README.md for guidance.
+
+project:
+  name: p450_bm3_cheap
+  objective: activity_engineering
+  output_dir: /mnt/data/jglee/runs/p450_bm3_cheap
+
+input:
+  target_id: P450BM3_P14779
+  target_fasta: examples/p450_bm3/target.fasta
+  ligand:
+    id: lauric_acid
+    type: smiles
+    # Lauric acid (dodecanoic acid) — native long-chain fatty acid substrate.
+    value: "CCCCCCCCCCCC(=O)O"
+  catalytic_residues: ["C400", "D251", "T268"]
+  fixed_residues:    ["C400", "D251", "T268", "E267", "R398", "F393"]
+  known_binding_site:
+    # Substrate-channel gating + active-site reshaping ring
+    - "F87"      # gating Phe (Oliver/Wong 1997) — Arnold/Wong canonical
+    - "A82"      # decoy-molecule design (Whitehouse 2009)
+    - "V78"      # pocket expansion (Carmichael/Wong 2001)
+    - "L188"     # 21B3 variant component (Arnold 2002)
+    - "A328"     # distal pocket reshaping (Lewis 2009)
+    - "I263"
+    - "T260"
+    - "S72"
+    # Heme + I-helix + reduction-potential residues (catalytic / fixed)
+    - "C400"     # proximal heme-thiolate (catalytic, fixed)
+    - "T268"     # I-helix Thr (catalytic-relay, fixed)
+    - "D251"     # I-helix acid/base (catalytic, fixed)
+    - "E267"     # distal acid/base (fixed)
+    - "R398"     # propionate-anchoring Arg (fixed)
+    - "F393"     # heme reduction potential (fixed)
+  cofactor: null                          # docked ligand is substrate, not NADPH
+  target_ph: 7.4
+  organism: "Bacillus megaterium"
+  ec_number: "1.14.14.1"
+
+homologs:
+  method: mmseqs2
+  database: /mnt/data2/evoligand/db/uniref30_2302/uniref30_2302_db
+  max_sequences: 5000
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 24
+  diffusion_samples: 8
+
+interaction_model:
+  enabled: true
+  representative_homologs: 24
+  poses_per_homolog: 4
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: false
+
+data_scale:
+  target_diffusion_samples: 8
+  homolog_diffusion_samples: 4
+  mutant_diffusion_samples: 4
+  top_for_redocking: 100
+  top_for_stability: 30
+  top_for_md: 12
+  final_library: 24
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, binding_site_scan]
+  max_candidates: 1500
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 100
+  top_for_md: 12
+  binding_site_reserved_per_position: 3
+
+validation:
+  redocking:
+    methods: [gnina]
+  stability:
+    method: foldx
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    protocol_level: 2
+    solvent: implicit
+    production_ns: 0.5
+    top_candidates: 12
+    subprocess_isolation: true
+    # P450 BM3 is a large protein (full-length 1049 aa). If MD times
+    # out on a per-candidate, increase this or restrict target.fasta
+    # to the heme domain (1-470).
+    subprocess_timeout_seconds: 1500
+    binding_site_reserved_per_position: 2
+
+scoring:
+  gnn: 0.0
+  family_interaction: 1.5
+
+output:
+  final_library_size: 24
+  top_single_mutants: 24
+  report_format: [markdown, csv]
+
+backend: mock
+backends: {}
+seed: 1234
