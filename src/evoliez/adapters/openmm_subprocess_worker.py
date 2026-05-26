@@ -19,8 +19,23 @@ from __future__ import annotations
 
 import pickle
 import sys
+import time
 import traceback
 from pathlib import Path
+
+
+# Same prefix as stages/s10_md.py — must match exactly so the marker stream
+# is uniform across "outside the subprocess" and "inside the subprocess".
+# Format: "[evoliez-md-phase] <name> <unix_ts>"
+_PHASE_PREFIX = "[evoliez-md-phase]"
+
+
+def _phase(name: str) -> None:
+    """Emit a phase marker on stdout. The parent redirects worker stdout
+    (and stderr) into _md_subprocess.log via subprocess.STDOUT, so these
+    markers appear interleaved with OpenFF / OpenMM warnings in that log
+    and can be greppable as ``grep '\\[evoliez-md-phase\\]' ...``."""
+    print(f"{_PHASE_PREFIX} {name} {time.time():.3f}", flush=True)
 
 
 def _coerce_backend(value):
@@ -32,11 +47,14 @@ def _coerce_backend(value):
 
 
 def main(inputs_path: str, result_path: str) -> int:
+    _phase("worker_start")
     from evoliez.adapters.openmm_engine import run_md
 
     with Path(inputs_path).open("rb") as fh:
         payload = pickle.load(fh)
 
+    cand_id = payload.get("candidate_id", "?")
+    _phase(f"run_md_start {cand_id}")
     result = run_md(
         payload["complex"],
         payload["candidate_id"],
@@ -47,9 +65,11 @@ def main(inputs_path: str, result_path: str) -> int:
         backend=_coerce_backend(payload["backend"]),
         dry_run=bool(payload.get("dry_run", False)),
     )
+    _phase(f"run_md_done {cand_id} {result.status}")
 
     with Path(result_path).open("wb") as fh:
         pickle.dump(result, fh)
+    _phase("worker_done")
     return 0
 
 

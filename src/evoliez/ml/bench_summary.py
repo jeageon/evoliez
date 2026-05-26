@@ -261,7 +261,10 @@ def _is_reject_or_invalid(row: Dict[str, Any]) -> bool:
     ev = (row.get("evidence_class") or "").strip().lower()
     pose = (row.get("pose_validity_status") or "").strip().lower()
     md = (row.get("md_status") or "").strip().lower()
-    return ev == "reject" or pose == "invalid" or md == "failed"
+    # `failed_timeout` is a specific kind of MD failure (Wave 5-B
+    # vocabulary) — count it as a leakage trigger just like plain
+    # `failed`.
+    return ev == "reject" or pose == "invalid" or md in ("failed", "failed_timeout")
 
 
 def _valid_top_rate(
@@ -276,21 +279,102 @@ def _valid_top_rate(
     return round(n_valid / len(accepted_top), 4)
 
 
-def _md_rate(rows: Sequence[Dict[str, Any]], target: str,
-             external_statuses: Optional[Dict[str, str]]) -> float:
-    """Either the CSV ``md_status`` column OR an externally-scanned
-    ``analysis.json`` dict drives this metric - whichever has signal."""
-    statuses: List[str] = []
+# MD status vocabulary (must stay in sync with s10_md / openmm_engine).
+# `failed_timeout` (Wave 5-B) is a SPECIFIC failure mode that we want to
+# surface separately as a *timeout* rate, while still counting it as a
+# *failure* — a timeout IS a failure, just one with a more useful root
+# cause label. `skipped_*` (any reason) means the pipeline intentionally
+# chose not to run MD on this candidate (e.g. catalytic mutant, missing
+# params) — those rows must NOT enter the denominator, otherwise we'd
+# penalize runs that wisely skipped.
+_MD_STATUS_OK = "ok"
+_MD_STATUS_FAILED = "failed"
+_MD_STATUS_FAILED_TIMEOUT = "failed_timeout"
+# Legacy alias: pre-Wave-5-B code wrote bare "timeout". Treat it as a
+# timeout-class failure for backwards compat.
+_MD_STATUS_TIMEOUT_LEGACY = "timeout"
+
+_MD_RAN_STATUSES = frozenset({
+    _MD_STATUS_OK,
+    _MD_STATUS_FAILED,
+    _MD_STATUS_FAILED_TIMEOUT,
+    _MD_STATUS_TIMEOUT_LEGACY,
+})
+_MD_TIMEOUT_STATUSES = frozenset({
+    _MD_STATUS_FAILED_TIMEOUT,
+    _MD_STATUS_TIMEOUT_LEGACY,
+})
+_MD_FAILURE_STATUSES = frozenset({
+    _MD_STATUS_FAILED,
+    _MD_STATUS_FAILED_TIMEOUT,
+    _MD_STATUS_TIMEOUT_LEGACY,
+})
+
+
+def _resolve_md_status(
+    row: Dict[str, Any],
+    external_statuses: Optional[Dict[str, str]],
+) -> str:
+    """CSV ``md_status`` wins; fall back to externally-scanned
+    ``analysis.json``. Always returns lowercase, may be empty string
+    (meaning "no signal — treat as not-run / not in denominator")."""
+    st = (row.get("md_status") or "").strip().lower()
+    if st:
+        return st
+    cid = (row.get("candidate_id") or "").strip()
+    if external_statuses and cid in external_statuses:
+        return (external_statuses[cid] or "").strip().lower()
+    return ""
+
+
+def _md_did_run(row: Dict[str, Any], status: str) -> bool:
+    """Per the bench-summary contract: a candidate's MD counts toward
+    the failure / timeout rate denominator iff ``md_did_run == 1`` OR
+    the status is one of the known "MD actually executed" values
+    (``ok``, ``failed``, ``failed_timeout``). Skipped candidates and
+    rows with no status at all are excluded — punishing a wise skip
+    on a catalytic mutant is exactly the failure mode Wave 5-B is
+    trying to fix."""
+    flag = (row.get("md_did_run") or "").strip().lower()
+    if flag in ("1", "true", "yes"):
+        return True
+    return status in _MD_RAN_STATUSES
+
+
+def _md_rates(
+    rows: Sequence[Dict[str, Any]],
+    external_statuses: Optional[Dict[str, str]],
+) -> Tuple[float, float]:
+    """Compute (md_failure_rate, md_timeout_rate) in one pass.
+
+    Contract (Wave 5-C):
+      * Denominator: rows where MD actually ran (see :func:`_md_did_run`).
+        Skipped + status-absent rows are EXCLUDED.
+      * ``md_failure_rate`` numerator: rows whose status is ``failed``
+        OR ``failed_timeout`` (a timeout IS a failure).
+      * ``md_timeout_rate`` numerator: rows whose status is
+        ``failed_timeout`` (Wave 5-B) or the legacy bare ``timeout``.
+      * Returns (0.0, 0.0) when the denominator is empty — keeps the
+        markdown numbers stable on pre-MD runs.
+    """
+    n_denom = 0
+    n_fail = 0
+    n_timeout = 0
     for r in rows:
-        cid = (r.get("candidate_id") or "").strip()
-        st = (r.get("md_status") or "").strip().lower()
-        if not st and external_statuses and cid in external_statuses:
-            st = external_statuses[cid]
-        if st:
-            statuses.append(st)
-    if not statuses:
-        return 0.0
-    return round(sum(1 for s in statuses if s == target) / len(statuses), 4)
+        st = _resolve_md_status(r, external_statuses)
+        if not _md_did_run(r, st):
+            continue
+        n_denom += 1
+        if st in _MD_FAILURE_STATUSES:
+            n_fail += 1
+        if st in _MD_TIMEOUT_STATUSES:
+            n_timeout += 1
+    if n_denom == 0:
+        return 0.0, 0.0
+    return (
+        round(n_fail / n_denom, 4),
+        round(n_timeout / n_denom, 4),
+    )
 
 
 _MUT_RE = __import__("re").compile(r"^([A-Z])(\d+)([A-Z])$")
@@ -369,8 +453,7 @@ def compute_summary(
         1 for r in accepted if _is_reject_or_invalid(r)
     )
 
-    md_fail_rate = _md_rate(cand_rows, "failed", md_statuses)
-    md_timeout_rate = _md_rate(cand_rows, "timeout", md_statuses)
+    md_fail_rate, md_timeout_rate = _md_rates(cand_rows, md_statuses)
 
     # Per-row table for the markdown writer. Keeps only benchmark rows
     # so the file size stays small.

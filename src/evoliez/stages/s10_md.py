@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from typing import List
+import time
+from typing import List, Optional
 
 from evoliez.adapters.openmm_engine import run_md
 from evoliez.adapters.openmm_subprocess import run_md_in_subprocess
+from evoliez.config import Backend
 from evoliez.context import RunContext
 from evoliez.db.schema import MDSimulation
 from evoliez.md.analysis import analyse, to_json
@@ -13,9 +15,125 @@ from evoliez.stages.base import Stage
 from evoliez.stages.s09_nonmd_validation import _mutant_complex
 from evoliez.types import Candidate
 
+# Machine-parseable phase marker. Format:
+#     [evoliez-md-phase] <name> <unix_ts_seconds>
+# Anchored with the literal prefix so a regex r"^\[evoliez-md-phase\]" parses
+# cleanly from `_md_subprocess.log` / pipeline.log. New phase names are
+# free-form (snake_case) — operators grep by name; the prefix is the contract.
+_PHASE_PREFIX = "[evoliez-md-phase]"
+
+
+def _phase(name: str) -> None:
+    """Emit a phase marker on stdout. MUST be stdout (not stderr) so
+    subprocess.run(capture_output=True) and the worker's stdout->log
+    redirection both pick it up."""
+    print(f"{_PHASE_PREFIX} {name} {time.time():.3f}", flush=True)
+
 
 class MDStage(Stage):
     name = "s10_md"
+
+    # ---- Preflight ----------------------------------------------------- #
+    # Runs ONCE before the per-candidate loop. The single biggest waste of
+    # server time on this pipeline was 12 candidates each timing out at
+    # subprocess_timeout_seconds because AM1-BCC/sqm hangs on the cofactor
+    # for every single one. One 60 s probe up front tells us whether the
+    # ligand can be parameterized AT ALL with the available FFs; if not,
+    # every candidate gets honestly marked skipped_no_params instead of
+    # burning 22 hours producing 22 timeouts.
+    def _preflight_ligand_params(self, ctx: RunContext) -> Optional[str]:
+        """One-shot ligand parameterization sanity check.
+
+        Returns ``None`` on success or when the check doesn't apply
+        (dry-run, mock backend). Returns a short reason string on
+        failure; the caller treats that as "every candidate is
+        skipped_no_params, do not enter the per-candidate loop".
+
+        MUST NOT raise: a preflight failure is a routing decision, not
+        a stage crash. We catch broadly on purpose.
+        """
+        if ctx.dry_run:
+            return None
+        backend = ctx.config.backend_for(self.name)
+        if backend is not Backend.real:
+            return None  # mock backend has no parameterization step
+        wt = ctx.require("wt_complex")
+        # Use the WT ligand as the probe; per-candidate mutants don't change
+        # the ligand chemistry, so a successful preflight is sufficient.
+        self.log.info(
+            "MD preflight: probing ligand parameterization (60 s budget)"
+        )
+        _phase("preflight_start")
+        t0 = time.time()
+        try:
+            # Heavy imports deferred so the preflight cost itself isn't
+            # paid on mock/dry-run paths (and so test stubs can intercept).
+            from evoliez.adapters.openmm_engine import (
+                _ligand_offmol_at_pose,
+                _ligand_system_generator,
+            )
+            # Build the OpenFF Molecule from the predicted complex PDB +
+            # SMILES (same call path the real engine takes). Falls back
+            # to a SMILES-only OpenFF Molecule if we have no full-atom PDB
+            # to graph-match against (still exercises the FF probe).
+            off_lig = None
+            pdb_str = getattr(wt.structure, "pdb_path", None)
+            if pdb_str:
+                from pathlib import Path as _P
+                pdb_path = _P(pdb_str)
+                if pdb_path.exists():
+                    try:
+                        off_lig = _ligand_offmol_at_pose(
+                            pdb_path, wt.ligand.smiles,
+                        )
+                    except Exception as exc:
+                        # Fall through to SMILES-only probe below.
+                        self.log.info(
+                            "preflight: pose-based build skipped (%s); "
+                            "probing FF on SMILES-only OpenFF Molecule",
+                            exc,
+                        )
+            if off_lig is None:
+                from openff.toolkit import Molecule
+                off_lig = Molecule.from_smiles(
+                    wt.ligand.smiles, allow_undefined_stereo=True,
+                )
+                off_lig.generate_conformers(n_conformers=1)
+            workdir = ctx.paths.md / "_preflight"
+            workdir.mkdir(parents=True, exist_ok=True)
+            mdcfg = ctx.config.validation.md
+            _ligand_system_generator(
+                off_lig, workdir,
+                prefer_ff=getattr(mdcfg, "ligand_forcefield", None),
+            )
+            elapsed = time.time() - t0
+            self.log.info("MD preflight OK (%.1fs)", elapsed)
+            _phase("preflight_done_ok")
+            return None
+        except Exception as exc:  # noqa: BLE001 — see docstring
+            elapsed = time.time() - t0
+            reason = (
+                f"ligand_preflight_failed: {type(exc).__name__}: "
+                f"{str(exc)[:300]} (after {elapsed:.1f}s)"
+            )
+            self.log.warning(reason)
+            _phase("preflight_done_failed")
+            return reason
+
+    def _mark_all_skipped_no_params(
+        self, candidates: List[Candidate], reason: str,
+    ) -> None:
+        """Apply skipped_no_params status to every candidate AND write an
+        honest analysis.json saying so. Called when preflight returns a
+        failure reason; the per-candidate loop must NOT be entered."""
+        for c in candidates:
+            c.scores["md_lite_score"] = 0.0
+            c.scores["md_status"] = "skipped_no_params"
+            c.scores["md_did_run"] = 0
+            c.scores["md_instability"] = 0.0
+            c.details["md_passed"] = False
+            c.details["md_did_run"] = False
+            c.details["md_failure_reasons"] = reason
 
     def run(self, ctx: RunContext) -> None:
         mdcfg = ctx.config.validation.md
@@ -33,12 +151,33 @@ class MDStage(Stage):
         weights = ctx.config.scoring
         backend = ctx.config.backend_for(self.name)
 
+        # Preflight: one shared ligand parameterization probe. If the
+        # ligand can't be parameterized by ANY available small-molecule FF
+        # (the symptom we hit at 22h/22-timeout scale), every candidate is
+        # honestly recorded as skipped_no_params and the per-candidate loop
+        # is skipped entirely. NEUTRAL skip (judged on other layers).
+        preflight_reason = self._preflight_ligand_params(ctx)
+        if preflight_reason is not None:
+            self.log.warning(
+                "MD preflight failed; skipping all %d candidates with "
+                "reason: %s", len(candidates), preflight_reason,
+            )
+            self._mark_all_skipped_no_params(candidates, preflight_reason)
+            ctx.put("md_candidates", candidates)
+            ctx.persist_meta("n_md_passed", 0)
+            ctx.persist_meta("n_md_real_ran", 0)
+            ctx.persist_meta("n_md_skipped", len(candidates))
+            ctx.persist_meta("n_md_failed", 0)
+            ctx.persist_meta("n_md_failed_timeout", 0)
+            ctx.persist_meta("n_md_skipped_no_params", len(candidates))
+            return
+
         assert ctx.store is not None
         # Real per-mutant Boltz structures from s08b (if it ran): use them
         # so real MD runs the ACTUAL mutant, not the WT-derived proxy that
         # the openmm sequence guard correctly skips.
         mut_complexes = ctx.get("mutant_complexes", {}) or {}
-        n_ran = n_skipped = n_failed = 0
+        n_ran = n_skipped = n_failed = n_failed_timeout = 0
         # Idempotency on resume / re-run: drop prior MDSimulation rows for
         # the candidates we're about to (re-)run so we don't accumulate
         # duplicate (DockingPose, MDSimulation) rows the way the
@@ -79,18 +218,38 @@ class MDStage(Stage):
                 # enforces a hard timeout. Falls back to in-process run_md
                 # when the flag is off or the backend isn't real - mock MD
                 # doesn't need the per-candidate process overhead.
-                replica_results.append(run_md_in_subprocess(
+                # Phase markers wrap the call on the s10_md side; the worker
+                # subprocess emits its own markers around run_md (see
+                # openmm_subprocess_worker.py).
+                _phase(f"candidate_start {cand.candidate_id} r{replica_id}")
+                _rep = run_md_in_subprocess(
                     mc, cand.candidate_id, mdcfg, workdir,
                     instability=inst, catalytic_positions=catalytic,
                     backend=backend, dry_run=ctx.dry_run,
                     timeout_seconds=int(getattr(
                         mdcfg, "subprocess_timeout_seconds", 1800,
                     )),
-                ))
+                )
+                _phase(
+                    f"candidate_done {cand.candidate_id} r{replica_id} "
+                    f"{_rep.status}"
+                )
+                # Reclassify the generic 'failed' that the subprocess wrapper
+                # returns on wall-clock timeout into the more specific
+                # 'failed_timeout' so bench-summary can count timeout-vs-real
+                # failure separately. The wrapper stamps the failure_reason
+                # with "subprocess timeout" — that's the only signal we have
+                # because Popen returns the same returncode (-9) for SIGKILL
+                # whether we sent it or the OOM killer did.
+                if (_rep.status == "failed"
+                        and "subprocess timeout" in (_rep.failure_reason or "").lower()):
+                    _rep.status = "failed_timeout"
+                replica_results.append(_rep)
             # Pick the "primary" result for downstream metrics: the one with
             # the lowest final ligand RMSD across runs that didn't fail.
             usable = [r for r in replica_results
-                      if not r.integration_failed and r.status != "failed"]
+                      if not r.integration_failed
+                      and r.status not in ("failed", "failed_timeout")]
             if usable:
                 result = min(
                     usable,
@@ -110,7 +269,10 @@ class MDStage(Stage):
                 result = replica_results[0]
                 result.replicas_run = len(replica_results)
             _st = str(result.status)
-            if result.integration_failed or _st == "failed":
+            if _st == "failed_timeout":
+                n_failed_timeout += 1
+                n_failed += 1     # also counted under generic failed total
+            elif result.integration_failed or _st == "failed":
                 n_failed += 1
             elif _st.startswith("skipped"):
                 n_skipped += 1
@@ -124,7 +286,7 @@ class MDStage(Stage):
             # for skipped_parameterization, failed for everything else);
             # the report uses this to label rows accordingly.
             md_did_run = not (result.integration_failed
-                              or result.status == "failed"
+                              or result.status in ("failed", "failed_timeout")
                               or str(result.status).startswith("skipped"))
             cand.scores["md_did_run"] = int(md_did_run)
             cand.scores["md_instability"] = round(
@@ -224,6 +386,11 @@ class MDStage(Stage):
         ctx.persist_meta("n_md_real_ran", n_ran)
         ctx.persist_meta("n_md_skipped", n_skipped)
         ctx.persist_meta("n_md_failed", n_failed)
+        # P0.7: split timeout from generic failed so bench-summary can
+        # report timeout-vs-real-failure ratio. n_md_failed_timeout is a
+        # SUBSET of n_md_failed (timeouts are still counted in the
+        # failed total for backward compatibility).
+        ctx.persist_meta("n_md_failed_timeout", n_failed_timeout)
         ctx.persist_meta("n_md_replicated", n_replicated)
         ctx.persist_meta("n_md_final_tier", n_final_tier)
         mode = ("dry-run preview" if ctx.dry_run
@@ -237,6 +404,7 @@ class MDStage(Stage):
         # this is >0 for the real MD rung so a degraded stage can't pass as
         # OK (skipped_parameterization is neutral-pass but is NOT "ran").
         self.log.info(
-            "MD real-execution: %d/%d actually ran (skipped=%d, failed=%d)",
-            n_ran, len(candidates), n_skipped, n_failed,
+            "MD real-execution: %d/%d actually ran (skipped=%d, failed=%d "
+            "[of which timeout=%d])",
+            n_ran, len(candidates), n_skipped, n_failed, n_failed_timeout,
         )

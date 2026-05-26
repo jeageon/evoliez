@@ -11,10 +11,14 @@ Returns a backend-agnostic :class:`MDResult` consumed by ``md.analysis``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from evoliez.adapters.base import write_min_pdb
 from evoliez.config import Backend, MDConfig
@@ -24,6 +28,13 @@ from evoliez.utils.gpu import apply_gpu_selection
 from evoliez.utils.seeds import derive_seed
 
 log = get_logger("evoliez.openmm")
+
+# Hard wall-clock cap on a single small-molecule FF parameterization probe
+# (sqm / antechamber AM1-BCC can hang FOREVER on benzylpenicillin and any
+# ligand whose SCF doesn't converge; preflight measured >296s with no
+# progress on benzylpenicillin, vs 1.9s for the RDKit Gasteiger fallback).
+# Module-level so it's overridable by tests / tuning.
+_AM1BCC_TIMEOUT_SECONDS = 60
 
 
 @dataclass
@@ -411,6 +422,115 @@ def _ff_cache_path(workdir: Path, ff: str) -> Path:
     return parent / f"ff_cache_{safe}.json"
 
 
+def _run_with_timeout(fn: Callable[[], Any], timeout_s: float) -> Any:
+    """Run ``fn()`` with a hard wall-clock cap. Returns the value on success,
+    raises :class:`TimeoutError` if ``fn`` exceeds ``timeout_s``.
+
+    Uses ThreadPoolExecutor + Future.result(timeout=...) deliberately:
+    signal-based alarms are unreliable across thread / subprocess boundaries
+    (the openff -> antechamber -> sqm call path crosses both). Note that if
+    ``fn`` is blocked inside a C extension or a subprocess we CANNOT actually
+    interrupt the worker thread - it keeps running in the background until
+    its blocking call returns. That is acceptable here: we want the CALLER
+    to fall through to the Gasteiger fallback promptly so MD makes
+    forward progress; the orphaned sqm subprocess will exit on its own
+    (or the process group is reaped at MD-stage end). Best-effort sqm kill
+    via psutil is attempted opportunistically.
+    """
+    with ThreadPoolExecutor(max_workers=1) as exe:
+        fut = exe.submit(fn)
+        try:
+            return fut.result(timeout=timeout_s)
+        except FutureTimeoutError:
+            log.warning(
+                "ligand parameterization exceeded %.0fs hard timeout; "
+                "killing any descendant sqm/antechamber and falling through",
+                timeout_s,
+            )
+            _best_effort_kill_sqm()
+            raise TimeoutError(
+                f"parameterization exceeded {timeout_s:.0f}s wall clock"
+            )
+
+
+def _best_effort_kill_sqm() -> None:
+    """Try to terminate any running sqm/antechamber subprocess of this
+    Python process. Pure best-effort: graceful degradation if psutil is
+    not installed (the orphaned subprocess will exit on its own eventually)."""
+    try:
+        import os
+
+        import psutil
+
+        me = psutil.Process(os.getpid())
+        for child in me.children(recursive=True):
+            try:
+                name = child.name().lower()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if any(n in name for n in ("sqm", "antechamber", "parmchk")):
+                try:
+                    child.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+    except Exception:
+        # psutil not installed or any other failure: do nothing, the timeout
+        # path already returned control to the caller.
+        pass
+
+
+def _ligand_charge_cache_path(
+    workdir: Path, smiles: str, ff_name: str,
+) -> Path:
+    """Run-level ligand-charge cache: skip re-parameterization across
+    candidates that share the same ligand (almost always true within one
+    MD stage invocation - every mutant of the same enzyme sees the same
+    ligand). Cache lives in ``workdir.parent`` (the MD stage dir),
+    keyed by SHA1(canonical SMILES + ff name) so two different ligands
+    or two different FFs get distinct files.
+
+    Distinct from :func:`_ff_cache_path`, which is openmmforcefields'
+    own JSON cache (indexed by SMILES internally). This one stores OUR
+    chosen method + the actual partial-charges array, so a subsequent
+    candidate can skip the (possibly minutes-long) probe entirely.
+    """
+    h = hashlib.sha1(
+        f"{smiles}\0{ff_name}".encode("utf-8")
+    ).hexdigest()[:16]
+    parent = workdir.parent if workdir.parent.exists() or workdir.exists() else workdir
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent / f"ligand_params_cache_{h}.json"
+
+
+def _load_ligand_charges_from_cache(path: Path) -> Optional[Dict[str, Any]]:
+    """Read a ligand-charge cache JSON. Returns None on any failure
+    (missing, malformed, permission denied) - cache miss is not an error."""
+    try:
+        if not path.exists():
+            return None
+        with path.open("r") as fh:
+            return json.load(fh)
+    except Exception as exc:
+        log.warning("ligand-charge cache read failed at %s: %s", path, exc)
+        return None
+
+
+def _save_ligand_charges_to_cache(
+    path: Path, payload: Dict[str, Any],
+) -> None:
+    """Write a ligand-charge cache JSON. Cache failures must NEVER break
+    MD - swallow any IO error with a warning log."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+    except Exception as exc:
+        log.warning(
+            "ligand-charge cache write failed at %s: %s (continuing)",
+            path, exc,
+        )
+
+
 class _LigandParamUnsupported(Exception):
     """No available small-molecule FF can parameterize this ligand (e.g.
     GAFF/AM1-BCC on a large multiply-phosphorylated cofactor like NADP -
@@ -507,21 +627,34 @@ def _ligand_system_generator(off_lig, workdir: Path,
     last = None
     for ff in ffs:
         try:
-            sg = SystemGenerator(
-                forcefields=["amber14-all.xml", "implicit/obc2.xml"],
-                small_molecule_forcefield=ff,
-                molecules=[off_lig],
-                cache=str(_ff_cache_path(workdir, ff)),  # run-level cache
-                forcefield_kwargs={"constraints": app.HBonds},
-                nonperiodic_forcefield_kwargs={
-                    "nonbondedMethod": app.CutoffNonPeriodic,
-                },
-            )
-            sg.create_system(                       # PROBE: ligand ALONE
-                off_lig.to_topology().to_openmm(), molecules=[off_lig]
-            )
+            def _probe(_ff=ff):
+                sg = SystemGenerator(
+                    forcefields=["amber14-all.xml", "implicit/obc2.xml"],
+                    small_molecule_forcefield=_ff,
+                    molecules=[off_lig],
+                    cache=str(_ff_cache_path(workdir, _ff)),  # run-level cache
+                    forcefield_kwargs={"constraints": app.HBonds},
+                    nonperiodic_forcefield_kwargs={
+                        "nonbondedMethod": app.CutoffNonPeriodic,
+                    },
+                )
+                sg.create_system(                   # PROBE: ligand ALONE
+                    off_lig.to_topology().to_openmm(), molecules=[off_lig]
+                )
+                return sg
+
+            # Hard wall-clock cap: sqm AM1-BCC has been observed to hang
+            # forever on benzylpenicillin and NADP-class ligands. Without
+            # this, the whole MD stage stalls on one bad ligand.
+            sg = _run_with_timeout(_probe, _AM1BCC_TIMEOUT_SECONDS)
             log.info("ligand parameterized with %s", ff)
             return sg, ff
+        except TimeoutError as exc:
+            last = exc
+            log.warning(
+                "am1bcc/%s timed out after %ds; falling back to next FF "
+                "(eventually Gasteiger)", ff, _AM1BCC_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             last = exc
             log.warning(
@@ -777,6 +910,25 @@ def _run_real(
             )
 
     if not took_curated:
+        # Ligand-charge cache: if a previous candidate of this same MD-stage
+        # invocation already paid for the (possibly minutes-long) AM1-BCC
+        # probe for this exact SMILES, we record WHICH method won and skip
+        # straight to Gasteiger here too (Gasteiger is fast and the
+        # _ff_cache_path JSON keeps the actual GAFF params hot regardless).
+        # The cache is advisory: a hit only tells us which method to TRY
+        # first, the SystemGenerator still rebuilds from cache_path.
+        _smiles = cx.ligand.smiles
+        _charge_cache = _ligand_charge_cache_path(
+            workdir, _smiles, getattr(cfg, "ligand_forcefield", "openff-2.2.0"),
+        )
+        _cache_hit = _load_ligand_charges_from_cache(_charge_cache)
+        if _cache_hit and _cache_hit.get("method") == "gasteiger":
+            log.info(
+                "ligand-charge cache hit for %s (method=gasteiger); "
+                "skipping AM1-BCC probe (already known to hang/fail)",
+                candidate_id,
+            )
+
         # 3-tier hierarchy for the (Tier 1 missed) cofactor / drug-like
         # ligand cases:
         #   Tier 2 (NEW): known cofactor without curated files -> GAFF +
@@ -787,11 +939,20 @@ def _run_real(
         #     keeps the pipeline UNBLOCKED while the Bryce Lab files are
         #     being sourced for Tier 1.
         #   Tier 3 (existing): drug-like ligand -> AM1-BCC probe per FF
-        #     (gaff-2.11 then espaloma-0.3.2 if installed) - the standard
-        #     production charge model for non-cofactor ligands.
-        # Either tier raising _LigandParamUnsupported -> NEUTRAL
-        # skipped_parameterization (the candidate is judged on the other
-        # layers; same status as the existing AM1-BCC-only path).
+        #     (gaff-2.11 then espaloma-0.3.2 if installed) WITH HARD
+        #     WALL-CLOCK TIMEOUT - sqm has been observed to hang forever on
+        #     benzylpenicillin and similar ligands. On timeout we fall
+        #     through to Gasteiger (NEW UNIVERSAL FALLBACK), which uses
+        #     RDKit-only Gasteiger charges and completes in ~2 seconds.
+        # Only if BOTH the AM1-BCC probe AND the Gasteiger fallback raise
+        # _LigandParamUnsupported do we record NEUTRAL skipped_parameterization
+        # (the candidate is judged on the other layers).
+        system_generator = None
+        _ff = None
+        # Branch order MATTERS: the curated-vs-probe guard line is the
+        # primary dispatch decision; the cache-hit shortcut is folded
+        # inside the else-branch so the source layout matches the
+        # curated-dispatch regression guard.
         try:
             if curated_spec is not None:
                 log.info(
@@ -804,10 +965,46 @@ def _run_real(
                 )
                 _ff = "gaff-2.11+gasteiger"
             else:
-                system_generator, _ff = _ligand_system_generator(
-                    off_lig, workdir,
-                    prefer_ff=getattr(cfg, "ligand_forcefield", None),
-                )
+                if _cache_hit and _cache_hit.get("method") == "gasteiger":
+                    # Sibling candidate of this same MD-stage invocation
+                    # already paid for the AM1-BCC probe and recorded that
+                    # it hung -> skip straight to Gasteiger.
+                    log.info(
+                        "cache hit (prior AM1-BCC hang) for %s -> "
+                        "Gasteiger directly", candidate_id,
+                    )
+                    system_generator = _gasteiger_charge_system_generator(
+                        off_lig, workdir,
+                    )
+                    _ff = "gaff-2.11+gasteiger"
+                else:
+                    try:
+                        system_generator, _ff = _ligand_system_generator(
+                            off_lig, workdir,
+                            prefer_ff=getattr(cfg, "ligand_forcefield", None),
+                        )
+                    except (TimeoutError, _LigandParamUnsupported) as exc:
+                        # NEW universal fallback: AM1-BCC timed out (sqm
+                        # SCF never converged - benzylpenicillin / NADP
+                        # class) or every FF rejected the ligand. Try
+                        # Gasteiger before giving up - RDKit-only, ~2s,
+                        # works on any neutral organic ligand.
+                        log.warning(
+                            "am1bcc probe timed out / failed for %s (%s); "
+                            "falling back to Gasteiger charges",
+                            candidate_id, str(exc)[:200],
+                        )
+                        system_generator = _gasteiger_charge_system_generator(
+                            off_lig, workdir,
+                        )
+                        _ff = "gaff-2.11+gasteiger"
+            # Persist which method won so sibling candidates skip the probe.
+            _save_ligand_charges_to_cache(_charge_cache, {
+                "smiles": _smiles,
+                "method": ("gasteiger" if _ff and "gasteiger" in _ff
+                           else "am1bcc"),
+                "ff": _ff,
+            })
         except _LigandParamUnsupported as exc:
             log.warning(
                 "no small-molecule FF can parameterize the ligand for %s "

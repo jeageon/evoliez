@@ -125,7 +125,12 @@ validation:
     production_ns: 0.5
     top_candidates: 12
     subprocess_isolation: true
-    subprocess_timeout_seconds: 900
+    # Bumped 900 -> 1800: ligand parameterization now uses a 60s am1bcc
+    # hard cap + Gasteiger fallback (fix/md-ligand-sqm-hang); the
+    # budget goes to actual MD instead of stuck sqm. Original 900 caused
+    # the all-12-timeout failure observed on benzylpenicillin (sqm hung
+    # >296s in standalone preflight; Gasteiger finishes in 2s).
+    subprocess_timeout_seconds: 1800
     binding_site_reserved_per_position: 2
 
 scoring:
