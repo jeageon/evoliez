@@ -567,8 +567,15 @@ set -e
 # ===========================================================
 HTML_ZIP="$OUTPUT_DIR/report_package.zip"
 HTML_DIR="$OUTPUT_DIR/report_package"      # builder also leaves an unzipped tree
-if [ "$RC" -eq 0 ] && [ "${SKIP_HTML:-0}" != "1" ]; then
-    say "Phase 4 — HTML report package"
+# Always-on (was: PASS-only). Debugging a FAIL is exactly when the HTML
+# package is most useful — `Bgl3 FAIL (deleterious-bottom)` had no
+# dashboard to inspect H121A/G ranking. SKIP_HTML=1 still works as opt-out.
+if [ "${SKIP_HTML:-0}" != "1" ]; then
+    if [ "$RC" -ne 0 ]; then
+        say "Phase 4 — HTML report package (FAIL debug mode)"
+    else
+        say "Phase 4 — HTML report package"
+    fi
     set +e
     evoliez figures \
         -c "$CFG" \
