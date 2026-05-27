@@ -12,8 +12,10 @@ This file pins the subprocess+timeout wrapper:
   - Worker crash → `status="failed_preflight"`.
   - Worker success → the in-process result is round-tripped via pickle
     and returned untouched.
-  - Subprocess launch / pickle failure → fall back to in-process so
-    the pipeline still runs.
+  - Subprocess launch / pickle failure → fail-closed with status
+    "failed_preflight" (M post-expert-audit: silent in-process
+    fallback would undermine the wall-clock guarantee the caller
+    explicitly requested).
 
 Tests use a hang script (sleep) and a tmp result pickle so we don't
 need a real openff.toolkit / openmmforcefields install.
@@ -216,6 +218,75 @@ def test_md_disabled_short_circuit_skips_both_paths(tmp_path):
             )
     assert called == {"inproc": False, "sub": False}
     assert r.status == "skipped_md_disabled"
+
+
+# ---------------------------------------------------------------------- #
+# M (post-expert-audit) — fail-closed on subprocess infrastructure errors
+# ---------------------------------------------------------------------- #
+
+
+def test_subprocess_popen_failure_fails_closed(tmp_path, monkeypatch):
+    """When the caller explicitly asked for subprocess_isolation=True
+    (the production / server path) and Popen raises (e.g. fork limit,
+    missing python, FS error), the wrapper MUST NOT silently run the
+    probe in-process — that would undermine the wall-clock guarantee
+    the caller requested. Instead it returns
+    status="failed_preflight" with the launch error embedded."""
+
+    def _exploding_popen(*a, **k):
+        raise RuntimeError("synthetic Popen failure (e.g. ENOMEM)")
+
+    monkeypatch.setattr(mdp._subprocess, "Popen", _exploding_popen)
+    md_dir = tmp_path / "md"
+    result = _run_md_preflight_in_subprocess(
+        smiles="CCO", md_dir=md_dir, prefer_ff="openff-2.2.0",
+        timeout_seconds=10,
+    )
+    assert result.status == "failed_preflight"
+    assert "subprocess launch failed" in (result.reason or "")
+    assert "synthetic Popen failure" in (result.reason or "")
+
+
+def test_inputs_pickle_failure_fails_closed(tmp_path, monkeypatch):
+    """A serialisation bug on the inputs side (which should be
+    essentially never) is still env-level enough that silent fallback
+    is dishonest. Fail-closed with the pickle error embedded."""
+
+    def _exploding_dump(*a, **k):
+        raise RuntimeError("synthetic pickle.dump failure")
+
+    monkeypatch.setattr(mdp._pickle, "dump", _exploding_dump)
+    md_dir = tmp_path / "md"
+    result = _run_md_preflight_in_subprocess(
+        smiles="CCO", md_dir=md_dir, prefer_ff="openff-2.2.0",
+        timeout_seconds=10,
+    )
+    assert result.status == "failed_preflight"
+    assert "inputs pickle failed" in (result.reason or "")
+    assert "synthetic pickle.dump failure" in (result.reason or "")
+
+
+def test_run_md_preflight_inproc_still_works_after_M(tmp_path, monkeypatch):
+    """Backward compat: when subprocess_isolation=False (default), the
+    in-process path is the only path — M did NOT change that. A test
+    user can still run the preflight on the light mac venv without any
+    subprocess machinery."""
+    # Force Popen to explode so we'd notice if subprocess_isolation=False
+    # accidentally went via the subprocess path.
+    def _exploding_popen(*a, **k):
+        raise RuntimeError("Popen should NEVER be called with isolation=False")
+    monkeypatch.setattr(mdp._subprocess, "Popen", _exploding_popen)
+
+    md_dir = tmp_path / "md"
+    # No openff in light venv -> skipped_no_md_libs is the normal
+    # outcome here; we just need to confirm we DIDN'T crash via Popen.
+    result = run_md_preflight(
+        smiles="CCO", md_dir=md_dir,
+        subprocess_isolation=False,    # default
+    )
+    assert result.status in {
+        "skipped_no_md_libs", "ok", "unsupported", "curated_available",
+    }
 
 
 # ---------------------------------------------------------------------- #

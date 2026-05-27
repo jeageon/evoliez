@@ -327,11 +327,19 @@ def _run_md_preflight_in_subprocess(
                 fh,
             )
     except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "MD preflight: failed to pickle inputs (%s) — falling back "
-            "to in-process", exc,
+        # M (post-expert-audit): when the caller explicitly requested
+        # subprocess isolation, a silent in-process fallback would
+        # undermine the wall-clock guarantee the caller asked for.
+        # Fail-closed instead so the report can surface "preflight
+        # infrastructure broken" honestly.
+        log.error(
+            "MD preflight: failed to pickle inputs (%s) — fail-closed "
+            "(caller requested subprocess_isolation=True)", exc,
         )
-        return _run_md_preflight_inproc(smiles, md_dir, prefer_ff)
+        return MDPreflightResult(
+            status="failed_preflight",
+            reason=f"preflight inputs pickle failed: {exc}",
+        )
 
     cmd = [
         _sys.executable, "-u",
@@ -367,13 +375,20 @@ def _run_md_preflight_in_subprocess(
                 ),
             )
     except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "MD preflight: subprocess launch failed (%s) — falling back "
-            "to in-process", exc,
+        # M (post-expert-audit): the caller asked for subprocess
+        # isolation — Popen failing is an env-level problem (fork
+        # limits, missing python, FS issue). Silently running in-process
+        # would erase the timeout guarantee. Fail-closed.
+        log.error(
+            "MD preflight: subprocess launch failed (%s) — fail-closed "
+            "(caller requested subprocess_isolation=True)", exc,
         )
         if proc is not None:
             _kill_process_group(proc)
-        return _run_md_preflight_inproc(smiles, md_dir, prefer_ff)
+        return MDPreflightResult(
+            status="failed_preflight",
+            reason=f"preflight subprocess launch failed: {exc}",
+        )
 
     elapsed = _time.monotonic() - start
     rc = proc.returncode if proc is not None else -1
