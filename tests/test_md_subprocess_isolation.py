@@ -183,10 +183,13 @@ def test_subprocess_round_trip_via_worker(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_subprocess_timeout_returns_failed_result(tmp_path: Path, monkeypatch):
+def test_subprocess_timeout_returns_timeout_result(tmp_path: Path, monkeypatch):
     """A hung subprocess hits the wall-clock timeout → MDResult with
-    status=failed + integration_failed + 'subprocess timeout' in
-    failure_reason. The next candidate's call is still possible."""
+    status="timeout" (distinct from "failed" since F / post-expert-audit)
+    + integration_failed=True + 'subprocess timeout' in failure_reason.
+    The next candidate's call is still possible. Classification matters
+    because `md_timeout_rate` would otherwise stay pinned at 0 on real
+    hangs — failed and timeout had collapsed into one bucket."""
     cfg = MDConfig(subprocess_isolation=True, subprocess_timeout_seconds=1)
     cx = _synthetic_complex()
 
@@ -217,7 +220,10 @@ def test_subprocess_timeout_returns_failed_result(tmp_path: Path, monkeypatch):
         backend=Backend.real, dry_run=False,
         timeout_seconds=1,
     )
-    assert r.status == "failed"
+    assert r.status == "timeout", (
+        f"expected status='timeout' (distinct from 'failed' since F), "
+        f"got status={r.status!r}"
+    )
     assert r.integration_failed is True
     assert "subprocess timeout" in (r.failure_reason or "").lower()
 
@@ -314,6 +320,18 @@ def test_failed_result_mirrors_cfg():
     assert r.ligand_forcefield == "openff-2.2.0"
     assert r.hmr_enabled is True
     assert "rc=7" in r.failure_reason
+
+
+def test_failed_result_accepts_timeout_status():
+    """F: callers can pass status='timeout' so the subprocess wrapper
+    can distinguish hangs from crashes without touching the rest of
+    MDResult's shape."""
+    cfg = MDConfig(protocol_level=1, solvent="implicit")
+    r = _failed_result("cY", cfg, "subprocess timeout after 60s",
+                       status="timeout")
+    assert r.status == "timeout"
+    assert r.integration_failed is True
+    assert "timeout" in r.failure_reason
 
 
 # ---------------------------------------------------------------------------

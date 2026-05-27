@@ -56,13 +56,21 @@ _WORKER_LOG = "_md_subprocess.log"
 
 def _failed_result(
     candidate_id: str, cfg: MDConfig, reason: str,
+    *,
+    status: str = "failed",
 ) -> MDResult:
-    """Synthetic MDResult for the timeout / crash paths. Matches what
-    ``run_md`` itself returns on a per-candidate exception, so the
-    downstream analyser doesn't need a separate code path."""
+    """Synthetic MDResult for the timeout / crash paths.
+
+    ``status`` defaults to ``"failed"`` (the legacy crash/marshal path)
+    but callers can pass ``"timeout"`` for the
+    :class:`subprocess.TimeoutExpired` case so the harness can count
+    timeouts separately from genuine crashes.  Without this distinction
+    `md_timeout_rate` stayed pinned at 0 even on hangs, which the
+    expert audit flagged after the XR fake-PASS investigation.
+    """
     return MDResult(
         candidate_id=candidate_id,
-        status="failed",
+        status=status,
         protocol_level=cfg.protocol_level,
         solvent_mode=cfg.solvent,
         simulation_time_ns=0.0,
@@ -89,12 +97,17 @@ def run_md_in_subprocess(
     """Run MD for one candidate in an isolated subprocess.
 
     Returns the same :class:`MDResult` an in-process ``run_md`` would
-    return, plus three new failure modes captured as
-    ``status="failed"``:
+    return, plus three new failure modes:
 
-      * ``subprocess timeout``     - wall clock exceeded ``timeout_seconds``
-      * ``subprocess crashed``     - non-zero exit / no result pickle
-      * ``subprocess marshal error`` - pickling input/output failed
+      * ``status="timeout"``         - wall clock exceeded
+        ``timeout_seconds`` (the subprocess was killed via SIGKILL on
+        its process group). Counted separately from ``"failed"`` so
+        ``md_timeout_rate`` is honest about stuck-in-sqm vs crashed-
+        in-create_system.
+      * ``status="failed"`` + ``subprocess crashed``     - non-zero
+        exit / no result pickle (real crash, not a timeout).
+      * ``status="failed"`` + ``subprocess marshal error`` - pickling
+        input/output failed.
 
     Falls back to the in-process ``run_md`` when ``subprocess_isolation``
     is disabled in config, or when the backend isn't ``real`` (the
@@ -176,9 +189,13 @@ def run_md_in_subprocess(
                 candidate_id, timeout_seconds,
             )
             _kill_process_group(proc)
+            # F (post-expert-audit) — status="timeout" instead of "failed"
+            # so `md_timeout_rate` actually fires and the report can
+            # distinguish "stuck in sqm" from "crashed in create_system".
             return _failed_result(
                 candidate_id, cfg,
                 f"subprocess timeout after {timeout_seconds}s",
+                status="timeout",
             )
     except Exception as exc:  # noqa: BLE001
         log.warning("MD subprocess: launch failed for %s: %s",

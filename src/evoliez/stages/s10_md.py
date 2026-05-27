@@ -38,7 +38,7 @@ class MDStage(Stage):
         # so real MD runs the ACTUAL mutant, not the WT-derived proxy that
         # the openmm sequence guard correctly skips.
         mut_complexes = ctx.get("mutant_complexes", {}) or {}
-        n_ran = n_skipped = n_failed = 0
+        n_ran = n_skipped = n_failed = n_timeout = 0
         # Idempotency on resume / re-run: drop prior MDSimulation rows for
         # the candidates we're about to (re-)run so we don't accumulate
         # duplicate (DockingPose, MDSimulation) rows the way the
@@ -110,7 +110,14 @@ class MDStage(Stage):
                 result = replica_results[0]
                 result.replicas_run = len(replica_results)
             _st = str(result.status)
-            if result.integration_failed or _st == "failed":
+            # F (post-expert-audit): `timeout` is its own bucket so the
+            # honesty log line and persist_meta can distinguish hangs
+            # from crashes. Both still count as "did not run" downstream,
+            # but the operator should be able to see "MD timed out on
+            # 3/12" vs "MD crashed on 3/12" at a glance.
+            if _st == "timeout" or _st.startswith("failed_timeout"):
+                n_timeout += 1
+            elif result.integration_failed or _st == "failed":
                 n_failed += 1
             elif _st.startswith("skipped"):
                 n_skipped += 1
@@ -125,6 +132,8 @@ class MDStage(Stage):
             # the report uses this to label rows accordingly.
             md_did_run = not (result.integration_failed
                               or result.status == "failed"
+                              or result.status == "timeout"
+                              or str(result.status).startswith("failed_timeout")
                               or str(result.status).startswith("skipped"))
             cand.scores["md_did_run"] = int(md_did_run)
             cand.scores["md_instability"] = round(
@@ -224,6 +233,7 @@ class MDStage(Stage):
         ctx.persist_meta("n_md_real_ran", n_ran)
         ctx.persist_meta("n_md_skipped", n_skipped)
         ctx.persist_meta("n_md_failed", n_failed)
+        ctx.persist_meta("n_md_timeout", n_timeout)
         ctx.persist_meta("n_md_replicated", n_replicated)
         ctx.persist_meta("n_md_final_tier", n_final_tier)
         mode = ("dry-run preview" if ctx.dry_run
@@ -237,6 +247,7 @@ class MDStage(Stage):
         # this is >0 for the real MD rung so a degraded stage can't pass as
         # OK (skipped_parameterization is neutral-pass but is NOT "ran").
         self.log.info(
-            "MD real-execution: %d/%d actually ran (skipped=%d, failed=%d)",
-            n_ran, len(candidates), n_skipped, n_failed,
+            "MD real-execution: %d/%d actually ran "
+            "(skipped=%d, failed=%d, timeout=%d)",
+            n_ran, len(candidates), n_skipped, n_failed, n_timeout,
         )
