@@ -293,6 +293,51 @@ def _md_rate(rows: Sequence[Dict[str, Any]], target: str,
     return round(sum(1 for s in statuses if s == target) / len(statuses), 4)
 
 
+def _md_validation_counts(
+    accepted: Sequence[Dict[str, Any]],
+    external_statuses: Optional[Dict[str, str]],
+    top_k: int,
+) -> Dict[str, int]:
+    """Per-status counts for the ACCEPTED top-K (the rows that get the
+    Strong-evidence boost from real MD). This is the honest accounting
+    the expert audit asks for: a candidate that the pipeline put in
+    the accepted top-K but whose MD was skipped/failed/timeout/missing
+    is NOT validated.
+
+    Returns ``{ok, failed, timeout, skipped, missing, total}`` counts.
+    `skipped` covers any md_status starting with "skipped" (including
+    ``skipped_no_full_atom_structure``, ``skipped_parameterization``,
+    ``skipped_preflight`` for the upcoming early-preflight hook).
+    `missing` is when md_status is empty/unknown and the candidate is
+    in the top-K (i.e. expected to have run MD but didn't).
+    """
+    bucket = {"ok": 0, "failed": 0, "timeout": 0, "skipped": 0,
+              "missing": 0, "total": 0}
+    top_accepted = list(accepted[:top_k])
+    bucket["total"] = len(top_accepted)
+    for r in top_accepted:
+        cid = (r.get("candidate_id") or "").strip()
+        st = (r.get("md_status") or "").strip().lower()
+        if not st and external_statuses and cid in external_statuses:
+            st = external_statuses[cid]
+        if not st or st == "unknown":
+            bucket["missing"] += 1
+        elif st == "ok":
+            bucket["ok"] += 1
+        elif st == "failed":
+            bucket["failed"] += 1
+        elif st == "timeout":
+            bucket["timeout"] += 1
+        elif st.startswith("skipped"):
+            bucket["skipped"] += 1
+        else:
+            # Any unrecognised status (e.g. ``unstable``) counts as a
+            # MD that didn't fully validate but didn't crash either.
+            # Conservative: treat as "missing" so the operator sees it.
+            bucket["missing"] += 1
+    return bucket
+
+
 _MUT_RE = __import__("re").compile(r"^([A-Z])(\d+)([A-Z])$")
 
 
@@ -372,6 +417,26 @@ def compute_summary(
     md_fail_rate = _md_rate(cand_rows, "failed", md_statuses)
     md_timeout_rate = _md_rate(cand_rows, "timeout", md_statuses)
 
+    # Honest MD validation accounting on the ACCEPTED top-K. Catches
+    # the XR fake-PASS case: 12/12 candidates' MD got preflight-
+    # skipped, but md_failure_rate=0 (skip != fail) → harness reports
+    # PASS. The expert audit calls this out as the most dangerous
+    # blind spot. md_not_validated_rate = (failed + timeout + skipped
+    # + missing) / total over the top-K → forces those skips to
+    # surface as a benchmark FAIL.
+    # 12 matches the cheap-run top_for_md default; clamps to accepted
+    # size so smaller runs don't divide by an inflated denominator.
+    md_top_k = min(12, n_accepted) if n_accepted else 0
+    md_counts = _md_validation_counts(accepted, md_statuses, md_top_k)
+    md_not_validated = (
+        md_counts["failed"] + md_counts["timeout"]
+        + md_counts["skipped"] + md_counts["missing"]
+    )
+    md_not_validated_rate = (
+        round(md_not_validated / md_counts["total"], 4)
+        if md_counts["total"] > 0 else 0.0
+    )
+
     # Per-row table for the markdown writer. Keeps only benchmark rows
     # so the file size stays small.
     by_mut_full = {r["mutation"]: r for r in cand_rows}
@@ -426,6 +491,9 @@ def compute_summary(
         "reject_top_leakage_count": int(reject_leakage),
         "md_failure_rate": md_fail_rate,
         "md_timeout_rate": md_timeout_rate,
+        # Honest MD validation gate (covers the XR fake-PASS case).
+        "md_not_validated_rate": md_not_validated_rate,
+        "md_validation_counts": md_counts,
         "benchmark_in_pool_rate": pool_rate,
         "n_candidates_total": n_total,
         "n_candidates_accepted": n_accepted,
@@ -462,6 +530,12 @@ DEFAULT_THRESHOLDS: Dict[str, float] = {
     "max_reject_leakage": 0,
     "max_md_failure_rate": 0.30,
     "max_md_timeout_rate": 0.15,
+    # Honest MD validation gate. Catches the XR-style fake PASS where
+    # 12/12 candidates' MD got preflight-skipped → md_failure_rate
+    # stays at 0 but no real MD evidence backs the recommendations.
+    # Counts failed + timeout + skipped + missing analysis.json on
+    # the accepted top-K.
+    "max_md_not_validated_rate": 0.30,
     "min_benchmark_in_pool_rate": 0.30,   # ≥30% of benchmark rows visible
 }
 
@@ -497,6 +571,10 @@ CHEAP_RUN_THRESHOLDS: Dict[str, float] = {
     # Deleterious bottom-quintile still strict — pipeline must keep
     # known-bad mutations DOWN.
     "min_deleterious_bottom_quintile": 0.50,
+    # Honest MD gate stays strict in cheap-run too. XR's fake PASS
+    # (12/12 preflight-skipped) only passed because md_failure_rate
+    # was 0; this metric counts skips, so the same scenario now FAILS.
+    "max_md_not_validated_rate": 0.30,
 }
 
 PROFILES: Dict[str, Dict[str, float]] = {
@@ -562,6 +640,23 @@ def pass_fail(
         failures.append(
             f"MD timeout rate = {summary['md_timeout_rate']:.3f} "
             f"> {th['max_md_timeout_rate']}"
+        )
+    # Honest MD validation gate. md_failure_rate alone is a lying
+    # metric when the pipeline preflight-skips MD (XR fake-PASS case);
+    # the not_validated rate counts skipped + missing analysis.json
+    # against the top-K so a "MD never ran" run FAILS.
+    not_val = summary.get("md_not_validated_rate", 0.0)
+    max_not_val = th.get("max_md_not_validated_rate")
+    if max_not_val is not None and not_val > max_not_val:
+        counts = summary.get("md_validation_counts", {})
+        failures.append(
+            f"MD not-validated rate = {not_val:.3f} > {max_not_val} "
+            f"(top-{counts.get('total', '?')}: "
+            f"ok={counts.get('ok', 0)} "
+            f"failed={counts.get('failed', 0)} "
+            f"timeout={counts.get('timeout', 0)} "
+            f"skipped={counts.get('skipped', 0)} "
+            f"missing={counts.get('missing', 0)})"
         )
     # Cheap-run-friendly: pool-coverage gate. Only checked when the
     # threshold is set; defaults to 0 in DEFAULT_THRESHOLDS so prod
@@ -636,6 +731,22 @@ def render_card_markdown(name: str, summary: Dict[str, Any],
         f"{summary['reject_top_leakage_count']} |",
         f"| MD failure rate | {summary['md_failure_rate']:.3f} |",
         f"| MD timeout rate | {summary['md_timeout_rate']:.3f} |",
+    ])
+    # MD validation breakdown — surface the honest counts on the
+    # accepted top-K so the operator can tell ok / skipped / missing
+    # at a glance, not just a rolled-up rate.
+    nv = summary.get("md_validation_counts") or {}
+    if nv:
+        lines.append(
+            f"| **MD not-validated rate** (accepted top-{nv.get('total', '?')}) | "
+            f"**{summary.get('md_not_validated_rate', 0):.3f}**  "
+            f"ok={nv.get('ok', 0)} "
+            f"failed={nv.get('failed', 0)} "
+            f"timeout={nv.get('timeout', 0)} "
+            f"skipped={nv.get('skipped', 0)} "
+            f"missing={nv.get('missing', 0)} |"
+        )
+    lines.extend([
         f"| Benchmark-in-pool rate | "
         f"{summary.get('benchmark_in_pool_rate', 0):.3f} "
         f"({summary.get('n_benchmark_in_pool', 0)}/"
@@ -684,13 +795,14 @@ def render_multi_card_markdown(
         "## Cross-card overview",
         "",
         "| Enzyme | Status | Recall@10 | Recall@30 | Del. bottom-Q | "
-        "Valid top | Reject leak | MD fail | MD timeout |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "Valid top | Reject leak | MD fail | MD timeout | "
+        "**MD not-validated** | Bench-in-pool |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for name, s, pf in cards_list:
         if not s.get("ok"):
             lines.append(
-                f"| {name} | {_FAIL_BADGE} | – | – | – | – | – | – | – |"
+                f"| {name} | {_FAIL_BADGE} | – | – | – | – | – | – | – | – | – |"
             )
             continue
         recall = s["beneficial_recall_at_k"]
@@ -705,7 +817,9 @@ def render_multi_card_markdown(
             f"| {s['valid_top_candidate_rate']:.3f} "
             f"| {s['reject_top_leakage_count']} "
             f"| {s['md_failure_rate']:.3f} "
-            f"| {s['md_timeout_rate']:.3f} |"
+            f"| {s['md_timeout_rate']:.3f} "
+            f"| **{s.get('md_not_validated_rate', 0):.3f}** "
+            f"| {s.get('benchmark_in_pool_rate', 0):.3f} |"
         )
     lines.append("")
     # Then expand each card.

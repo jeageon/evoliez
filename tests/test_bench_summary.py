@@ -457,3 +457,87 @@ def test_xr_pattern_all_deleterious_protected_doesnt_fail(tmp_path):
     md = render_card_markdown("XR_test", s, pf)
     assert "N/A" in md
     assert "0.000 |" not in md.split("Deleterious")[1].split("|")[0]
+
+
+# ---------------------------------------------------------------------------
+# Cheap-run #11 lesson: XR fake-PASS from preflight-skipped MD
+# ---------------------------------------------------------------------------
+
+
+def test_xr_fake_pass_now_fails_via_md_not_validated_rate(tmp_path):
+    """The XR scenario: top-12 accepted candidates all have
+    md_status='skipped_no_full_atom_structure' (or empty / unknown)
+    because s10's preflight failed before any MD ran. The old harness
+    reported md_failure_rate=0 → PASS. The new md_not_validated_rate
+    counts skipped + missing → 1.0 → FAIL on cheap profile (0.30
+    threshold)."""
+    from evoliez.ml.bench_summary import (
+        PROFILES, compute_summary, pass_fail,
+    )
+    cand = tmp_path / "fc.csv"
+    # 12 accepted, every md_status is "skipped_preflight" → preflight failed.
+    lines = [
+        "rank,candidate_id,mutations,evidence_class,final_score,"
+        "is_blocked,block_reason,pose_validity_status,md_status"
+    ]
+    for i in range(12):
+        lines.append(
+            f"{i+1},cand_{i:03d},K274{chr(ord('A')+i)},Strong,1.5,0,,"
+            f"valid,skipped_preflight"
+        )
+    cand.write_text("\n".join(lines) + "\n")
+    bench = tmp_path / "b.csv"
+    bench.write_text(
+        "mutation,label,activity,source\n"
+        "K274R,beneficial,1.8,test\n"
+        "N276D,beneficial,1.4,test\n"
+        "X1Y,deleterious,0.05,test\n"
+    )
+    s = compute_summary(cand, bench)
+    assert s["ok"] is True
+    # Old metric still reports 0 (skip ≠ fail).
+    assert s["md_failure_rate"] == 0.0
+    # New honest metric catches the skip.
+    assert s["md_not_validated_rate"] == 1.0   # 12/12 skipped
+    counts = s["md_validation_counts"]
+    assert counts["ok"] == 0
+    assert counts["skipped"] == 12
+    assert counts["total"] == 12
+    # And cheap profile rejects this as FAIL.
+    pf = pass_fail(s, thresholds=PROFILES["cheap"])
+    assert pf["passed"] is False, f"XR fake-PASS still slipping: {pf['failures']}"
+    assert any("not-validated" in f for f in pf["failures"]), pf["failures"]
+
+
+def test_real_md_run_passes_md_not_validated_check(tmp_path):
+    """Sanity: a run with 10/12 ok + 2 failed → not_validated_rate = 0.167
+    → under the 0.30 threshold → PASS on this metric."""
+    from evoliez.ml.bench_summary import (
+        PROFILES, compute_summary, pass_fail,
+    )
+    cand = tmp_path / "fc.csv"
+    lines = [
+        "rank,candidate_id,mutations,evidence_class,final_score,"
+        "is_blocked,block_reason,pose_validity_status,md_status"
+    ]
+    for i in range(12):
+        status = "failed" if i >= 10 else "ok"
+        lines.append(
+            f"{i+1},cand_{i:03d},F{88+i}V,Strong,1.5,0,,valid,{status}"
+        )
+    cand.write_text("\n".join(lines) + "\n")
+    bench = tmp_path / "b.csv"
+    bench.write_text(
+        "mutation,label,activity,source\n"
+        "F88V,beneficial,2.0,test\n"
+        "F89V,beneficial,1.8,test\n"
+        "X1Y,deleterious,0.05,test\n"
+        "X2Y,deleterious,0.05,test\n"
+        "X3Y,deleterious,0.05,test\n"
+    )
+    s = compute_summary(cand, bench)
+    assert s["md_not_validated_rate"] == round(2/12, 4)   # ~0.167
+    pf = pass_fail(s, thresholds=PROFILES["cheap"])
+    # not-validated check should NOT fire (0.167 < 0.30).
+    assert not any("not-validated" in f for f in pf["failures"]), \
+        f"unexpected not-validated trip: {pf['failures']}"
