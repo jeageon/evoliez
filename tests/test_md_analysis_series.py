@@ -142,6 +142,69 @@ def test_to_json_output_is_json_serialisable():
 
 
 # --------------------------------------------------------------------- #
+# 3b. E (post-expert-audit) — artifact-level status / md_did_run /
+#     failure_reason persist so bench_summary.scan_md_statuses() can read
+#     analysis.json alone without the final CSV.
+# --------------------------------------------------------------------- #
+def test_to_json_persists_status_when_result_present():
+    """`scan_md_statuses` walks `md/<cand>/analysis.json` first; with no
+    `status` field it returns "unknown" and the harness loses honesty
+    on partial runs (the CSV may not exist yet)."""
+    metrics = _mk_metrics()
+    result = _mk_result()
+    out = to_json(metrics, result)
+    assert out["status"] == "ok"
+    assert out["md_did_run"] is True
+    assert "failure_reason" not in out  # absent on success
+
+
+def test_to_json_status_failed_marks_md_did_run_false():
+    metrics = _mk_metrics()
+    result = MDResult(
+        candidate_id="cand_x", status="failed",
+        protocol_level=1, solvent_mode="implicit",
+        simulation_time_ns=0.0,
+        integration_failed=True,
+        failure_reason="ligand build: bad SMILES",
+    )
+    out = to_json(metrics, result)
+    assert out["status"] == "failed"
+    assert out["md_did_run"] is False
+    assert out["failure_reason"] == "ligand build: bad SMILES"
+
+
+def test_to_json_status_skipped_parameterization_marks_md_did_run_false():
+    """Neutral skip (cofactor) must also be flagged md_did_run=False so
+    the report doesn't conflate "MD passed" with "MD never ran"."""
+    metrics = _mk_metrics()
+    result = MDResult(
+        candidate_id="cand_x", status="skipped_parameterization",
+        protocol_level=1, solvent_mode="implicit",
+        simulation_time_ns=0.0,
+        failure_reason="ligand FF unsupported (cofactor)",
+    )
+    out = to_json(metrics, result)
+    assert out["status"] == "skipped_parameterization"
+    assert out["md_did_run"] is False
+
+
+def test_to_json_status_timeout_marks_md_did_run_false():
+    """F (next commit) introduces status='timeout' as distinct from
+    'failed'. md_did_run must treat both as 'did not run'."""
+    metrics = _mk_metrics()
+    result = MDResult(
+        candidate_id="cand_x", status="timeout",
+        protocol_level=1, solvent_mode="implicit",
+        simulation_time_ns=0.0,
+        integration_failed=True,
+        failure_reason="subprocess timeout after 1800s",
+    )
+    out = to_json(metrics, result)
+    assert out["status"] == "timeout"
+    assert out["md_did_run"] is False
+
+
+# --------------------------------------------------------------------- #
 # 4. Source guard: s10_md calls to_json with the result
 # --------------------------------------------------------------------- #
 def test_s10_md_passes_result_to_to_json():

@@ -155,6 +155,21 @@ def to_json(
         "failure_reasons": metrics.failure_reasons,
     }
     if result is not None:
+        # E (post-expert-audit) — artifact-level honesty: without these
+        # fields, `bench_summary.scan_md_statuses()` falls back to
+        # "unknown" when analysis.json is the only artifact (e.g. final
+        # CSV missing on a partial run). Mirror MDResult so a reader of
+        # `analysis.json` alone can answer "did MD run? if not, why?".
+        out["status"] = str(result.status)
+        out["md_did_run"] = not (
+            result.integration_failed
+            or str(result.status) == "failed"
+            or str(result.status).startswith("skipped")
+            or str(result.status).startswith("timeout")
+            or str(result.status).startswith("failed_timeout")
+        )
+        if result.failure_reason:
+            out["failure_reason"] = str(result.failure_reason)
         # Per-frame time series. The reporter writes ~50 frames per
         # production run (see openmm_engine `_run_real`), so each list
         # is small (50 floats x 4 bytes ~= 200 B). Safe to inline in
