@@ -433,6 +433,108 @@ def _ff_cache_path(workdir: Path, ff: str) -> Path:
     return parent / f"ff_cache_{safe}.json"
 
 
+# P0 B — ligand-level probe-deduplication cache.
+#
+# The disk JSON cache from openmmforcefields (above) saves the *charge*
+# calculation per canonical SMILES. What it does NOT save: the probe
+# call `sg.create_system(off_lig.to_topology().to_openmm(),
+# molecules=[off_lig])` inside `_ligand_system_generator` /
+# `_gasteiger_charge_system_generator`. That probe still runs once per
+# candidate to verify the ligand is parameterizable in isolation —
+# wasted work after the first candidate of a run has already proved it.
+#
+# Worse, with `mdcfg.subprocess_isolation = true` every candidate is a
+# fresh Python process, so even the in-process side of openmmforcefields
+# is cold. The disk JSON cache hits for charges, but the probe still
+# rebuilds + verifies.
+#
+# This cache memoizes the probe outcome ("ok" / "unsupported") keyed by
+# (canonical_smiles, ff_name). In-memory dict for same-process speed,
+# JSON sidecar on disk for cross-subprocess sharing. Atomic-rename
+# writes so a crashed candidate can't leave half a file.
+#
+# Caching "unsupported" matters as much as caching "ok": an FF that
+# can't handle a given cofactor SMILES (e.g. AM1-BCC + NADP+) should
+# skip the probe AND skip that FF immediately on candidate #2..#N
+# instead of marching through sqm timeouts again.
+
+_LIGAND_PROBE_CACHE_MEM: Dict[str, str] = {}
+_PROBE_CACHE_DISK_LOADED: Dict[str, bool] = {}
+
+
+def _ligand_probe_cache_path(workdir: Path) -> Path:
+    """Disk sidecar location. Lives alongside the openmmforcefields
+    `ff_cache_*.json` in workdir.parent so it's shared across all
+    candidates of one MD run (incl. subprocess-isolated ones)."""
+    parent = workdir.parent if workdir.parent.exists() or workdir.exists() else workdir
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent / ".ligand_probe_cache.json"
+
+
+def _probe_cache_key(canonical_smiles: str, ff: str) -> str:
+    """`|` is illegal in SMILES, so it's a safe separator. Including the
+    FF name in the key means switching FF (e.g. gaff -> openff-2.2.0)
+    cleanly invalidates the cache without us having to bump a version."""
+    return f"{canonical_smiles}|{ff}"
+
+
+def _canonical_smiles_for_cache(off_lig) -> str:
+    """Canonical, isomeric SMILES via OpenFF (RDKit-backed). Used ONLY
+    as a cache key — never round-tripped to a molecule. Empty string on
+    failure disables the cache for this ligand (safest behaviour: we
+    fall back to actually probing, never skip on a bad key)."""
+    try:
+        return off_lig.to_smiles(mapped=False, isomeric=True)
+    except Exception:
+        return ""
+
+
+def _hydrate_probe_cache(disk_path: Path) -> None:
+    """Load disk sidecar into the in-memory dict, ONCE per disk path.
+    Cheap (one tiny JSON read per process) and idempotent."""
+    key = str(disk_path)
+    if _PROBE_CACHE_DISK_LOADED.get(key):
+        return
+    _PROBE_CACHE_DISK_LOADED[key] = True
+    if not disk_path.exists():
+        return
+    try:
+        import json as _json
+        data = _json.loads(disk_path.read_text())
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(k, str) and v in ("ok", "unsupported"):
+                    _LIGAND_PROBE_CACHE_MEM.setdefault(k, v)
+    except Exception as exc:
+        log.warning("ligand probe-cache hydrate skipped (%s)", exc)
+
+
+def _persist_probe_result(disk_path: Path, key: str, status: str) -> None:
+    """Atomic write: tmp file + rename. Best-effort; never raise."""
+    _LIGAND_PROBE_CACHE_MEM[key] = status
+    try:
+        import json as _json
+        existing: Dict[str, str] = {}
+        if disk_path.exists():
+            try:
+                existing = _json.loads(disk_path.read_text()) or {}
+            except Exception:
+                existing = {}
+        existing[key] = status
+        tmp = disk_path.with_suffix(disk_path.suffix + ".tmp")
+        tmp.write_text(_json.dumps(existing, indent=2, sort_keys=True))
+        tmp.replace(disk_path)
+    except Exception as exc:
+        log.warning("ligand probe-cache persist skipped (%s)", exc)
+
+
+def _clear_ligand_probe_cache() -> None:
+    """Test hook + run-boundary cleaner. Resets in-memory tracking so a
+    previous run's cache (e.g. different ligand SMILES) can't leak."""
+    _LIGAND_PROBE_CACHE_MEM.clear()
+    _PROBE_CACHE_DISK_LOADED.clear()
+
+
 class _LigandParamUnsupported(Exception):
     """No available small-molecule FF can parameterize this ligand (e.g.
     GAFF/AM1-BCC on a large multiply-phosphorylated cofactor like NADP -
@@ -459,6 +561,26 @@ def _gasteiger_charge_system_generator(off_lig, workdir: Path):
     from openff.toolkit.utils.toolkits import RDKitToolkitWrapper
     from openmmforcefields.generators import SystemGenerator
 
+    ff_name = "gaff-2.11+gasteiger"
+    probe_disk = _ligand_probe_cache_path(workdir)
+    _hydrate_probe_cache(probe_disk)
+    smiles_key = _canonical_smiles_for_cache(off_lig)
+    cache_key = _probe_cache_key(smiles_key, ff_name) if smiles_key else None
+    cached_status = _LIGAND_PROBE_CACHE_MEM.get(cache_key) if cache_key else None
+    if cached_status == "unsupported":
+        # Previously proven unsupported for this exact (SMILES, FF). Skip
+        # both the probe AND the SystemGenerator build — the next caller
+        # up (`_run_real`) will treat _LigandParamUnsupported as a
+        # NEUTRAL skipped_parameterization, identical to running the
+        # probe and watching it fail.
+        log.info(
+            "ligand probe cached UNSUPPORTED for %s — skipping (was previously"
+            " proven unparameterizable in this run)", ff_name,
+        )
+        raise _LigandParamUnsupported(
+            f"{ff_name} unsupported (probe cache hit)"
+        )
+
     try:
         # Pre-assign charges on the OFF molecule; openmmforcefields'
         # GAFFTemplateGenerator skips its own charge calc when
@@ -477,21 +599,34 @@ def _gasteiger_charge_system_generator(off_lig, workdir: Path):
             # reused for every candidate. workdir.parent is the MD stage
             # dir; per-candidate trajectory files still live under
             # workdir/<candidate_id>/.
-            cache=str(_ff_cache_path(workdir, "gaff-2.11+gasteiger")),
+            cache=str(_ff_cache_path(workdir, ff_name)),
             forcefield_kwargs={"constraints": app.HBonds},
             nonperiodic_forcefield_kwargs={
                 "nonbondedMethod": app.CutoffNonPeriodic,
             },
         )
-        sg.create_system(                       # PROBE: ligand alone
-            off_lig.to_topology().to_openmm(), molecules=[off_lig]
-        )
-        log.info(
-            "ligand parameterized with gaff-2.11 + Gasteiger charges "
-            "(AM1-BCC bypassed)"
-        )
+        if cached_status == "ok":
+            # Skip the probe step (a few seconds of fresh
+            # `sg.create_system` on the ligand alone) — we already proved
+            # this (SMILES, FF) is parameterizable in this run. The real
+            # `create_system(modeller.topology, ...)` in `_run_real` will
+            # still catch any per-candidate atom-order issue.
+            log.info(
+                "ligand probe cached OK for %s — skipping probe", ff_name,
+            )
+        else:
+            sg.create_system(                   # PROBE: ligand alone
+                off_lig.to_topology().to_openmm(), molecules=[off_lig]
+            )
+            if cache_key:
+                _persist_probe_result(probe_disk, cache_key, "ok")
+            log.info(
+                "ligand parameterized with %s (AM1-BCC bypassed)", ff_name,
+            )
         return sg
     except Exception as exc:
+        if cache_key:
+            _persist_probe_result(probe_disk, cache_key, "unsupported")
         raise _LigandParamUnsupported(
             f"Gasteiger-charge GAFF probe failed: {str(exc)[:200]}"
         )
@@ -526,8 +661,27 @@ def _ligand_system_generator(off_lig, workdir: Path,
         ffs.append("espaloma-0.3.2")
     except Exception:
         pass
+
+    # P0 B — probe-deduplication cache.
+    probe_disk = _ligand_probe_cache_path(workdir)
+    _hydrate_probe_cache(probe_disk)
+    smiles_key = _canonical_smiles_for_cache(off_lig)
     last = None
     for ff in ffs:
+        cache_key = _probe_cache_key(smiles_key, ff) if smiles_key else None
+        cached_status = _LIGAND_PROBE_CACHE_MEM.get(cache_key) if cache_key else None
+        if cached_status == "unsupported":
+            # Already proven this (SMILES, FF) can't be parameterized in
+            # this run — go straight to the next FF instead of paying
+            # for the probe again. Big win on N candidates with the same
+            # cofactor where the first FF in the priority list is known
+            # to fail (e.g. AM1-BCC + NADP+).
+            log.info(
+                "small-molecule FF %s known unsupported for this ligand "
+                "(probe cache); trying next FF", ff,
+            )
+            last = last or RuntimeError(f"{ff}: cached unsupported")
+            continue
         try:
             sg = SystemGenerator(
                 forcefields=["amber14-all.xml", "implicit/obc2.xml"],
@@ -539,12 +693,25 @@ def _ligand_system_generator(off_lig, workdir: Path,
                     "nonbondedMethod": app.CutoffNonPeriodic,
                 },
             )
-            sg.create_system(                       # PROBE: ligand ALONE
-                off_lig.to_topology().to_openmm(), molecules=[off_lig]
-            )
-            log.info("ligand parameterized with %s", ff)
+            if cached_status == "ok":
+                # Skip the probe — we already proved this (SMILES, FF)
+                # combination works in this run. The real
+                # `create_system(modeller.topology, ...)` in `_run_real`
+                # would still catch any per-candidate atom-order issue.
+                log.info(
+                    "ligand probe cached OK for %s — skipping probe", ff,
+                )
+            else:
+                sg.create_system(                   # PROBE: ligand ALONE
+                    off_lig.to_topology().to_openmm(), molecules=[off_lig]
+                )
+                if cache_key:
+                    _persist_probe_result(probe_disk, cache_key, "ok")
+                log.info("ligand parameterized with %s", ff)
             return sg, ff
         except Exception as exc:
+            if cache_key:
+                _persist_probe_result(probe_disk, cache_key, "unsupported")
             last = exc
             log.warning(
                 "small-molecule FF %s cannot parameterize the ligand: %s",
