@@ -137,6 +137,18 @@ validation:
     subprocess_isolation: true
     subprocess_timeout_seconds: 900
     binding_site_reserved_per_position: 2
+    # L (post-expert-audit): XR uses NADPH cofactor. Without curated
+    # Bryce Lab AMBER files on the server, the preflight will return
+    # status="unsupported" (AM1-BCC hard-fails on the NADP-class
+    # SMILES; Gasteiger may work but no FF combo is guaranteed). With
+    # strict_preflight=true the pipeline halts at s01 instead of
+    # spending Boltz hours on candidates MD cannot validate — this is
+    # the test scenario the expert audit proposed (verify that
+    # md_not_validated_rate ≈ 1.0 → bench-summary FAIL, and s08b
+    # never ran). If curated NAP.lib/NAP.frcmod are present, preflight
+    # returns curated_available (non-blocking) and the pipeline runs
+    # normally.
+    strict_preflight: true
 
 scoring:
   gnn: 0.0

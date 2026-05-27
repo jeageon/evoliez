@@ -159,6 +159,16 @@ validation:
     # s08) so the D222 family doesn't lose the top-12 fight against
     # chemistry_rules-favoured non-binding-site mutations.
     binding_site_reserved_per_position: 2
+    # L (post-expert-audit): PseFDH uses NADP+ cofactor. The whole
+    # point of this benchmark is to validate MD-driven engineering of
+    # NADP-binding mutations — if MD can't run, there's no signal.
+    # With strict_preflight=true the pipeline halts cleanly at s01
+    # when the preflight returns status="unsupported" (AM1-BCC hard-
+    # fails on NADP-class SMILES without curated AMBER files). When
+    # the curated NAP.lib/NAP.frcmod are present on the server,
+    # preflight returns curated_available (non-blocking) and the run
+    # proceeds normally.
+    strict_preflight: true
 
 scoring:
   gnn: 0.0                                   # disabled with gnn.enabled=false
