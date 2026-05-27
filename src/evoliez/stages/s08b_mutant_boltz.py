@@ -52,6 +52,30 @@ class MutantBoltzStage(Stage):
             self.log.info("mutant Boltz re-eval disabled; Δ stays proxy")
             return
 
+        # H (post-expert-audit) — strict-MD preflight gate.
+        # C records `md_preflight_status` to ctx.meta at s01. Until now
+        # nothing read it, so a project whose ligand can never be MD-
+        # parameterised still spent Boltz time here on per-mutant
+        # structures whose only purpose was to feed MD. When
+        # `mdcfg.strict_preflight = True` (opt-in; off by default for
+        # benchmarks that DO want non-MD validation), short-circuit
+        # this stage with a clear log line. Honesty AND wall-time
+        # savings — strict-MD benchmarks now know up-front whether
+        # they should run at all.
+        mdcfg = ctx.config.validation.md
+        if getattr(mdcfg, "strict_preflight", False):
+            pre_status = str(ctx.meta("md_preflight_status", "") or "")
+            blocking = {"unsupported", "timeout_preflight", "failed_preflight"}
+            if pre_status in blocking:
+                self.log.warning(
+                    "strict_preflight=True and md_preflight_status=%r "
+                    "(reason=%s) — skipping per-mutant Boltz: MD cannot "
+                    "validate these candidates regardless of structure",
+                    pre_status, ctx.meta("md_preflight_reason", "?"),
+                )
+                ctx.persist_meta("s08b_skipped_strict_preflight", 1)
+                return
+
         wt = ctx.require("wt_complex")
         seq = ctx.require("target_sequence")
         ligand = ctx.require("ligand")

@@ -192,6 +192,13 @@ class MDConfig(_Base):
     # the whole pipeline hanging in s01 (worse than today's s10 hang
     # because there's no per-stage retry).
     preflight_timeout_seconds: int = 300
+    # H (post-expert-audit): when True, an unsupported / timed-out /
+    # crashed s01 preflight short-circuits s08b (skips per-mutant Boltz
+    # for candidates MD cannot validate anyway). Off by default so
+    # non-strict benchmarks that DO want Boltz-only / docking-only
+    # validation still run on cofactor ligands. Set to True on strict-
+    # MD benchmarks (e.g. PseFDH, where MD is the primary signal).
+    strict_preflight: bool = False
     # Mirrors RerankConfig.binding_site_reserved_per_position but for
     # the s09→s10 transition. Cheap-run-3 finding: the +0.6 prior in
     # s08 lifts binding-site candidates into top_for_redocking, but

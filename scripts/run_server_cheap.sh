@@ -441,6 +441,59 @@ CAND_CSV="$OUTPUT_DIR/reports/final_candidates.csv"
 [ -f "$CAND_CSV" ] || die "no $CAND_CSV — pipeline produced no ranking"
 
 # ===========================================================
+# Phase 2.5 -- MD preflight status (operator-facing)
+# ===========================================================
+# C / H (post-expert-audit): s01 writes md_preflight_status to
+# project meta. Surfacing it here lets the operator see UP-FRONT
+# whether this enzyme's ligand was MD-parameterisable, instead of
+# discovering it via "MD failed on every candidate" 25 hours later.
+# Read-only; the actual gate is enforced by s08b when
+# mdcfg.strict_preflight=True.
+say "Phase 2.5 — MD preflight verdict"
+META_FILE="$OUTPUT_DIR/_state.json"
+if [ -f "$META_FILE" ]; then
+    PRE_STATUS="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    meta = d.get("meta") or {}
+    print(meta.get("md_preflight_status", "?"))
+except Exception as e:
+    print(f"<read-error: {e}>", file=sys.stderr)
+    print("?")
+' "$META_FILE" 2>/dev/null || echo "?")"
+    PRE_REASON="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    meta = d.get("meta") or {}
+    print(meta.get("md_preflight_reason", ""))
+except Exception:
+    print("")
+' "$META_FILE" 2>/dev/null || echo "")"
+    case "$PRE_STATUS" in
+        ok|curated_available)
+            ok "MD preflight: $PRE_STATUS — MD will run"
+            ;;
+        skipped_md_disabled|skipped_no_smiles|skipped_no_md_libs)
+            warn "MD preflight: $PRE_STATUS — MD will NOT run (config / env)"
+            ;;
+        unsupported|timeout_preflight|failed_preflight)
+            warn "MD preflight: $PRE_STATUS — MD will SKIP (no FF supports this ligand)"
+            [ -n "$PRE_REASON" ] && echo "   reason: $PRE_REASON"
+            warn "Set MDConfig.strict_preflight=true to short-circuit s08b on this status."
+            ;;
+        *)
+            warn "MD preflight: status=$PRE_STATUS (unrecognised — possibly older run)"
+            ;;
+    esac
+else
+    warn "no $META_FILE — preflight status unavailable (pipeline may have crashed early)"
+fi
+
+# ===========================================================
 # Phase 2b -- output-package inventory check
 # ===========================================================
 # Catch silent partial failures (Boltz wrote 0 of 12 PDBs, MD
