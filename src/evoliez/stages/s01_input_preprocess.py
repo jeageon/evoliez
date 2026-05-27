@@ -159,12 +159,24 @@ class InputPreprocessStage(Stage):
             mdcfg = ctx.config.validation.md
             md_enabled = bool(getattr(mdcfg, "enabled", True))
             prefer_ff = getattr(mdcfg, "ligand_forcefield", None)
+            # G: when MD itself runs in subprocess-isolated mode, the
+            # preflight does too. A sqm hang in s01 is strictly worse
+            # than the same hang at s10 (no per-candidate retry, the
+            # rest of the pipeline never starts). 300 s default cap is
+            # plenty for a Gasteiger probe and intentionally tighter
+            # than `subprocess_timeout_seconds` so we fail fast.
+            pre_isolated = bool(getattr(mdcfg, "subprocess_isolation", False))
+            pre_timeout = int(getattr(mdcfg, "preflight_timeout_seconds", 300))
         except Exception:
             md_enabled = True
             prefer_ff = None
+            pre_isolated = False
+            pre_timeout = 300
         preflight = run_md_preflight(
             ligand.smiles, ctx.paths.md,
             prefer_ff=prefer_ff, md_enabled=md_enabled,
+            subprocess_isolation=pre_isolated,
+            timeout_seconds=pre_timeout,
         )
         ctx.persist_meta("md_preflight_status", preflight.status)
         if preflight.ff_used:

@@ -98,6 +98,8 @@ def run_md_preflight(
     prefer_ff: Optional[str] = None,
     *,
     md_enabled: bool = True,
+    subprocess_isolation: bool = False,
+    timeout_seconds: int = 300,
 ) -> MDPreflightResult:
     """Run the parameterisation probe up-front and prime the disk sidecar.
 
@@ -114,11 +116,38 @@ def run_md_preflight(
         Forwarded to the probe loop; matches `MDConfig.ligand_forcefield`.
     md_enabled
         Pass ``False`` to short-circuit when MD is disabled in config.
+    subprocess_isolation
+        G (post-expert-audit): when True, the probe runs in its own
+        Python subprocess so a sqm hang inside `SystemGenerator.
+        create_system` is bounded by ``timeout_seconds`` (default 300 s).
+        Without this, s01 can hang indefinitely on a real cofactor
+        without curated params — worse than today's s10 hang because
+        the rest of the pipeline never starts. Off by default so the
+        light mac venv (no openmmforcefields) keeps using the in-
+        process path; server configs should turn it on.
+    timeout_seconds
+        Hard wall clock for the subprocess preflight. Status =
+        ``"timeout_preflight"`` on hit.
     """
     if not md_enabled:
         return MDPreflightResult(status="skipped_md_disabled")
     if not smiles:
         return MDPreflightResult(status="skipped_no_smiles")
+
+    if subprocess_isolation:
+        return _run_md_preflight_in_subprocess(
+            smiles, md_dir, prefer_ff, timeout_seconds=timeout_seconds,
+        )
+    return _run_md_preflight_inproc(smiles, md_dir, prefer_ff)
+
+
+def _run_md_preflight_inproc(
+    smiles: str,
+    md_dir: Path,
+    prefer_ff: Optional[str],
+) -> MDPreflightResult:
+    """The original synchronous implementation. Kept as the worker body
+    AND as the fallback when subprocess isolation is disabled."""
 
     md_dir.mkdir(parents=True, exist_ok=True)
 
@@ -227,3 +256,190 @@ def run_md_preflight(
             f"{str(last_exc)[:200] if last_exc else 'unknown'}"
         ),
     )
+
+
+# --- G (post-expert-audit) — subprocess wrapper ------------------------
+#
+# `_run_md_preflight_inproc` calls `SystemGenerator(...).create_system(...)`
+# synchronously. On a real cofactor without curated AMBER files, sqm
+# inside antechamber can hang indefinitely (server-observed). A hang at
+# s01 is worse than at s10 — no per-candidate retry, no other candidates
+# in flight to mask it, the whole pipeline just stalls.
+#
+# The wrapper below pickles `(smiles, md_dir, prefer_ff)` into a tmp
+# file, runs `evoliez.adapters.md_preflight_worker` as a fresh Python
+# process with `start_new_session=True`, and enforces a hard wall-clock
+# timeout. On TimeoutExpired we SIGKILL the entire process group
+# (worker + any antechamber/sqm subprocesses it spawned) and return
+# `status="timeout_preflight"` so the report can label the failure
+# honestly.
+#
+# When the worker module isn't importable / pickling fails / unpickling
+# fails, we fall back to in-process so the pipeline still runs (just
+# without timeout protection). This matches the openmm_subprocess
+# fallback policy.
+
+import pickle as _pickle  # noqa: E402 — keep heavy imports out of the
+import subprocess as _subprocess  # noqa: E402   module-import critical path
+import sys as _sys  # noqa: E402
+import time as _time  # noqa: E402
+
+_WORKER_MODULE = "evoliez.adapters.md_preflight_worker"
+_INPUTS_PKL = "_preflight_inputs.pkl"
+_RESULT_PKL = "_preflight_result.pkl"
+_WORKER_LOG = "_preflight_worker.log"
+
+
+def _run_md_preflight_in_subprocess(
+    smiles: str,
+    md_dir: Path,
+    prefer_ff: Optional[str],
+    *,
+    timeout_seconds: int,
+) -> MDPreflightResult:
+    """Spawn the preflight worker; enforce a wall-clock timeout."""
+    md_dir.mkdir(parents=True, exist_ok=True)
+    workdir = md_dir / "_preflight"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    inputs_path = workdir / _INPUTS_PKL
+    result_path = workdir / _RESULT_PKL
+    log_path = workdir / _WORKER_LOG
+
+    # Stale pickle cleanup so a previous run's result can't leak into
+    # this one (the worker writes result_path on success; absence is
+    # how we detect a crash).
+    for p in (inputs_path, result_path):
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+    try:
+        with inputs_path.open("wb") as fh:
+            _pickle.dump(
+                {
+                    "smiles": smiles,
+                    "md_dir": str(md_dir),
+                    "prefer_ff": prefer_ff,
+                },
+                fh,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "MD preflight: failed to pickle inputs (%s) — falling back "
+            "to in-process", exc,
+        )
+        return _run_md_preflight_inproc(smiles, md_dir, prefer_ff)
+
+    cmd = [
+        _sys.executable, "-u",
+        "-m", _WORKER_MODULE,
+        str(inputs_path), str(result_path),
+    ]
+    log.info(
+        "MD preflight: launching subprocess (timeout=%ds, workdir=%s)",
+        timeout_seconds, workdir,
+    )
+    start = _time.monotonic()
+    proc = None
+    try:
+        with log_path.open("wb") as logf:
+            proc = _subprocess.Popen(
+                cmd,
+                stdout=logf, stderr=_subprocess.STDOUT,
+                start_new_session=True,    # SIGKILL hits sqm too
+            )
+        try:
+            proc.wait(timeout=timeout_seconds)
+        except _subprocess.TimeoutExpired:
+            log.warning(
+                "MD preflight: exceeded timeout=%ds; killing process group",
+                timeout_seconds,
+            )
+            _kill_process_group(proc)
+            return MDPreflightResult(
+                status="timeout_preflight",
+                reason=(
+                    f"preflight subprocess timeout after {timeout_seconds}s "
+                    f"(probe likely hung in sqm / antechamber)"
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "MD preflight: subprocess launch failed (%s) — falling back "
+            "to in-process", exc,
+        )
+        if proc is not None:
+            _kill_process_group(proc)
+        return _run_md_preflight_inproc(smiles, md_dir, prefer_ff)
+
+    elapsed = _time.monotonic() - start
+    rc = proc.returncode if proc is not None else -1
+    if rc != 0 or not result_path.exists():
+        tail = _read_log_tail(log_path)
+        log.warning(
+            "MD preflight: subprocess crashed (rc=%d, %.1fs); tail=%s",
+            rc, elapsed, tail[:200],
+        )
+        return MDPreflightResult(
+            status="failed_preflight",
+            reason=(
+                f"preflight subprocess crashed (rc={rc}) "
+                f"after {elapsed:.1f}s: {tail[-400:]}"
+            ),
+        )
+
+    try:
+        with result_path.open("rb") as fh:
+            result: MDPreflightResult = _pickle.load(fh)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "MD preflight: failed to unpickle result (%s) — treating "
+            "as failed_preflight", exc,
+        )
+        return MDPreflightResult(
+            status="failed_preflight",
+            reason=f"preflight unpickle error: {exc}",
+        )
+
+    log.info(
+        "MD preflight: subprocess finished status=%s in %.1fs",
+        result.status, elapsed,
+    )
+    return result
+
+
+def _kill_process_group(proc) -> None:
+    """SIGTERM then SIGKILL the process group started with
+    ``start_new_session=True``. Mirrors openmm_subprocess._kill_process_group
+    so we don't leak antechamber/sqm subprocesses."""
+    import os
+    import signal
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except _subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except _subprocess.TimeoutExpired:
+            pass
+
+
+def _read_log_tail(log_path: Path, max_bytes: int = 4096) -> str:
+    """Best-effort tail read for a debuggable failure_reason."""
+    try:
+        data = log_path.read_bytes()
+        return data[-max_bytes:].decode("utf-8", errors="replace")
+    except Exception:
+        return ""

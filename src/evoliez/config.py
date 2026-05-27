@@ -183,6 +183,15 @@ class MDConfig(_Base):
     # legitimate long MD run isn't killed; tune down per enzyme once
     # cheap-run wall times are known.
     subprocess_timeout_seconds: int = 1800
+    # G (post-expert-audit): s01 preflight runs in its own subprocess
+    # with this wall-clock. A ligand-only probe should finish in
+    # seconds (Gasteiger) or low minutes (AM1-BCC); if it doesn't,
+    # MD is going to time out anyway. 300 s is intentionally tighter
+    # than `subprocess_timeout_seconds` so the preflight FAILS FAST and
+    # the report can label `unsupported` honestly up-front instead of
+    # the whole pipeline hanging in s01 (worse than today's s10 hang
+    # because there's no per-stage retry).
+    preflight_timeout_seconds: int = 300
     # Mirrors RerankConfig.binding_site_reserved_per_position but for
     # the s09→s10 transition. Cheap-run-3 finding: the +0.6 prior in
     # s08 lifts binding-site candidates into top_for_redocking, but
