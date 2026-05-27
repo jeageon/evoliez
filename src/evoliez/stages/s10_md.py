@@ -225,11 +225,26 @@ class MDStage(Stage):
                     )
                 )
 
+        # N (post-expert-audit) — n_md_passed counts BOTH genuine passes
+        # AND neutral skips (skipped_parameterization). For metric
+        # honesty also expose n_md_validated = passes that ACTUALLY ran
+        # MD on this candidate. A consumer that only looked at the old
+        # n_md_passed could be fooled into thinking a fully-skipped run
+        # (e.g. NADP+ on a server without curated AMBER files) had MD-
+        # validated every candidate. The new key is what the honesty log
+        # line uses; n_md_passed is preserved for back-compat readers.
         n_pass = sum(1 for c in candidates if c.details.get("md_passed"))
+        n_validated = sum(
+            1 for c in candidates
+            if c.details.get("md_passed") and c.details.get("md_did_run")
+        )
+        n_neutral_skip = n_pass - n_validated
         n_replicated = sum(1 for c in candidates
                            if int(c.scores.get("md_replicas_run", 1)) > 1)
         ctx.put("md_candidates", candidates)
-        ctx.persist_meta("n_md_passed", n_pass)
+        ctx.persist_meta("n_md_passed", n_pass)         # back-compat
+        ctx.persist_meta("n_md_validated", n_validated)  # honest
+        ctx.persist_meta("n_md_neutral_skip", n_neutral_skip)
         ctx.persist_meta("n_md_real_ran", n_ran)
         ctx.persist_meta("n_md_skipped", n_skipped)
         ctx.persist_meta("n_md_failed", n_failed)
@@ -238,10 +253,23 @@ class MDStage(Stage):
         ctx.persist_meta("n_md_final_tier", n_final_tier)
         mode = ("dry-run preview" if ctx.dry_run
                 else getattr(backend, "value", str(backend)))
-        self.log.info(
-            "MD (L%d, %s) [%s]: %d/%d passed",
-            mdcfg.protocol_level, mdcfg.solvent, mode, n_pass, len(candidates),
-        )
+        # Honesty: log validated separately from neutral skips. When
+        # `n_neutral_skip > 0` the operator sees the split immediately
+        # instead of reading "12/12 passed" and assuming MD validated
+        # the run.
+        if n_neutral_skip > 0:
+            self.log.info(
+                "MD (L%d, %s) [%s]: %d/%d validated "
+                "(+ %d neutral skips counted as md_passed=True)",
+                mdcfg.protocol_level, mdcfg.solvent, mode,
+                n_validated, len(candidates), n_neutral_skip,
+            )
+        else:
+            self.log.info(
+                "MD (L%d, %s) [%s]: %d/%d validated",
+                mdcfg.protocol_level, mdcfg.solvent, mode,
+                n_validated, len(candidates),
+            )
         # Deterministic, greppable honesty line: how many candidates the MD
         # engine ACTUALLY ran (vs skipped/failed). server_smoke.sh asserts
         # this is >0 for the real MD rung so a degraded stage can't pass as
