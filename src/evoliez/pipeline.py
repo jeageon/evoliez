@@ -9,7 +9,7 @@ from typing import List, Optional
 from evoliez.context import RunContext
 from evoliez.logging_utils import get_logger
 from evoliez.stages import ALL_STAGES
-from evoliez.stages.base import Stage
+from evoliez.stages.base import PreflightBlocked, Stage
 
 log = get_logger("evoliez.pipeline")
 
@@ -46,7 +46,24 @@ class Pipeline:
                     )
                     continue
                 log.info("[run ] %s", stage.name)
-                stage.run(ctx)
+                try:
+                    stage.run(ctx)
+                except PreflightBlocked as pb:
+                    # K (post-expert-audit) — clean halt, not a crash.
+                    # s01 raised this because strict_preflight=True and
+                    # the MD parameterisation preflight returned a
+                    # blocking status. No downstream stage should run:
+                    # Boltz / docking / ranking / MD all consume the
+                    # ligand the preflight just declared MD-unusable.
+                    # `ctx.meta["preflight_blocked"]` has already been
+                    # set by s01 so the harness / report can see the
+                    # reason.
+                    log.warning(
+                        "[halt] %s: preflight blocked (status=%s) — "
+                        "pipeline stops cleanly. Reason: %s",
+                        stage.name, pb.status, pb.reason or "n/a",
+                    )
+                    return ctx
                 ctx.mark_stage_done(stage.name)
                 log.info("[done] %s (%.1fs)", stage.name, time.time() - t0)
             return ctx

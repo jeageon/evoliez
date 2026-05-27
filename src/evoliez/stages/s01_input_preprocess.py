@@ -13,7 +13,7 @@ from evoliez.features.cofactors import (
     resolve_ligand_spec,
 )
 from evoliez.features.ligand import parse_ligand
-from evoliez.stages.base import Stage
+from evoliez.stages.base import PreflightBlocked, Stage
 
 _VALID_AA = set("ACDEFGHIKLMNPQRSTVWYX")
 
@@ -189,6 +189,35 @@ class InputPreprocessStage(Stage):
             f" (FF={preflight.ff_used})" if preflight.ff_used else "",
             f" — {preflight.reason}" if preflight.reason else "",
         )
+
+        # K (post-expert-audit) — strict mode halts the pipeline at s01.
+        # H added the s08b gate, but with strict_preflight=True s02-s07
+        # would still run (homology / MSA / s04 Boltz / docking / ranking)
+        # before s08b realised MD could never validate the candidates.
+        # That's hours of waste for a project the preflight already
+        # proved hopeless. Halt cleanly here instead — Pipeline catches
+        # the PreflightBlocked exception and stops downstream stages
+        # without surfacing a stack trace. Defence in depth: the s08b
+        # gate is still in place for legacy / fallback configs that
+        # disable this halt.
+        try:
+            strict = bool(getattr(ctx.config.validation.md,
+                                  "strict_preflight", False))
+        except Exception:
+            strict = False
+        _blocking = {"unsupported", "timeout_preflight", "failed_preflight"}
+        if strict and preflight.status in _blocking:
+            self.log.warning(
+                "strict_preflight=True and md_preflight_status=%r — "
+                "halting pipeline at s01 (no Boltz / no docking / no MD). "
+                "Reason: %s",
+                preflight.status, preflight.reason or "n/a",
+            )
+            ctx.persist_meta("preflight_blocked", preflight.status)
+            ctx.persist_meta(
+                "preflight_blocked_reason", preflight.reason or ""
+            )
+            raise PreflightBlocked(preflight.status, preflight.reason or "")
 
     def load(self, ctx: RunContext) -> bool:
         fa = ctx.paths.inputs / "target.fasta"
