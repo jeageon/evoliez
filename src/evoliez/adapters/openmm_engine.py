@@ -473,8 +473,28 @@ def _ligand_probe_cache_path(workdir: Path) -> Path:
 
 def _probe_cache_key(canonical_smiles: str, ff: str) -> str:
     """`|` is illegal in SMILES, so it's a safe separator. Including the
-    FF name in the key means switching FF (e.g. gaff -> openff-2.2.0)
-    cleanly invalidates the cache without us having to bump a version."""
+    FF *name* (e.g. ``"openff-2.2.0"``, ``"gaff-2.11+gasteiger"``) means
+    switching the small-molecule FF cleanly invalidates the cache.
+
+    SCOPE NOTE (post-expert-audit I): the FF *name* already encodes a
+    version when the version is in the name (Sage explicitly does;
+    `gaff-2.11` does; `gaff-2.11+gasteiger` does). It does NOT encode
+    the openff-toolkit / openmmforcefields / ambertools versions, nor
+    the protein FF or solvent model. The cache is RUN-LEVEL (one MD
+    stage invocation = one disk sidecar in `workdir.parent`), so those
+    don't change within a run and a coarser key is fine in practice.
+
+    If we ever pivot to a cross-run / per-user cache, the key needs to
+    grow to include:
+      - openff.toolkit version
+      - openmmforcefields version
+      - ambertools version (charge-method dependency)
+      - charge-method enum (am1bcc / gasteiger / espaloma)
+      - protein FF + solvent model (only if the cached SystemGenerator
+        object is reused, not just the "ok/unsupported" verdict)
+    See test_md_ligand_probe_cache.py for the contract this docstring
+    pins.
+    """
     return f"{canonical_smiles}|{ff}"
 
 
