@@ -26,6 +26,28 @@ from evoliez.utils.seeds import derive_seed
 log = get_logger("evoliez.openmm")
 
 
+# D-minimal phase markers — emitted to stdout via the SAME prefix the
+# subprocess worker uses (`[evoliez-md-phase] <name> <unix_ts>`). When
+# subprocess isolation is on, the parent redirects worker stdout into
+# `<workdir>/_md_subprocess.log`, so these markers persist per candidate.
+# When MD runs in-process, they go to the cheap-run script's tee log.
+# Grep `[evoliez-md-phase]` post-mortem to know exactly which phase a
+# crash landed in — TEM-1 third PASS would have been explainable
+# instead of "fragile but somehow worked".
+import time as _time   # noqa: E402
+
+_PHASE_PREFIX = "[evoliez-md-phase]"
+
+
+def _phase(name: str, candidate_id: str = "") -> None:
+    """Emit a phase marker. Best-effort: never raise; never block."""
+    try:
+        suffix = f" {candidate_id}" if candidate_id else ""
+        print(f"{_PHASE_PREFIX} {name}{suffix} {_time.time():.3f}", flush=True)
+    except Exception:
+        pass
+
+
 @dataclass
 class MDResult:
     candidate_id: str
@@ -632,6 +654,7 @@ def _run_real(
     catalytic_positions: Sequence[int],
     dry_run: bool,
 ) -> MDResult:
+    _phase("run_real_start", candidate_id)
     if dry_run:
         log.info("[dry-run] would run OpenMM L%d (%s) for %s",
                  cfg.protocol_level, cfg.solvent, candidate_id)
@@ -644,6 +667,7 @@ def _run_real(
     from openmm import unit
 
     apply_gpu_selection()
+    _phase("openmm_imported", candidate_id)
     src = getattr(cx.structure, "pdb_path", None)
     if src and Path(src).exists() and _is_full_atom_pdb(Path(src)):
         pdb_path = Path(src)                       # real full-atom structure
@@ -668,6 +692,7 @@ def _run_real(
                            "run s04_complex real or supply a full-atom PDB",
         )
     pdb = app.PDBFile(str(pdb_path))
+    _phase("topology_loaded", candidate_id)
 
     # (#2) The full-atom PDB must actually be THIS candidate's structure.
     # _mutant_complex only swaps dataclass residue letters; pdb_path stays
@@ -719,8 +744,10 @@ def _run_real(
     # PDBFixer-repaired (terminal OXT / missing heavy atoms) with the
     # ligand stripped, then recombined. A failure HERE is a REAL MD failure
     # (structure / chemistry / template), surfaced as failed - never a pass.
+    _phase("ligand_build_start", candidate_id)
     try:
         off_lig = _ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)
+        _phase("ligand_build_done", candidate_id)
     except Exception as exc:
         # Ligand chemistry could not be built from PDB+CONECT+SMILES
         # (rare; verified-correct for NADP locally) - a real structure
@@ -751,12 +778,14 @@ def _run_real(
     took_curated = False
     system = modeller = None
     if curated_spec and curated_spec.resolved_amber_files() is not None:
+        _phase("curated_param_start", candidate_id)
         try:
             system, topology, positions = _curated_param_system_generator(
                 off_lig, pdb_path, curated_spec, workdir,
             )
             modeller = _MaybeModeller(topology, positions)
             took_curated = True
+            _phase("curated_param_done", candidate_id)
         except _CuratedParamUnavailable as exc:
             log.info(
                 "curated path unavailable for %s (%s); falling back to "
@@ -792,6 +821,7 @@ def _run_real(
         # Either tier raising _LigandParamUnsupported -> NEUTRAL
         # skipped_parameterization (the candidate is judged on the other
         # layers; same status as the existing AM1-BCC-only path).
+        _phase("parameterization_start", candidate_id)
         try:
             if curated_spec is not None:
                 log.info(
@@ -808,6 +838,7 @@ def _run_real(
                     off_lig, workdir,
                     prefer_ff=getattr(cfg, "ligand_forcefield", None),
                 )
+            _phase(f"parameterization_done_{_ff}", candidate_id)
         except _LigandParamUnsupported as exc:
             log.warning(
                 "no small-molecule FF can parameterize the ligand for %s "
@@ -822,6 +853,7 @@ def _run_real(
                 failure_reason=f"ligand FF unsupported (cofactor): {exc}",
             )
 
+        _phase("protein_prep_start", candidate_id)
         try:
             topo, posns = _protein_only_pdbfixed(pdb_path)
             if topo is None:                       # pdbfixer absent
@@ -832,6 +864,7 @@ def _run_real(
                 )
                 topo, posns = pdb.topology, pdb.positions
             modeller = app.Modeller(topo, posns)
+            _phase("modeller_built", candidate_id)
             # Invariant: prep MUST be protein-only. A H-less Boltz LIG that
             # survives here is exactly what produced the confusing "No
             # template for residue LIG / missing 57 H" - fail honestly and
@@ -853,9 +886,11 @@ def _run_real(
                 off_lig.to_topology().to_openmm(),
                 off_lig.conformers[0].to_openmm(),
             )
+            _phase("create_system_start", candidate_id)
             system = system_generator.create_system(
                 modeller.topology, molecules=[off_lig]
             )
+            _phase("create_system_done", candidate_id)
         except Exception as exc:
             log.warning(
                 "MD protein+ligand assembly / system creation failed for "
@@ -894,9 +929,13 @@ def _run_real(
         1.0 / unit.picosecond,
         timestep_fs * unit.femtoseconds,
     )
+    _phase("context_create_start", candidate_id)
     sim = app.Simulation(modeller.topology, system, integrator)
     sim.context.setPositions(modeller.positions)
+    _phase("context_create_done", candidate_id)
+    _phase("minimize_start", candidate_id)
     sim.minimizeEnergy(maxIterations=cfg.minimize_steps)
+    _phase("minimize_done", candidate_id)
 
     minpdb = workdir / f"{candidate_id}_minimized.pdb"
     with minpdb.open("w") as fh:
@@ -932,6 +971,7 @@ def _run_real(
     pkt_series: List[float] = []
     e_start = e_last = None
     if cfg.protocol_level >= 1:
+        _phase("production_start", candidate_id)
         sim.context.setVelocitiesToTemperature(cfg.temperature_K * unit.kelvin)
         nsteps = int((cfg.production_ns * 1000) / (timestep_fs / 1000) / 1000)
         nsteps = max(50, min(nsteps, 5000) if cfg.protocol_level < 3 else nsteps)
@@ -947,11 +987,13 @@ def _run_real(
             e_start = e if e_start is None else e_start
             e_last = e
         trajectory_path = str(traj)
+        _phase("production_done", candidate_id)
     else:
         trajectory_path = None
 
     drift = abs((e_last - e_start) / e_start) if e_start else 0.0
     status = "unstable" if (lig_series and lig_series[-1] > 5.0) else "ok"
+    _phase(f"run_real_done_{status}", candidate_id)
     # P0.6: provenance. `_ff` is set by the probe path; the curated branch
     # didn't go through the probe so default to "curated_amber". HMR /
     # timestep / replicas come straight from the config.
