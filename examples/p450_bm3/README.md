@@ -5,6 +5,42 @@ cytochrome P450 BM3 (UniProt **P14779**, 1049 aa — the heme domain is
 the catalytic N-terminal ~470 aa; FMN/FAD reductase domain is fused
 C-terminal). The heme-domain crystal structure is **1BU7 / 2HPD**.
 
+## ⚠️ Scope (post-expert-audit J): lauric-acid-only, no heme cofactor
+
+**The cheap-run config (`configs/server_p450_bm3_cheap.yaml`) dockets
+*lauric acid only*. Heme is NOT included in the model — neither in the
+docked complex nor in the MD topology.** This is a deliberate scope
+limitation, not an oversight, but it MUST be kept in mind when reading
+results:
+
+- The P450 catalytic geometry depends on Fe–S(Cys401) + Fe–O(substrate)
+  coordination. Without heme in the active site, MD relaxes lauric acid
+  into a pocket geometry that does NOT reflect the real catalytic
+  state. Substrate-channel mutations (F88 / A83 / V79) are still
+  scorable because they're channel-gating, not chemistry; pocket-
+  reshaping interpretations (L189 / A329) and especially proton-relay
+  interpretations (T269 / D251 / E268) are weakened.
+- C401 (paper C400) is in `catalytic_residues` for distance bookkeeping
+  (mutating it is deleterious in real life because it breaks Fe–S
+  coordination), but without heme our MD records it as just a buried
+  Cys — distance constraints to "Fe" don't exist.
+- NADPH (electron donor) is correctly omitted: it binds the reductase
+  domain, not the heme domain we score. Heme is the gap.
+
+A heme-inclusive variant is planned: either via Boltz with `HEM` as an
+explicit cofactor, OR via curated AMBER `HEM.lib + HEM.frcmod` (Bryce
+Lab) in the s10_md curated path so MD has a real heme template. Until
+that lands, treat aggregate recall@K on this config as a *lower
+bound* — real recall would improve with heme present, because the
+active-site geometry would constrain pose acceptance:
+
+| Mutation class | Interpretation strength on current config |
+| --- | --- |
+| Substrate-channel (F88 / A83 / V79) | ✓ honest |
+| Pocket-reshaping (L189 / A329) | partial |
+| I-helix proton relay (T269 / D251 / E268) | weak |
+| Heme-axial (C401) | not interpretable |
+
 P450 BM3 is the "stress test" of the multi-enzyme set: substrate
 promiscuity is the whole point of the enzyme, the active site has
 been engineered hundreds of different ways by different labs, and

@@ -7,6 +7,17 @@
 # the electron donor but binds the reductase domain, not the heme
 # domain we're scoring against — it's NOT the docked ligand.
 #
+# === SCOPE NOTE (post-expert-audit J) ===
+# This config dockets *lauric acid only*. **Heme is NOT in the
+# model** — neither in the Boltz complex nor in the MD topology. That
+# makes substrate-channel mutations (F88/A83/V79) cleanly scorable,
+# pocket-reshaping (L189/A329) interpretations partial, and I-helix
+# proton-relay (T269/D251/E268) interpretations weak. Heme-axial C401
+# is NOT interpretable in MD (no Fe-S coordination present). A
+# heme-inclusive variant is planned; until it lands, treat recall@K
+# on this config as a LOWER BOUND. See examples/p450_bm3/README.md
+# for the full interpretation-strength table.
+#
 # Heme-thiolate Cys400 is the most rigorously documented catalytically-
 # essential residue in the whole P450 superfamily (Yoshioka 2001,
 # Auclair 2001, Munro 2002). Beneficial mutations are the active-site
