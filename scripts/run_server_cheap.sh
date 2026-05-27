@@ -437,18 +437,21 @@ else
     ok "Phase 2 skipped (BENCH_ONLY)"
 fi
 
-CAND_CSV="$OUTPUT_DIR/reports/final_candidates.csv"
-[ -f "$CAND_CSV" ] || die "no $CAND_CSV — pipeline produced no ranking"
-
 # ===========================================================
 # Phase 2.5 -- MD preflight status (operator-facing)
 # ===========================================================
-# C / H (post-expert-audit): s01 writes md_preflight_status to
+# C / H / K (post-expert-audit): s01 writes md_preflight_status to
 # project meta. Surfacing it here lets the operator see UP-FRONT
 # whether this enzyme's ligand was MD-parameterisable, instead of
 # discovering it via "MD failed on every candidate" 25 hours later.
-# Read-only; the actual gate is enforced by s08b when
-# mdcfg.strict_preflight=True.
+# Read-only; the actual gate is enforced by s01 (strict_preflight=True
+# raises PreflightBlocked → Pipeline halts cleanly) + s08b
+# (defence-in-depth gate).
+#
+# IMPORTANT: Phase 2.5 runs BEFORE the final_candidates.csv check,
+# because a clean preflight halt means no CSV exists by design — not
+# an error. The CSV check below is conditional on "preflight did NOT
+# block".
 say "Phase 2.5 — MD preflight verdict"
 META_FILE="$OUTPUT_DIR/_state.json"
 if [ -f "$META_FILE" ]; then
@@ -473,6 +476,23 @@ try:
 except Exception:
     print("")
 ' "$META_FILE" 2>/dev/null || echo "")"
+    # K (post-expert-audit) — was the pipeline halted at s01 by
+    # strict_preflight? `ctx.persist_meta("preflight_blocked", ...)`
+    # is set ONLY when s01 raised PreflightBlocked and Pipeline.run
+    # caught it. Detecting this here lets us produce an HONEST
+    # "halted on purpose" summary instead of dying on the missing
+    # final_candidates.csv check below.
+    PRE_BLOCKED="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    meta = d.get("meta") or {}
+    print(meta.get("preflight_blocked", ""))
+except Exception:
+    print("")
+' "$META_FILE" 2>/dev/null || echo "")"
+
     case "$PRE_STATUS" in
         ok|curated_available)
             ok "MD preflight: $PRE_STATUS — MD will run"
@@ -483,15 +503,45 @@ except Exception:
         unsupported|timeout_preflight|failed_preflight)
             warn "MD preflight: $PRE_STATUS — MD will SKIP (no FF supports this ligand)"
             [ -n "$PRE_REASON" ] && echo "   reason: $PRE_REASON"
-            warn "Set MDConfig.strict_preflight=true to short-circuit s08b on this status."
             ;;
         *)
             warn "MD preflight: status=$PRE_STATUS (unrecognised — possibly older run)"
             ;;
     esac
+
+    if [ -n "$PRE_BLOCKED" ]; then
+        echo
+        warn "============================================================"
+        warn "Pipeline HALTED at s01 by strict_preflight (preflight_blocked"
+        warn "= '$PRE_BLOCKED'). No Boltz / no docking / no MD ran — this"
+        warn "is the K/L behaviour, not a crash. The cheap-run script"
+        warn "exits cleanly without Phase 2b / Phase 3 / Phase 4 because"
+        warn "there's no final_candidates.csv to score by design."
+        warn "============================================================"
+        if [ -n "$PRE_REASON" ]; then
+            echo "   blocking reason: $PRE_REASON"
+        fi
+        echo
+        echo "If you expected MD to run on this enzyme, either:"
+        echo "  - Install curated AMBER cofactor files (NAP.lib + NAP.frcmod"
+        echo "    for NADP+, etc.) under \$EVOLIEZ_AMBER_PARAMS so preflight"
+        echo "    returns curated_available instead of unsupported."
+        echo "  - Set validation.md.strict_preflight: false in the config"
+        echo "    to let the pipeline run despite an unparameterisable"
+        echo "    ligand (MD will neutral-skip; Boltz / docking still"
+        echo "    produce signal)."
+        ok "Phase 2.5 done — clean halt observed (exit 0)"
+        exit 0
+    fi
 else
     warn "no $META_FILE — preflight status unavailable (pipeline may have crashed early)"
 fi
+
+# CSV check moved here (was at line 441 pre-K): only required when the
+# pipeline did NOT halt at preflight. A clean halt produces no CSV by
+# design and the strict_preflight branch above already exited 0.
+CAND_CSV="$OUTPUT_DIR/reports/final_candidates.csv"
+[ -f "$CAND_CSV" ] || die "no $CAND_CSV — pipeline produced no ranking"
 
 # ===========================================================
 # Phase 2b -- output-package inventory check
