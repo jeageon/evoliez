@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from evoliez.adapters.md_preflight import run_md_preflight
 from evoliez.context import RunContext
 from evoliez.db.schema import Sequence
 from evoliez.features.cofactors import (
@@ -145,6 +146,36 @@ class InputPreprocessStage(Stage):
         self.log.info(
             "target=%d aa, ligand=%s (%d heavy atoms), catalytic=%s",
             len(seq), ligand.id, ligand.n_heavy, catalytic,
+        )
+
+        # P0 C — run MD parameterisation preflight here (not at s10) so:
+        #   1. The report can label MD-skipped projects HONESTLY up-front
+        #      instead of after stages 02-09 have already burned 25+ hours.
+        #   2. The probe-cache disk sidecar is primed: every s10 candidate
+        #      hits the cache instead of paying the probe per-candidate,
+        #      and subprocess-isolated workers inherit it at startup.
+        # Degrades to skipped_no_md_libs in the light mac venv.
+        try:
+            mdcfg = ctx.config.validation.md
+            md_enabled = bool(getattr(mdcfg, "enabled", True))
+            prefer_ff = getattr(mdcfg, "ligand_forcefield", None)
+        except Exception:
+            md_enabled = True
+            prefer_ff = None
+        preflight = run_md_preflight(
+            ligand.smiles, ctx.paths.md,
+            prefer_ff=prefer_ff, md_enabled=md_enabled,
+        )
+        ctx.persist_meta("md_preflight_status", preflight.status)
+        if preflight.ff_used:
+            ctx.persist_meta("md_preflight_ff", preflight.ff_used)
+        if preflight.reason:
+            ctx.persist_meta("md_preflight_reason", preflight.reason)
+        self.log.info(
+            "MD preflight: %s%s%s",
+            preflight.status,
+            f" (FF={preflight.ff_used})" if preflight.ff_used else "",
+            f" — {preflight.reason}" if preflight.reason else "",
         )
 
     def load(self, ctx: RunContext) -> bool:
