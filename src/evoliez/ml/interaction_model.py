@@ -8,6 +8,9 @@ per-pose prediction score].
 
 Backends, auto-selected by availability: xgboost -> sklearn logistic ->
 dependency-free heuristic (distance-to-consensus logistic). All deterministic.
+The [msa_membership, identity_to_target, per-pose prediction score] tail is
+consumed by the trained backends only; the heuristic fallback scores on
+fingerprint distance alone (see ``score_vector``).
 """
 
 from __future__ import annotations
@@ -113,7 +116,30 @@ class InteractionModel:
         mp = float(pos.mean()) if pos.size else float(d.min())
         mn = float(neg.mean()) if neg.size else float(d.max())
         self.thr = (mp + mn) / 2.0
-        self.scale = max(1e-3, (mn - mp) / 4.0 or float(d.std()) or 1.0)
+        # Sigmoid width. The old code did `max(1e-3, (mn-mp)/4 or std or 1)`:
+        # when labels are degenerate (mn <= mp) the negative gap is *truthy*, so
+        # the `or` never falls through and scale collapses to 1e-3 -> an almost
+        # hard step that saturates every score at ~0 or ~1. We instead:
+        #   * fall back to the overall distance spread when the pos/neg gap is
+        #     non-positive or vanishing, and
+        #   * never let scale fall below a fraction of that spread, so a
+        #     realistic single-mutant perturbation moves along the sigmoid
+        #     instead of pinning at 0.98 (gap/4 alone is far too steep when the
+        #     positive cluster is tight).
+        spread = float(d.std()) or float(np.median(np.abs(d - np.median(d)))) \
+            or float(d.mean()) or 1.0
+        gap = (mn - mp) / 4.0
+        if mn <= mp:
+            log.warning(
+                "interaction model: degenerate pose labels (neg mean %.3f <= "
+                "pos mean %.3f); using distance spread %.3f for sigmoid scale "
+                "instead of a collapsed hard step", mn, mp, spread,
+            )
+        base = gap if gap > 1e-3 else spread
+        # Widen so the transition spans the realistic distance distribution and
+        # does not saturate at the extremes (tie to the full spread, not just
+        # the often-tiny pos/neg gap).
+        self.scale = max(base, 0.5 * spread, 1e-3)
         log.info(
             "interaction model: heuristic (thr=%.3f scale=%.3f, %d rows)",
             self.thr, self.scale, sel.X.shape[0],
@@ -121,7 +147,17 @@ class InteractionModel:
 
     # ------------------------------------------------------------------ #
     def score_vector(self, x: np.ndarray) -> float:
-        """P(family-consistent) for one augmented feature row."""
+        """P(family-consistent) for one augmented feature row.
+
+        Trained backends (xgboost / logistic) use the *full* augmented row,
+        including the [msa_membership, identity_to_target, pred_score] tail. The
+        dependency-free **heuristic** fallback, however, is purely a
+        fingerprint-distance-to-consensus logistic: it reads only the first
+        ``fp_dim`` columns and ignores the three extra features by design
+        (there is no labelled signal to weight them against without a fitted
+        estimator). Callers needing those features to influence the score must
+        be on a trained backend.
+        """
         x = np.asarray(x, dtype=float).reshape(1, -1)
         if self.kind in ("xgboost", "logistic") and self._est is not None:
             try:

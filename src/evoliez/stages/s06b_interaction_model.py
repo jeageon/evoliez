@@ -23,7 +23,7 @@ from evoliez.features.interaction_descriptor import (
 from evoliez.logging_utils import get_logger
 from evoliez.ml.datasets import edge_rows, pose_rows
 from evoliez.ml.interaction_model import InteractionModel
-from evoliez.ml.pose_selection import PoseRecord, select_poses
+from evoliez.ml.pose_selection import PoseRecord, _augment, select_poses
 from evoliez.stages.base import Stage
 
 _log = get_logger("evoliez.s06b_interaction")
@@ -214,12 +214,21 @@ class InteractionModelStage(Stage):
         )
         sel = select_poses(records, **sel_kw)
 
-        # subfamily-holdout validation: train without one homolog group,
-        # check the model still ranks its held-out consensus poses above
-        # decoys (guards against memorising / consensus circularity).
-        holdout_auroc = self._subfamily_holdout(records, sel_kw, cfg)
-        if holdout_auroc is not None:
-            self.log.info("subfamily-holdout AUROC = %.3f", holdout_auroc)
+        # Leave-one-group-out consensus-generalization check: for each homolog
+        # group, train on all the OTHERS and test whether the model ranks the
+        # held group's REAL poses above decoys derived from the TRAIN consensus.
+        # The negatives come from the training distribution (not the held
+        # group's own median), so this measures generalization to an unseen
+        # group rather than the old self-referential "real pose vs noise around
+        # itself" (which scored ~1.0 for any tight cluster, even pure junk).
+        gen = self._consensus_generalization(records, sel_kw, cfg)
+        gen_auroc = gen["mean"] if gen else None
+        if gen_auroc is not None:
+            self.log.info(
+                "consensus-generalization AUROC = %.3f +/- %.3f "
+                "(leave-one-group-out over %d groups)",
+                gen_auroc, gen["std"], gen["n_groups"],
+            )
 
         model = InteractionModel(
             cutoff=cfg.contact_cutoff, k_nearest=cfg.k_nearest_residues
@@ -248,7 +257,18 @@ class InteractionModelStage(Stage):
                 "n_outlier": sel.n_outlier,
                 "n_decoy": sel.n_decoy,
                 "n_hard_decoy": sel.n_hard_decoy,
-                "subfamily_holdout_auroc": holdout_auroc,
+                # Honest name: leave-one-group-out AUROC of held real poses vs
+                # TRAIN-consensus decoys (does NOT use self-derived decoys, so
+                # it actually measures generalization). None when < 3 groups or
+                # no group yields a measurable split.
+                "consensus_generalization_auroc": gen_auroc,
+                "consensus_generalization_auroc_std": (
+                    gen["std"] if gen else None),
+                "consensus_generalization_n_groups": (
+                    gen["n_groups"] if gen else 0),
+                # Back-compat alias for the old (mislabelled) key; same value.
+                # The metric is no longer the circular self-decoy AUROC.
+                "subfamily_holdout_auroc": gen_auroc,
                 "model_kind": model.kind,
                 "fp_dim": fingerprint_dim(cfg.k_nearest_residues),
             },
@@ -265,30 +285,75 @@ class InteractionModelStage(Stage):
                 describe(sel.consensus, cfg.k_nearest_residues),
             )
 
-    def _subfamily_holdout(self, records, sel_kw, cfg):
-        """Hold out one homolog group; train on the rest; AUROC of the
-        held-out consensus poses vs that group's decoys."""
+    def _consensus_generalization(self, records, sel_kw, cfg):
+        """Leave-one-group-out consensus-generalization AUROC (de-circularized).
+
+        For each homolog group ``g``:
+          * train an ``InteractionModel`` on all the OTHER groups - this builds
+            the *train* consensus and the *train* decoys;
+          * POSITIVES = group ``g``'s **real** poses (their raw augmented
+            fingerprints, never passed through ``select_poses`` so no decoys are
+            synthesised from ``g``'s own median);
+          * NEGATIVES = the **train** decoys (perturbations of the *train*
+            consensus, ``pose_class == 0`` from the training selection);
+          * AUROC = does the train model rank ``g``'s real poses above
+            train-derived noise?
+
+        The negatives are drawn from the training distribution, so a held group
+        that is pure junk far from the train consensus scores near chance - the
+        old method compared ``g``'s real poses against decoys built from ``g``'s
+        OWN median, which any tight cluster (even random) beats trivially (~1.0).
+
+        Returns ``{"mean", "std", "per_group", "n_groups"}`` averaged over every
+        group that yields a measurable split, or ``None`` when the check is not
+        applicable (disabled, < 3 groups, or no measurable group).
+        """
         if not cfg.subfamily_holdout:
             return None
         groups = sorted({r.group_id for r in records})
         if len(groups) < 3:
             return None
-        held = groups[-1]
-        train_recs = [r for r in records if r.group_id != held]
-        held_recs = [r for r in records if r.group_id == held]
-        if not train_recs or not held_recs:
-            return None
-        sel = select_poses(train_recs, **sel_kw)
-        m = InteractionModel(
-            cutoff=cfg.contact_cutoff, k_nearest=cfg.k_nearest_residues
-        ).fit(sel)
-        held_sel = select_poses(held_recs, **{**sel_kw, "seed": sel_kw["seed"] + 1})
-        if held_sel.X.shape[0] == 0 or len(set(held_sel.y.tolist())) < 2:
-            return None
+
         from evoliez.ml.benchmark import _auroc
 
-        scores = [m.score_vector(x) for x in held_sel.X]
-        return _auroc(scores, [int(v) for v in held_sel.y.tolist()])
+        per_group: Dict[str, float] = {}
+        for held in groups:
+            train_recs = [r for r in records if r.group_id != held]
+            held_recs = [r for r in records if r.group_id == held]
+            if not train_recs or not held_recs:
+                continue
+            sel = select_poses(train_recs, **sel_kw)
+            # NEGATIVES: decoys built from the TRAIN consensus (not the held
+            # group's own median). select_poses tags decoys as pose_class 0.
+            if sel.X.shape[0] == 0 or sel.pose_class.size == 0:
+                continue
+            neg_rows = sel.X[sel.pose_class == 0]
+            if neg_rows.shape[0] == 0:
+                continue
+            m = InteractionModel(
+                cutoff=cfg.contact_cutoff, k_nearest=cfg.k_nearest_residues
+            ).fit(sel)
+            # POSITIVES: the held group's REAL poses, augmented directly.
+            pos_scores = [m.score_vector(_augment(r)) for r in held_recs]
+            neg_scores = [m.score_vector(x) for x in neg_rows]
+            auroc = _auroc(
+                pos_scores + neg_scores,
+                [1] * len(pos_scores) + [0] * len(neg_scores),
+            )
+            if auroc is not None:
+                per_group[held] = auroc
+
+        if not per_group:
+            return None
+        vals = list(per_group.values())
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / len(vals)
+        return {
+            "mean": round(mean, 4),
+            "std": round(var ** 0.5, 4),
+            "per_group": {k: round(v, 4) for k, v in per_group.items()},
+            "n_groups": len(vals),
+        }
 
     def load(self, ctx: RunContext) -> bool:
         p = ctx.paths.interaction_graphs / "interaction_model.json"

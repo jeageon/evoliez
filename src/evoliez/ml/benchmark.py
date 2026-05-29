@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from evoliez.types import Candidate
 
@@ -122,31 +122,59 @@ def compare_baselines(candidates, bench, *, k: int = 20) -> Dict[str, object]:
     return out
 
 
-def _spearman(xs: List[float], ys: List[float]) -> float:
-    n = len(xs)
-    if n < 3:
-        return 0.0
+def _spearman(xs: List[float], ys: List[float]) -> Optional[float]:
+    """Spearman rho with average-rank tie correction.
 
-    def ranks(v):
+    Returns ``None`` (not 0.0) when the correlation is *undefined* rather than
+    zero: n < 3, or either variable is constant (zero rank-variance). A
+    constant variable has no monotone ordering, so a 1.0 / 0.0 score there is
+    meaningless - ``None`` lets callers mark it N/A instead of silently
+    reporting a perfect/poor correlation (e.g. ``_spearman([5,5,5],[1,2,3])``
+    is ``None``, not 1.0).
+    """
+    n = len(xs)
+    if n < 3 or len(ys) != n:
+        return None
+
+    def ranks(v: Sequence[float]) -> List[float]:
+        # average ranks for ties: every member of a tie-group gets the mean of
+        # the positions that group occupies (1-based positions averaged).
         order = sorted(range(n), key=lambda i: v[i])
         rk = [0.0] * n
-        for pos, i in enumerate(order):
-            rk[i] = pos
+        i = 0
+        while i < n:
+            j = i
+            while j + 1 < n and v[order[j + 1]] == v[order[i]]:
+                j += 1
+            avg = (i + j) / 2.0  # mean of tied 0-based positions
+            for k in range(i, j + 1):
+                rk[order[k]] = avg
+            i = j + 1
         return rk
 
     rx, ry = ranks(xs), ranks(ys)
     mx, my = sum(rx) / n, sum(ry) / n
+    vx = sum((rx[i] - mx) ** 2 for i in range(n))
+    vy = sum((ry[i] - my) ** 2 for i in range(n))
+    if vx <= 0.0 or vy <= 0.0:  # a constant variable -> correlation undefined
+        return None
     num = sum((rx[i] - mx) * (ry[i] - my) for i in range(n))
-    den = (sum((rx[i] - mx) ** 2 for i in range(n))
-           * sum((ry[i] - my) ** 2 for i in range(n))) ** 0.5
-    return round(num / den, 4) if den else 0.0
+    return round(num / ((vx * vy) ** 0.5), 4)
 
 
-def _auroc(scores: List[float], pos: List[int]) -> float:
+def _auroc(scores: List[float], pos: List[int]) -> Optional[float]:
+    """AUROC via the Mann-Whitney U statistic (ties counted as 0.5).
+
+    Returns ``None`` when either class is empty - the metric is *unmeasurable*,
+    which is not the same as the worst possible score (0.0). Returning 0.0 here
+    coerces "no negatives to rank against" into "model failed", which is what
+    made the subfamily-holdout look catastrophic on degenerate splits. Callers
+    must treat ``None`` as N/A.
+    """
     p = [s for s, y in zip(scores, pos) if y == 1]
     n = [s for s, y in zip(scores, pos) if y == 0]
     if not p or not n:
-        return 0.0
+        return None
     wins = sum((1.0 if a > b else 0.5 if a == b else 0.0)
                for a in p for b in n)
     return round(wins / (len(p) * len(n)), 4)
@@ -243,8 +271,10 @@ def run_benchmark(
     ) if del_ranks else 0.0
 
     common = [b for b in bench if b["mutation"] in score_of]
-    spearman = 0.0
-    auroc = 0.0
+    # None = not measurable (no labelled activity / a class is empty); this is
+    # distinct from a genuine 0.0 metric. Downstream must treat None as N/A.
+    spearman: Optional[float] = None
+    auroc: Optional[float] = None
     if common:
         labelled = [b for b in common if b["activity"] is not None]
         if len(labelled) >= 3:
@@ -341,16 +371,21 @@ def run_ablation(
     }
     base = _run("baseline", {})
     metric = "auroc_beneficial"
-    rows = [{"ablation": "full_model", metric: base.get(metric, 0.0)}]
+    base_val = base.get(metric)
+    rows = [{"ablation": "full_model", metric: base_val}]
     for t in toggles:
         if t not in _OV:
             continue
         r = _run(f"no_{t}", _OV[t])
+        r_val = r.get(metric)
+        # delta is only defined when BOTH runs measured the metric; None means
+        # "not comparable" rather than a fabricated 0.0 difference.
+        delta = (round(r_val - base_val, 4)
+                 if isinstance(r_val, (int, float))
+                 and isinstance(base_val, (int, float)) else None)
         rows.append({
             "ablation": f"no_{t}",
-            metric: r.get(metric, 0.0),
-            f"delta_{metric}": round(
-                r.get(metric, 0.0) - base.get(metric, 0.0), 4
-            ),
+            metric: r_val,
+            f"delta_{metric}": delta,
         })
     return {"metric": metric, "baseline": base, "ablation": rows}
