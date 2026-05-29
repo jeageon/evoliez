@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import List, Sequence, Tuple
 
 from evoliez.adapters.base import write_min_pdb
+from evoliez.adapters.receptor_io import (
+    NotFullAtomReceptor, resolve_real_receptor_pdb,
+)
 from evoliez.config import Backend, MutationGenConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import Complex, Mutation
@@ -76,12 +79,33 @@ def _design_real(
     *,
     dry_run: bool,
 ) -> List[Tuple[List[Mutation], float]]:
+    # P0.1: LigandMPNN conditions sequence design on full-atom side-chain +
+    # ligand context; a CA-only stick figure makes the designs scientifically
+    # void. Refuse it BEFORE requiring python / resolving the install (so the
+    # skip runs even on a host without the model) and return NO designs - the
+    # honest "could not design" signal (other generators still contribute).
+    # dry_run still previews the command using the CA-only preview PDB.
+    real_pdb = None
+    if not dry_run:
+        try:
+            real_pdb = resolve_real_receptor_pdb(
+                cx.structure, candidate_id="ligandmpnn"
+            )
+        except NotFullAtomReceptor as exc:
+            log.warning("ligandmpnn: %s; skipping design (no full-atom input)",
+                        exc)
+            return []
     require("python")  # LigandMPNN is invoked via its run.py
     install_root = _resolve_lmpnn_install()
     apply_gpu_selection()
     workdir.mkdir(parents=True, exist_ok=True)
     pdb = workdir / "input_complex.pdb"
-    write_min_pdb(pdb, cx.structure, cx.ligand.atoms)
+    if real_pdb is None:
+        write_min_pdb(pdb, cx.structure, cx.ligand.atoms)  # dry-run preview
+    else:
+        # Feed LigandMPNN the real full-atom protein-ligand PDB (NOT a CA-only
+        # re-write). Copy into workdir so the --pdb_path is stable.
+        pdb.write_text(Path(real_pdb).read_text())
     fixed = sorted(set(r.index for r in cx.structure.residues) - set(designable))
     fixed_str = " ".join(f"A{p}" for p in fixed)
     out = workdir / "lmpnn_out"

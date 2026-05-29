@@ -42,7 +42,12 @@ def fetch_msa(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             ticket = resp.read().decode()
         log.info("submitted MSA ticket: %s", ticket[:80])
-        # Poll for completion, then download the a3m.
+        # Poll for completion, then download the a3m. Track whether we
+        # actually saw COMPLETE: if the loop exhausts without it (server
+        # still PENDING/RUNNING after 60*5s = 5min), we must NOT download -
+        # the result would be partial/empty and silently treated as a valid
+        # MSA. Return None instead so the caller falls back honestly.
+        completed = False
         for _ in range(60):
             time.sleep(5)
             with urllib.request.urlopen(
@@ -50,9 +55,16 @@ def fetch_msa(
             ) as r:
                 status = r.read().decode()
             if "COMPLETE" in status:
+                completed = True
                 break
             if "ERROR" in status:
                 return None
+        if not completed:
+            log.warning(
+                "remote MSA ticket %s did not COMPLETE within polling window; "
+                "caller will fall back", ticket[:80]
+            )
+            return None
         a3m = workdir / "remote.a3m"
         with urllib.request.urlopen(
             f"{api_base}/result/download/{ticket}", timeout=timeout

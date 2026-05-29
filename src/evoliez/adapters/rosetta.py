@@ -11,6 +11,10 @@ from typing import Dict, Sequence
 
 from evoliez.adapters.base import write_min_pdb
 from evoliez.adapters.foldx import _mock as _ddg_mock
+from evoliez.adapters.foldx import _skipped_no_full_atom
+from evoliez.adapters.receptor_io import (
+    NotFullAtomReceptor, resolve_real_receptor_pdb,
+)
 from evoliez.config import Backend
 from evoliez.logging_utils import get_logger
 from evoliez.types import Mutation, ProteinStructure
@@ -30,10 +34,22 @@ def estimate_stability(
 ) -> Dict[str, float]:
     if backend is not Backend.real:
         return _ddg_mock(candidate_id, structure, mutations)
+    # P0.1: cartesian_ddg models full side chains; a CA-only stick figure
+    # produces a garbage (but plausible) ddG. Refuse it the same way the
+    # dockers do - BEFORE requiring the binary - and emit a neutral skipped
+    # result so the candidate is honestly not stability-scored, never
+    # silently scored against a CA trace. dry_run still previews the command.
+    if not dry_run:
+        try:
+            pdb = resolve_real_receptor_pdb(structure, candidate_id=candidate_id)
+        except NotFullAtomReceptor as exc:
+            log.warning("rosetta: %s", exc)
+            return _skipped_no_full_atom(str(exc))
     require("cartesian_ddg.default.linuxgccrelease")
     workdir.mkdir(parents=True, exist_ok=True)
-    pdb = workdir / f"{candidate_id}.pdb"
-    write_min_pdb(pdb, structure)
+    if dry_run:
+        pdb = workdir / f"{candidate_id}.pdb"
+        write_min_pdb(pdb, structure)
     muts = workdir / "mutations.txt"
     muts.write_text(
         "total {}\n".format(len(mutations))

@@ -84,8 +84,20 @@ def _redock_real(
          "-o", str(out)],
         dry_run=dry_run,
     )
-    if dry_run or not out.exists():
+    if dry_run:
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
+    if not out.exists():
+        # REAL run with no output (gnina crashed / OOM / killed). Do NOT
+        # launder this into a fake mock pose; emit a detectable skipped pose.
+        log.warning("gnina: real run produced no output file %s for %s; "
+                    "marking pose skipped", out, candidate_id)
+        return Pose(
+            candidate_id=candidate_id, method=METHOD, score=0.0,
+            ligand_atoms=list(reference_atoms),
+            skipped="real_tool_no_output",
+            pose_validity_status="unknown",
+            pose_validity_reasons=[f"{METHOD} produced no output file"],
+        )
     score, cnn, atoms = _parse_gnina(out)
     locked, rmsd = _lock_to_reference(atoms, list(reference_atoms),
                                       candidate_id)

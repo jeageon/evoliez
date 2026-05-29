@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Dict, Sequence
 
 from evoliez.adapters.base import write_min_pdb
+from evoliez.adapters.receptor_io import (
+    NotFullAtomReceptor, resolve_real_receptor_pdb,
+)
 from evoliez.config import Backend, StabilityConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import Mutation, ProteinStructure
@@ -18,6 +21,24 @@ from evoliez.utils.seeds import derive_seed
 from evoliez.utils.subprocess_utils import require, run
 
 log = get_logger("evoliez.foldx")
+
+
+def _skipped_no_full_atom(reason: str) -> Dict[str, float]:
+    """Neutral, clearly-marked stability result for the CA-only refuse path.
+
+    Shared by FoldX and Rosetta real backends. ``ddg_fold=0.0`` is the
+    honest neutral: s09 reads ``stab.get("ddg_fold", 0.0)`` and a 0.0 ddG
+    neither penalises (it is <= max_ddg_allowed) nor fabricates a stabilising
+    signal. ``skipped`` flags WHY there is no real number so the result is
+    never mistaken for a measured ddG of exactly 0.0."""
+    return {
+        "ddg_fold": 0.0,
+        "clash_score": 0.0,
+        "buried_unsat": 0.0,
+        "skipped": "no_full_atom_structure",
+        "skipped_reason": reason,
+    }
+
 
 # Kyte-Doolittle hydropathy and approximate side-chain volume (A^3).
 _HYDRO = {
@@ -59,10 +80,29 @@ def _foldx_real(
     *,
     dry_run: bool,
 ) -> Dict[str, float]:
+    # P0.1: FoldX BuildModel needs full side chains to compute ΔΔG; a CA-only
+    # stick figure yields a garbage-but-plausible number. Refuse it BEFORE
+    # requiring the binary (so the skip runs even without FoldX installed)
+    # and return a neutral skipped result. dry_run still previews the command.
+    real_pdb = None
+    if not dry_run:
+        try:
+            real_pdb = resolve_real_receptor_pdb(
+                structure, candidate_id=candidate_id
+            )
+        except NotFullAtomReceptor as exc:
+            log.warning("foldx: %s", exc)
+            return _skipped_no_full_atom(str(exc))
     require("foldx")
     workdir.mkdir(parents=True, exist_ok=True)
     pdb = workdir / f"{candidate_id}.pdb"
-    write_min_pdb(pdb, structure)
+    if real_pdb is None:
+        write_min_pdb(pdb, structure)  # dry-run preview only; FoldX never runs
+    else:
+        # Feed FoldX the real full-atom coordinates (NOT a CA-only re-write).
+        # Copy into workdir so FoldX's cwd-relative --pdb=NAME resolves and we
+        # don't mutate the source file.
+        pdb.write_text(Path(real_pdb).read_text())
     mut_file = workdir / "individual_list.txt"
     mut_file.write_text(
         ",".join(f"{m.wt}A{m.position}{m.mut}" for m in mutations) + ";\n"

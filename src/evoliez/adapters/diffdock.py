@@ -6,6 +6,7 @@ mock: deterministic perturbed pose (shared helper).
 
 from __future__ import annotations
 
+import csv
 import os
 from pathlib import Path
 from typing import Sequence
@@ -99,23 +100,42 @@ def _redock_real(
     install_root = _resolve_diffdock_install()
     apply_gpu_selection()
     workdir.mkdir(parents=True, exist_ok=True)
-    csv = workdir / f"{candidate_id}_input.csv"
-    csv.write_text(
-        "complex_name,protein_path,ligand_description,protein_sequence\n"
-        f"{candidate_id},{rec},{smiles},\n"
-    )
+    csv_path = workdir / f"{candidate_id}_input.csv"
+    # P1: write the input CSV via csv.writer so a comma in the SMILES or the
+    # receptor path (both common: e.g. ring-closure SMILES, paths with commas)
+    # is properly quoted instead of corrupting the column layout via a raw
+    # f-string. DiffDock reads this with pandas/csv, which honours the quoting.
+    with csv_path.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(
+            ["complex_name", "protein_path", "ligand_description",
+             "protein_sequence"]
+        )
+        writer.writerow([candidate_id, str(rec), smiles, ""])
     out = workdir / f"{candidate_id}_dd_out"
     # `python -m inference` was cwd-relative; only worked if the caller
     # was chdir'd into the DiffDock repo. Now we explicitly chdir into
     # the install root (via cwd=) so the inference module is importable.
     run(
-        ["python", "-m", "inference", "--protein_ligand_csv", str(csv),
+        ["python", "-m", "inference", "--protein_ligand_csv", str(csv_path),
          "--out_dir", str(out), "--samples_per_complex",
          str(cfg.poses_per_candidate)],
         dry_run=dry_run, cwd=install_root,
     )
-    if dry_run or not out.exists():
+    if dry_run:
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
+    if not out.exists():
+        # REAL run with no output (DiffDock crashed / OOM / killed). Do NOT
+        # launder this into a fake mock pose; emit a detectable skipped pose.
+        log.warning("diffdock: real run produced no output dir %s for %s; "
+                    "marking pose skipped", out, candidate_id)
+        return Pose(
+            candidate_id=candidate_id, method=METHOD, score=0.0,
+            ligand_atoms=list(reference_atoms),
+            skipped="real_tool_no_output",
+            pose_validity_status="unknown",
+            pose_validity_reasons=[f"{METHOD} produced no output dir"],
+        )
     score, atoms = _parse_diffdock(out)
     locked, rmsd = _lock_to_reference(atoms, list(reference_atoms),
                                       candidate_id)

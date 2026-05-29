@@ -101,8 +101,21 @@ def _redock_real(
     # Hard wall: a runaway NADP-scale dock fails loudly instead of hanging
     # forever with hidden (captured) stdout.
     run(vina_cmd, dry_run=dry_run, timeout=getattr(cfg, "timeout_s", 1800))
-    if dry_run or not out.exists():
+    if dry_run:
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
+    if not out.exists():
+        # REAL run that produced no output (vina crashed / OOM / killed). Do
+        # NOT launder this into a fake mock pose - that hides a tool failure
+        # behind a plausible score. Emit a skipped pose the caller can detect.
+        log.warning("vina: real run produced no output file %s for %s; "
+                    "marking pose skipped", out, candidate_id)
+        return Pose(
+            candidate_id=candidate_id, method=METHOD, score=0.0,
+            ligand_atoms=list(reference_atoms),
+            skipped="real_tool_no_output",
+            pose_validity_status="unknown",
+            pose_validity_reasons=[f"{METHOD} produced no output file"],
+        )
     return _parse_vina(candidate_id, out, reference_atoms)
 
 

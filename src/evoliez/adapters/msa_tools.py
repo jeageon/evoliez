@@ -111,9 +111,29 @@ def _search_real(
              "6 sseqid pident qcovs evalue sseq", "-out", str(out)],
             dry_run=dry_run,
         )
-    if dry_run or not out.exists():
-        return _search_mock(sequence, cfg)
-    return _parse_hits(out, cfg, sequence)
+    if not out.exists():
+        # REAL run where the search tool produced no output file (crash /
+        # empty DB / bad invocation). Previously this silently returned
+        # synthetic homologs as if they were real hits. Log loudly and tag
+        # the fallback so it is NOT mistaken for a successful real search.
+        log.error(
+            "real homolog search (%s) produced no output file %s; "
+            "using synthetic fallback homologs (NOT real hits)",
+            cfg.method, out,
+        )
+        return _search_mock_real_fallback(sequence, cfg)
+    hits = _parse_hits(out, cfg, sequence)
+    if not hits:
+        # Output existed but parsed to 0 hits (no homologs above thresholds,
+        # or a parse mismatch). Same honesty hazard: do not pass synthetic
+        # homologs off as a real result silently.
+        log.error(
+            "real homolog search (%s) produced 0 hits from %s; "
+            "using synthetic fallback homologs (NOT real hits)",
+            cfg.method, out,
+        )
+        return _search_mock_real_fallback(sequence, cfg)
+    return hits
 
 
 def _band(cfg: HomologConfig, ident: float) -> bool:
@@ -227,6 +247,22 @@ def _search_mock(sequence: str, cfg: HomologConfig) -> List[Homolog]:
                 cluster_id=k % max(1, cfg.max_sequences // 500 + 1),
             )
         )
+    return homologs
+
+
+def _search_mock_real_fallback(
+    sequence: str, cfg: HomologConfig
+) -> List[Homolog]:
+    """Synthetic homologs used when a REAL search yielded nothing.
+
+    Identical sequences to :func:`_search_mock` but tagged
+    ``annotation="synthetic_real_fallback"`` so a downstream consumer (or an
+    auditor reading the homolog DB rows) can detect that the real search
+    failed and these are NOT genuine hits - the bare ``"synthetic"`` tag is
+    reserved for the deliberate mock backend."""
+    homologs = _search_mock(sequence, cfg)
+    for h in homologs:
+        h.annotation = "synthetic_real_fallback"
     return homologs
 
 
