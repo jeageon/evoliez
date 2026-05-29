@@ -1091,20 +1091,38 @@ def _run_real(
                                f"creation: {exc}",
             )
 
-    # Restraint schedule (spec 15.5): strongly restrain distant backbone.
+    # Restraint schedule (spec 15.5): restrain DISTANT backbone so the protein
+    # doesn't unfold in short implicit-solvent MD, but leave the pocket +
+    # ligand-proximal residues FREE so pocket/ligand RMSD is a real signal.
+    # The previous code restrained EVERY Ca at 5 kcal (with a dead `pocket`
+    # placeholder that was `abs(ca[0])>=0` == always True and never used),
+    # which froze the active site and forced pocket_rmsd ~ 0 -> everything
+    # looked "stable". See ULTRA_REVIEW.
+    from evoliez.md.restraints import build_restraint_plan
+
+    _plan = build_restraint_plan(cx, mutation_positions=[])
+    _free_resi = set(_plan.free) | set(_plan.weak_backbone)  # pocket + active site: free
     restraint = mm.CustomExternalForce(
         "0.5*k*((x-x0)^2+(y-y0)^2+(z-z0)^2)"
     )
     restraint.addGlobalParameter("k", 5.0 * unit.kilocalories_per_mole / unit.angstrom**2)
     for p in ("x0", "y0", "z0"):
         restraint.addPerParticleParameter(p)
-    pocket = {r.index for r in cx.structure.residues
-              if min((((r.ca[0]) ** 2) ** 0.5,), default=0) >= 0}  # placeholder set
+    _n_restrained = 0
     for atom in modeller.topology.atoms():
-        if atom.name == "CA":
-            pos = modeller.positions[atom.index]
-            restraint.addParticle(atom.index, [pos.x, pos.y, pos.z])
-    system.addForce(restraint)
+        if atom.name != "CA":
+            continue
+        try:
+            _resi = int(atom.residue.id)
+        except (TypeError, ValueError):
+            _resi = -1
+        if _resi in _free_resi:
+            continue  # pocket / active-site backbone: free to move
+        pos = modeller.positions[atom.index]
+        restraint.addParticle(atom.index, [pos.x, pos.y, pos.z])
+        _n_restrained += 1
+    if _n_restrained:
+        system.addForce(restraint)
 
     # P0.6: HMR/4 fs is opt-in (cfg.hmr_enabled). Real adoption needs a
     # smoke vs 2 fs stability comparison; the flag is here so that
@@ -1154,14 +1172,36 @@ def _run_real(
         d = cur[idx] - ref[idx]
         return float(np.sqrt((d * d).sum(axis=1).mean())) * 10.0  # nm->Å
 
+    # Catalytic-residue Ca -> atom index, for per-frame catalytic-geometry
+    # tracking. The real path used to hardcode key_distances={}, leaving the
+    # catalytic-distance health check (analysis.CAT_DIST_MAX) dead. See
+    # ULTRA_REVIEW.
+    _cat_set = set(catalytic_positions or [])
+    cat_ca = {}
+    if _cat_set:
+        for atom in modeller.topology.atoms():
+            if atom.name == "CA":
+                try:
+                    _resi = int(atom.residue.id)
+                except (TypeError, ValueError):
+                    continue
+                if _resi in _cat_set:
+                    cat_ca[_resi] = atom.index
+    cat_series = {f"cat_{p}": [] for p in cat_ca}
+
     lig_series: List[float] = []
     pkt_series: List[float] = []
     e_start = e_last = None
+    actual_ns = 0.0
     if cfg.protocol_level >= 1:
         _phase("production_start", candidate_id)
         sim.context.setVelocitiesToTemperature(cfg.temperature_K * unit.kelvin)
-        nsteps = int((cfg.production_ns * 1000) / (timestep_fs / 1000) / 1000)
+        # ns -> steps: production_ns(ns) * 1e6 (fs/ns) / timestep_fs (fs/step).
+        # The old formula had a stray extra /1000 and ran ~1 ps instead of the
+        # configured ns while still REPORTING the full ns. See ULTRA_REVIEW.
+        nsteps = int(round(cfg.production_ns * 1e6 / timestep_fs))
         nsteps = max(50, min(nsteps, 5000) if cfg.protocol_level < 3 else nsteps)
+        actual_ns = nsteps * timestep_fs / 1e6
         traj = workdir / f"{candidate_id}.dcd"
         sim.reporters.append(app.DCDReporter(str(traj), max(1, nsteps // 50)))
         for blk in range(50):
@@ -1170,6 +1210,11 @@ def _run_real(
             cur = np.array([[p.x, p.y, p.z] for p in st.getPositions()])
             lig_series.append(round(_rmsd(cur, lig_idx, init), 3))
             pkt_series.append(round(_rmsd(cur, pkt_idx, init), 3))
+            if lig_idx and cat_ca:
+                lc_cur = cur[lig_idx].mean(axis=0)
+                for _p, _ai in cat_ca.items():
+                    _d = float(((cur[_ai] - lc_cur) ** 2).sum()) ** 0.5 * 10.0
+                    cat_series[f"cat_{_p}"].append(round(_d, 3))
             e = st.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
             e_start = e if e_start is None else e_start
             e_last = e
@@ -1192,12 +1237,12 @@ def _run_real(
         status=status,
         protocol_level=cfg.protocol_level,
         solvent_mode=cfg.solvent,
-        simulation_time_ns=cfg.production_ns if cfg.protocol_level >= 1 else 0.0,
+        simulation_time_ns=round(actual_ns, 6) if cfg.protocol_level >= 1 else 0.0,
         minimized_pdb=str(minpdb),
         trajectory_path=trajectory_path,
         ligand_rmsd_series=lig_series or [0.0],
         pocket_rmsd_series=pkt_series or [0.0],
-        key_distances={},
+        key_distances={k: v for k, v in cat_series.items() if v},
         contact_occupancy={},
         hbond_occupancy=0.5,
         energy_drift=round(float(drift), 4),

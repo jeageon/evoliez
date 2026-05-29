@@ -88,6 +88,28 @@ class HomologConfig(_Base):
     cluster_identity: float = 0.90
     use_foldseek: bool = False
 
+    @model_validator(mode="after")
+    def _check_ranges(self) -> "HomologConfig":
+        # ULTRA_REVIEW: an inverted range (identity_min > identity_max) used
+        # to pass silently and yield zero homologs -> empty MSA -> a
+        # meaningless run that still "succeeded". Fail fast instead.
+        if self.identity_min > self.identity_max:
+            raise ValueError(
+                f"identity_min ({self.identity_min}) must be <= identity_max "
+                f"({self.identity_max})"
+            )
+        if self.length_ratio_min > self.length_ratio_max:
+            raise ValueError(
+                f"length_ratio_min ({self.length_ratio_min}) must be <= "
+                f"length_ratio_max ({self.length_ratio_max})"
+            )
+        for _name in ("identity_min", "identity_max", "coverage_min",
+                      "cluster_identity"):
+            _v = getattr(self, _name)
+            if not 0.0 <= _v <= 1.0:
+                raise ValueError(f"{_name}={_v} must be in [0, 1]")
+        return self
+
 
 class MSAConfig(_Base):
     method: str = "mafft"  # mafft | mmseqs2
@@ -137,14 +159,18 @@ class MDConfig(_Base):
     engine: str = "openmm"
     protocol_level: int = Field(1, ge=0, le=3)  # spec 15.2
     solvent: str = "implicit"  # implicit | explicit
-    temperature_K: float = 300.0
-    timestep_fs: float = 2.0
-    minimize_steps: int = 5000
-    equilibration_ps: float = 100.0
-    restrained_md_ps: float = 500.0
-    production_ns: float = 1.0
-    replicas: int = 1
-    top_candidates: int = 30
+    # Numeric bounds (ULTRA_REVIEW): a typo'd negative/zero value used to
+    # pass validation silently and run physically-meaningless MD that still
+    # reported md_status=ok. gt=0 where zero is nonsensical (temperature,
+    # timestep), ge=0 where zero means "skip this phase".
+    temperature_K: float = Field(300.0, gt=0)
+    timestep_fs: float = Field(2.0, gt=0)
+    minimize_steps: int = Field(5000, ge=0)
+    equilibration_ps: float = Field(100.0, ge=0)
+    restrained_md_ps: float = Field(500.0, ge=0)
+    production_ns: float = Field(1.0, ge=0)
+    replicas: int = Field(1, ge=1)
+    top_candidates: int = Field(30, ge=0)
     # P0.6: practical knobs. Defaults are conservative; the high-accuracy
     # profile turns these up for the final tier.
     #
@@ -159,12 +185,12 @@ class MDConfig(_Base):
     # integrator/system. Off by default; high-accuracy profile keeps it
     # off until the comparison lands.
     hmr_enabled: bool = False
-    hmr_timestep_fs: float = 4.0
+    hmr_timestep_fs: float = Field(4.0, gt=0)
     # final_tier_replicas: separate from `replicas` because per the plan
     # only candidates reaching the strongest evidence tier deserve >=3
     # replicas. Lower-tier candidates run `replicas` to keep wall time
     # bounded.
-    final_tier_replicas: int = 3
+    final_tier_replicas: int = Field(3, ge=1)
     # mdresult_provenance: persist FF / HMR / replica choices on every
     # MDResult so the final report says "MD passed (Sage, HMR off, 3
     # replicas)" not just "MD passed".
