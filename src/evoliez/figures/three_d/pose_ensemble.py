@@ -42,37 +42,56 @@ _MODEL_RE = re.compile(r"_model_(?P<idx>\d+)\.pdb$", re.IGNORECASE)
 
 
 def _find_pose_pdbs(artifacts: ReportArtifacts) -> List[Path]:
-    """Return all WT Boltz pose PDBs, sorted by model index (0 first)."""
+    """Return all WT Boltz pose PDBs, sorted by model index (0 first).
+
+    Walks the whole ``complexes/`` tree for the
+    ``boltz_results_wt_boltz_input`` result dir rather than hardcoding a
+    path: s04 writes WT predictions under ``complexes/boltz/...``
+    (``ctx.paths.complexes / "boltz"``), while an older layout put them
+    directly under ``complexes/...``. rglob finds either.
+    """
     run_dir = getattr(artifacts, "run_dir", None)
     if run_dir is None:
         return []
-    pred_root = (
-        Path(run_dir)
-        / "complexes"
-        / "boltz_results_wt_boltz_input"
-        / "predictions"
-        / "wt_boltz_input"
-    )
-    if not pred_root.exists():
-        # Fall back: look under any predictions dir under the WT result dir.
-        alt_root = (
-            Path(run_dir)
-            / "complexes"
-            / "boltz_results_wt_boltz_input"
-            / "predictions"
-        )
-        if not alt_root.exists():
-            return []
-        candidates = sorted(alt_root.rglob("*_model_*.pdb"))
-    else:
-        candidates = sorted(pred_root.glob("*_model_*.pdb"))
+    complexes = Path(run_dir) / "complexes"
+    if not complexes.exists():
+        return []
+
+    candidates: List[Path] = []
+    # Each match is the WT Boltz result dir under whichever layout; pose
+    # PDBs live under its ``predictions/`` subtree.
+    for result_dir in sorted(complexes.rglob("boltz_results_wt_boltz_input")):
+        if not result_dir.is_dir():
+            continue
+        preds = result_dir / "predictions"
+        search_root = preds if preds.exists() else result_dir
+        candidates.extend(search_root.rglob("*_model_*.pdb"))
+
+    # De-dup (rglob can surface the same file via nested matches) while
+    # keeping a stable set.
+    unique = sorted(set(candidates))
 
     def _key(p: Path) -> Tuple[int, str]:
         m = _MODEL_RE.search(p.name)
         idx = int(m.group("idx")) if m else 1_000_000
         return (idx, p.name)
 
-    return sorted(candidates, key=_key)
+    return sorted(unique, key=_key)
+
+
+def _distinct_model_count(poses: List[Path]) -> int:
+    """Number of distinct Boltz model indices among ``poses``.
+
+    Two copies of ``*_model_0.pdb`` (e.g. a mock backend that wrote one
+    pose into one predictions dir) count as a single model - not an
+    ensemble. Files without a parseable ``_model_<n>`` suffix each count
+    as their own (path-keyed) distinct entry.
+    """
+    seen: set = set()
+    for p in poses:
+        m = _MODEL_RE.search(p.name)
+        seen.add(("idx", int(m.group("idx"))) if m else ("path", str(p)))
+    return len(seen)
 
 
 def _confidence_for(pdb_path: Path) -> Optional[float]:
@@ -179,6 +198,19 @@ def render(
     if not poses:
         _LOGGER.info("pose_ensemble: no Boltz pose PDBs found, skipping")
         return None
+
+    # Honesty guard: an "ensemble" needs >= 2 distinct model files. A mock
+    # backend (or a single-diffusion-sample run) yields one model_0 - which
+    # would render as a single pose mislabeled "ensemble". Bail so the
+    # builder's 3Dmol single-pose fallback takes over instead.
+    if _distinct_model_count(poses) < 2:
+        _LOGGER.info(
+            "pose_ensemble: only %d distinct model file(s) found "
+            "(need >=2 for an ensemble); deferring to 3Dmol single-pose view",
+            _distinct_model_count(poses),
+        )
+        return None
+
     poses = poses[: max(1, int(max_samples))]
 
     out_path = Path(out_path)

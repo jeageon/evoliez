@@ -228,6 +228,35 @@ def _read_state(artifacts: ReportArtifacts) -> Dict[str, Any]:
         return {}
 
 
+def _run_is_mock(artifacts: ReportArtifacts) -> bool:
+    """True if the run's ``_state.json`` marks it as a mock-backend run.
+
+    A mock run must never be stampable as real, even if the caller passed
+    ``mock_backend=False``. We treat the run as mock when EITHER
+    ``state.backend == "mock"`` OR ``state.meta.homolog_source == "mock"``.
+    Fully defensive: a missing/corrupt/odd-shaped state.json simply yields
+    ``False`` (no extra mock signal) rather than raising.
+    """
+    state_json = getattr(artifacts, "state_json", None)
+    if state_json is None:
+        return False
+    try:
+        if not Path(state_json).exists():
+            return False
+        state = json.loads(Path(state_json).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(state, dict):
+        return False
+    if str(state.get("backend") or "").strip().lower() == "mock":
+        return True
+    meta = state.get("meta")
+    if isinstance(meta, dict):
+        if str(meta.get("homolog_source") or "").strip().lower() == "mock":
+            return True
+    return False
+
+
 def _read_provenance(artifacts: ReportArtifacts) -> Dict[str, Any]:
     if artifacts.provenance_json is None or not Path(artifacts.provenance_json).exists():
         return {}
@@ -895,9 +924,13 @@ def _per_sample_table(artifacts: ReportArtifacts) -> Optional[Dict[str, Any]]:
     """
     rows = _final_candidate_rows(artifacts)
     if rows:
+        # CSV column is ``mutations`` (plural, see io/report.py); ``mutation``
+        # is accepted as a legacy alias. Both are listed so whichever the
+        # CSV actually carries is kept.
         keep = [
             c for c in (
                 "candidate_id",
+                "mutations",
                 "mutation",
                 "evidence_class",
                 "final_score",
@@ -929,13 +962,18 @@ def _final_library_table(artifacts: ReportArtifacts) -> Optional[Dict[str, Any]]
     rows = _final_candidate_rows(artifacts)
     if not rows:
         return None
+    # CSV columns are ``mutations`` (plural) and ``stability_ddg`` (see
+    # io/report.py). ``mutation`` / ``ddg_fold`` are accepted as legacy
+    # aliases; listing both keeps whichever the CSV actually carries.
     keep = [
         c for c in (
             "candidate_id",
+            "mutations",
             "mutation",
             "evidence_class",
             "final_score",
             "ml_score",
+            "stability_ddg",
             "ddg_fold",
             "docking_score",
             "md_lite_score",
@@ -1075,6 +1113,18 @@ def build_report(
     artifacts = discover(run_dir)
     if benchmark_csv is not None:
         artifacts.benchmark_csv = Path(benchmark_csv)
+
+    # Honesty: a mock-backend run must never be stampable as real. OR the
+    # caller's flag with the run-state signal (state.backend == "mock" or
+    # state.meta.homolog_source == "mock"). The caller-arg path is
+    # preserved - we only add the run-state signal, never clear it.
+    if _run_is_mock(artifacts):
+        if not mock_backend:
+            _LOG.info(
+                "build_report: run _state.json marks a mock backend; "
+                "forcing mock_backend=True (caller passed False)"
+            )
+        mock_backend = True
 
     # ---- 2. style -------------------------------------------------------
     try:

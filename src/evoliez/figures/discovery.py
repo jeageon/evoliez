@@ -264,11 +264,20 @@ def _find_mutant_complexes(complexes: Path) -> Dict[str, Path]:
 
 
 def _find_homolog_complex_dirs(run_dir: Path) -> List[Path]:
-    """Per-homolog complex output dirs (stage s06b representatives)."""
-    reps = run_dir / "complexes" / "representatives"
-    if not reps.exists():
-        return []
-    return sorted(p for p in reps.iterdir() if p.is_dir())
+    """Per-homolog complex output dirs (stage s06b representatives).
+
+    s06b writes representatives under ``structures/representatives``
+    (``ctx.paths.structures / "representatives"``); an older layout used
+    ``complexes/representatives``. Check the canonical location first, then
+    fall back so both old and new runs resolve.
+    """
+    for reps in (
+        run_dir / "structures" / "representatives",
+        run_dir / "complexes" / "representatives",
+    ):
+        if reps.exists():
+            return sorted(p for p in reps.iterdir() if p.is_dir())
+    return []
 
 
 def _find_md_dirs(md_root: Path) -> Dict[str, Path]:

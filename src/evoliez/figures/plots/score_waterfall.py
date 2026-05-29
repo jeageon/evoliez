@@ -15,20 +15,31 @@ from evoliez.figures.types import FigureSpec, ReportArtifacts
 _LOGGER = logging.getLogger(__name__)
 
 # Order matters - components stack in this sequence so the legend reads
-# consistently across runs.
+# consistently across runs.  The canonical ddG component key is
+# ``stability_ddg`` (the production CSV column emitted by
+# ``evoliez.io.report``); ``ddg_fold`` is a legacy alias kept so older
+# CSVs that wrote the per-column value under ``ddg_fold`` still plot.
 SCORE_COMPONENTS: Tuple[str, ...] = (
     "ml_score",
-    "ddg_fold",
+    "stability_ddg",
     "docking_score",
     "md_lite_score",
     "plif_recovery",
 )
 
+# Per-column aliases: ``canonical_key -> (other accepted column names)``.
+# When reading a row we try the canonical key first, then each alias, so
+# a value written under any of these headers maps onto the same stacked
+# bar / legend entry.
+_COMPONENT_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "stability_ddg": ("ddg_fold",),
+}
+
 # Wong-palette assignment per component (kept stable so the legend is the
 # same across runs).
 _COMPONENT_COLORS: Dict[str, str] = {
     "ml_score": "#0072B2",
-    "ddg_fold": "#E69F00",
+    "stability_ddg": "#E69F00",
     "docking_score": "#56B4E9",
     "md_lite_score": "#CC79A7",
     "plif_recovery": "#F0E442",
@@ -62,18 +73,48 @@ def _parse_breakdown(raw: str) -> Dict[str, float]:
     return out2
 
 
+def _canonical_component(key: str) -> str:
+    """Map a possibly-legacy component key onto its canonical name.
+
+    e.g. ``ddg_fold`` (legacy in-memory / old-CSV key) -> ``stability_ddg``
+    (the production CSV column). Unknown keys pass through unchanged.
+    """
+    for canon, aliases in _COMPONENT_ALIASES.items():
+        if key == canon or key in aliases:
+            return canon
+    return key
+
+
+def _normalize_breakdown(br: Dict[str, float]) -> Dict[str, float]:
+    """Collapse legacy alias keys onto their canonical component names.
+
+    The canonical key wins if both it and an alias are present.
+    """
+    out: Dict[str, float] = {}
+    for k, v in br.items():
+        canon = _canonical_component(str(k))
+        # First-seen canonical wins; an explicit canonical key (read first
+        # in dict order is not guaranteed, so prefer to overwrite only when
+        # the incoming key IS the canonical one).
+        if canon in out and str(k) != canon:
+            continue
+        out[canon] = v
+    return out
+
+
 def _row_breakdown(row: Dict[str, str]) -> Dict[str, float]:
     """Pull score components out of a single CSV row.
 
     Prefers the embedded JSON ``details.score_breakdown`` if present, falling
-    back to the per-column numeric values.
+    back to the per-column numeric values. Legacy alias keys (e.g.
+    ``ddg_fold``) are normalized to canonical names (``stability_ddg``).
     """
     for key in ("score_breakdown", "details.score_breakdown"):
         raw = row.get(key)
         if raw:
             br = _parse_breakdown(raw)
             if br:
-                return br
+                return _normalize_breakdown(br)
     details_raw = row.get("details")
     if details_raw:
         try:
@@ -90,11 +131,18 @@ def _row_breakdown(row: Dict[str, str]) -> Dict[str, float]:
                     except (TypeError, ValueError):
                         continue
                 if out:
-                    return out
+                    return _normalize_breakdown(out)
 
     out2: Dict[str, float] = {}
     for comp in SCORE_COMPONENTS:
+        # Read the canonical column first, then any legacy aliases, so a
+        # value written under either header lands on the same component.
         raw = row.get(comp)
+        if raw in (None, "", "NA", "nan"):
+            for alias in _COMPONENT_ALIASES.get(comp, ()):  # legacy columns
+                raw = row.get(alias)
+                if raw not in (None, "", "NA", "nan"):
+                    break
         if raw in (None, "", "NA", "nan"):
             continue
         try:
