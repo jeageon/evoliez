@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -50,6 +51,30 @@ _TOOLS = {
     "snakemake": ("workflow/Snakefile (optional)", None),
 }
 
+# Load-bearing tools that expose a *cheap* version/help flag we can invoke to
+# confirm the binary actually runs (not just that a same-named file sits on
+# PATH). Maps tool -> argv to append. Tools omitted here are checked with
+# ``which`` only: ``foldx`` may demand a license file just to print a banner,
+# and ``iupred2a.py`` is a script that needs args/env to do anything - probing
+# either would add flakiness for no signal. ``mafft --version`` writes to
+# stderr and exits 0; that's fine, we only look at the return code.
+_TOOL_VERSION_PROBE = {
+    "boltz": ["--help"],
+    "mmseqs": ["version"],
+    "jackhmmer": ["-h"],
+    "blastp": ["-version"],
+    "mafft": ["--version"],
+    "vina": ["--version"],
+    "gnina": ["--version"],
+    "obabel": ["-V"],
+    "antechamber": ["-h"],
+    "parmchk2": ["-h"],
+    "snakemake": ["--version"],
+}
+
+# Short wall so a tool whose --version hangs WARNs instead of stalling doctor.
+_PROBE_TIMEOUT_S = 3.0
+
 _ENV_VARS = ["BOLTZ_CACHE", "EVOLIEZ_LIGANDMPNN", "EVOLIEZ_DIFFDOCK",
              "EVOLIEZ_DATA_DIR", "EVOLIEZ_DB_DIR", "CUDA_VISIBLE_DEVICES"]
 
@@ -80,6 +105,31 @@ def _has_module(mod: str) -> bool:
         return False
 
 
+def _probe_tool(path: str, args: List[str]) -> tuple[bool, str]:
+    """Run ``path args`` with a short timeout to confirm the binary actually
+    executes. Returns (healthy, detail). A non-zero exit, a timeout (hang), or
+    a launch error (e.g. missing shared lib, ENOEXEC) => not healthy => the
+    caller downgrades the check to WARN. Never raises - doctor must stay robust
+    even on a wedged binary."""
+    try:
+        proc = subprocess.run(
+            [path, *args],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            timeout=_PROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"present but '{' '.join(args)}' timed out (>{_PROBE_TIMEOUT_S:.0f}s)"
+    except OSError as exc:
+        return False, f"present but failed to execute: {exc}"
+    except Exception as exc:  # pragma: no cover - defensive
+        return False, f"present but probe errored: {exc}"
+    if proc.returncode != 0:
+        return False, f"present but '{' '.join(args)}' exited {proc.returncode}"
+    return True, ""
+
+
 def collect(config_path: Optional[str] = None) -> Report:
     r = Report()
     r.add("evoliez", OK, f"v{__version__}")
@@ -106,8 +156,22 @@ def collect(config_path: Optional[str] = None) -> Report:
             r.add("cuda", WARN, str(exc))
 
     for tool, (stage, _) in _TOOLS.items():
-        present = shutil.which(tool) is not None
-        r.add(f"tool:{tool}", OK if present else MISSING, stage)
+        path = shutil.which(tool)
+        if path is None:
+            r.add(f"tool:{tool}", MISSING, stage)
+            continue
+        probe_args = _TOOL_VERSION_PROBE.get(tool)
+        if probe_args is None:
+            # which-only tool (licensed / script): presence is all we check.
+            r.add(f"tool:{tool}", OK, stage)
+            continue
+        healthy, why = _probe_tool(path, probe_args)
+        if healthy:
+            r.add(f"tool:{tool}", OK, stage)
+        else:
+            # On PATH but broken/hung/wrong -> WARN, not OK and not MISSING:
+            # the operator needs to know the binary won't actually work.
+            r.add(f"tool:{tool}", WARN, f"{stage} - {why}")
 
     # GPU inventory (shared server)
     try:
