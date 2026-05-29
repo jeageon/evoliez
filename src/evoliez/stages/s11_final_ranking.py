@@ -36,8 +36,20 @@ def evidence_class(c: Candidate) -> str:
     # ---- Reject: hard structural / MD failure (was not filtered earlier)
     if details.get("nonmd_rejected"):
         return EVIDENCE_REJECT
-    md_status = scores.get("md_status", "ok")
+    # ultra-review fix #3: default to "not_run" (NOT "ok"). A candidate that
+    # never reached MD has no md_status key; treating that as "ok" let
+    # phantom "MD passed" rows reach Strong. The caller (s11.run) now sets
+    # md_status="not_run" explicitly for non-MD candidates, but defaulting
+    # here too keeps evidence_class honest for any direct caller.
+    md_status = scores.get("md_status", "not_run")
     if md_status == "failed":
+        return EVIDENCE_REJECT
+    # ultra-review fix #2: an "unstable" MD (openmm sets it when the ligand
+    # RMSD final > 5 A) means the ligand left the pocket. That is neither
+    # "failed" nor "skipped*", so it used to slip through to Promising and
+    # get accepted by the ranking gate. The ligand leaving the pocket is a
+    # hard correctness failure for a recommendable candidate -> Reject.
+    if md_status == "unstable":
         return EVIDENCE_REJECT
     if scores.get("ligand_escape"):
         return EVIDENCE_REJECT
@@ -66,6 +78,9 @@ def evidence_class(c: Candidate) -> str:
         return EVIDENCE_UNCERTAIN
 
     # ---- Strong: every clean signal lines up + real Boltz Δ.
+    # md_passed is TRUE only for a real "ok" MD: "not_run" (phantom MD on a
+    # candidate that never reached the MD stage), "skipped*", "unstable" and
+    # "failed" all fail this check, so none of them can reach Strong.
     md_passed = (md_status == "ok") and scores.get("md_lite_score", 0.0) >= 0.0
     real_boltz = (source == "real")
     pose_clean = (scores.get("pose_validity_status", "unknown") == "valid")
@@ -104,13 +119,27 @@ class FinalRankingStage(Stage):
         md_by_id = {c.candidate_id: c for c in ctx.get("md_candidates", [])}
         for c in validated:
             if c.candidate_id in md_by_id:
+                # P0.5: also merge md_status / ligand_escape so evidence_class
+                # sees the REAL MD verdict for candidates that ran MD.
                 c.scores.update(
                     {
                         k: md_by_id[c.candidate_id].scores[k]
-                        for k in ("md_lite_score", "md_instability")
+                        for k in (
+                            "md_lite_score", "md_instability",
+                            "md_status", "ligand_escape",
+                        )
                         if k in md_by_id[c.candidate_id].scores
                     }
                 )
+            else:
+                # ultra-review fix #3: validated_candidates is the FULL s09
+                # survivor list; many of them never reached the MD stage
+                # (only md_candidates do). Without a md_status key,
+                # evidence_class previously read the "ok" default and marked
+                # them md_passed -> a phantom "MD ok" that could reach Strong.
+                # Tag them honestly so they land Promising/Uncertain on the
+                # OTHER signals, never Strong on an MD that never ran.
+                c.scores["md_status"] = "not_run"
             c.scores.setdefault("md_lite_score", 0.0)
             c.scores.setdefault("md_instability", 0.0)
 
@@ -155,6 +184,13 @@ class FinalRankingStage(Stage):
             md_status = c.scores.get("md_status") or c.details.get("md_status")
             if md_status == "failed":
                 return True, "md_status=failed"
+            # ultra-review fix #2: "unstable" MD (ligand left the pocket) is a
+            # hard correctness failure like "failed" - block it from top
+            # recommendation slots. evidence_class already maps it to Reject
+            # (which also blocks), but gating on md_status directly is
+            # defence-in-depth in case the order of signals changes.
+            if md_status == "unstable":
+                return True, "md_status=unstable"
             return False, ""
         # P0.5: require a real per-mutant Boltz delta to earn Strong evidence
         # for top-ranked candidates. Below the rank threshold the requirement

@@ -217,13 +217,30 @@ class NonMDValidationStage(Stage):
                     m: poses_by_method[m].skipped for m in skipped_methods
                 }
 
-            cand.scores["docking_score"] = pose.score
-            consistency = max(
-                0.0, 1.0 - (pose.rmsd_to_reference or 0.0) / 4.0
-            )
-            cand.scores["redocking_consistency"] = round(consistency, 4)
-            cand.scores["docking_uncertainty"] = round(1.0 - consistency, 4)
-            ligand_escape = (pose.rmsd_to_reference or 0.0) > 4.5
+            # P0/ultra-review: a SKIPPED primary pose (real docker refused -
+            # e.g. CA-only receptor) carries score=0.0, rmsd_to_reference=None
+            # and ligand_atoms=reference. The old defaults turned that into a
+            # PERFECT redock (docking_score 0.0, consistency 1.0,
+            # uncertainty 0.0) for a pose that was never actually docked. Mark
+            # the docking signal NEUTRAL instead so a never-docked candidate
+            # can't earn full redock marks. pose_validity_status stays
+            # "unknown" (set below) which already blocks the Strong pose_clean
+            # check; ligand_escape stays False (we don't know it escaped).
+            if pose.skipped:
+                cand.scores["docking_score"] = None
+                consistency = 0.5
+                cand.scores["redocking_consistency"] = 0.5
+                cand.scores["docking_uncertainty"] = 0.5
+                cand.details["docking_score_skipped"] = True
+                ligand_escape = False
+            else:
+                cand.scores["docking_score"] = pose.score
+                consistency = max(
+                    0.0, 1.0 - (pose.rmsd_to_reference or 0.0) / 4.0
+                )
+                cand.scores["redocking_consistency"] = round(consistency, 4)
+                cand.scores["docking_uncertainty"] = round(1.0 - consistency, 4)
+                ligand_escape = (pose.rmsd_to_reference or 0.0) > 4.5
 
             # Pose-quality surface: physical-validity stand-in + PLIF recovery
             # vs the WT reference pose. Stored per pose; primary fields copied
@@ -308,6 +325,11 @@ class NonMDValidationStage(Stage):
                                f"{scfg.max_ddg_allowed}")
             if ligand_escape:
                 reasons.append("ligand displaced on redocking")
+                # ultra-review fix #1: propagate to scores so the s11
+                # evidence_class REJECT branch (`scores.get("ligand_escape")`)
+                # can actually fire. Previously this was a local only -> the
+                # REJECT branch was dead (nothing ever wrote the key).
+                cand.scores["ligand_escape"] = True
             if reasons:
                 cand.details["nonmd_rejected"] = "; ".join(reasons)
             else:

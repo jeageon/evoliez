@@ -126,6 +126,15 @@ class MDStage(Stage):
             metrics = analyse(result, weights)
             cand.scores["md_lite_score"] = metrics.md_lite_score
             cand.scores["md_status"] = result.status   # P0.5: feeds evidence class
+            # ultra-review fix #1: propagate ligand_escape onto cand.scores so
+            # the s11 evidence_class REJECT branch (scores.get("ligand_escape"))
+            # fires. MDMetrics.ligand_escape is the existing analysis field
+            # (ligand_rmsd_final > LIGAND_RMSD_MAX); an "unstable" MD status
+            # (openmm sets it when final ligand RMSD > 5 A) is also a ligand
+            # that left the pocket. Either => the ligand escaped, not a
+            # recommendable candidate.
+            if metrics.ligand_escape or result.status == "unstable":
+                cand.scores["ligand_escape"] = True
             # P0.6 honesty: distinguish "MD passed" from "MD never ran".
             # `skipped*` statuses mean the engine refused to start (neutral
             # for skipped_parameterization, failed for everything else);
