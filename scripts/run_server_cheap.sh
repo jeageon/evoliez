@@ -198,23 +198,27 @@ Activate manually (e.g. conda activate /mnt/data/\$USER/envs/evoliez) then re-ru
     ok "evoliez CLI -> $(command -v evoliez)"
 fi
 
-say "Phase 0b — git pull (only if behind origin/feat/html-report-package)"
-git fetch --quiet origin feat/html-report-package
+# Branch to validate. Default is the main report branch; override to test a
+# fix branch WITHOUT it silently resetting to the default:
+#   BRANCH=fix/ultra-review-p0p1 ENZYME=tem1 bash scripts/run_server_cheap.sh
+BRANCH="${BRANCH:-feat/html-report-package}"
+say "Phase 0b — git sync to origin/$BRANCH (only if behind)"
+git fetch --quiet origin "$BRANCH"
 LOCAL_SHA="$(git rev-parse HEAD)"
-REMOTE_SHA="$(git rev-parse origin/feat/html-report-package)"
+REMOTE_SHA="$(git rev-parse "origin/$BRANCH")"
 if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
-    ok "already at origin head ($LOCAL_SHA)"
+    ok "already at origin/$BRANCH head ($LOCAL_SHA)"
 else
     if ! git diff --quiet || ! git diff --cached --quiet; then
         warn "uncommitted local changes detected; stashing before pull"
         git stash push -u -m "pre-cheap-run-$(date +%F_%H%M)" >/dev/null
     fi
-    git checkout feat/html-report-package --quiet
-    if ! git pull --ff-only origin feat/html-report-package; then
+    git checkout "$BRANCH" --quiet
+    if ! git pull --ff-only origin "$BRANCH"; then
         warn "fast-forward pull failed; falling back to hard reset to origin"
-        git reset --hard origin/feat/html-report-package
+        git reset --hard "origin/$BRANCH"
     fi
-    ok "now at $(git rev-parse HEAD)"
+    ok "now at $(git rev-parse HEAD) (origin/$BRANCH)"
 fi
 
 say "Phase 0c — editable install (only if a new module fails to import)"
