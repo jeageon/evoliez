@@ -63,6 +63,7 @@ class MutantBoltzStage(Stage):
             mut_cx = predict_complex(
                 cand.candidate_id, _mutant_sequence(seq, cand), ligand,
                 cp_cfg, outdir, backend=backend, dry_run=ctx.dry_run,
+                seed=ctx.config.seed,
             )
             mut_complexes[cand.candidate_id] = mut_cx
             delta = boltz_delta_features(

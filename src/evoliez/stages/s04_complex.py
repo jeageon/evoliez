@@ -25,6 +25,7 @@ class ComplexPredictionStage(Stage):
             backend=self.backend(ctx),
             dry_run=ctx.dry_run,
             msa_path=msa_path if msa_path.exists() else None,
+            seed=ctx.config.seed,
         )
         ctx.put("wt_complex", cx)
         ctx.persist_meta("complex_confidence", cx.confidence)

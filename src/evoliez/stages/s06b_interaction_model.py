@@ -86,7 +86,7 @@ class InteractionModelStage(Stage):
             cx = predict_complex(
                 f"hom_{i:03d}", h.sequence, ligand, cp_cfg,
                 ctx.paths.structures / "representatives",
-                backend=backend, dry_run=ctx.dry_run,
+                backend=backend, dry_run=ctx.dry_run, seed=ctx.config.seed,
             )
             samples = cx.samples or []
             for s in samples:

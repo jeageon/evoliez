@@ -49,11 +49,13 @@ def predict_complex(
     backend: Backend,
     dry_run: bool = False,
     msa_path: Optional[Path] = None,
+    seed: int = 1234,
 ) -> Complex:
     outdir.mkdir(parents=True, exist_ok=True)
     if backend is Backend.real:
         return _predict_real(
-            label, sequence, ligand, cfg, outdir, dry_run=dry_run, msa_path=msa_path
+            label, sequence, ligand, cfg, outdir, dry_run=dry_run,
+            msa_path=msa_path, seed=seed,
         )
     return _predict_mock(label, sequence, ligand, cfg, outdir)
 
@@ -198,6 +200,7 @@ def _predict_real(
     *,
     dry_run: bool,
     msa_path: Optional[Path],
+    seed: int = 1234,
 ) -> Complex:
     # dry-run previews the FULL command set (like Vina) without the tool
     # installed, writes the exact Boltz input YAML so the contract can be
@@ -233,9 +236,16 @@ def _predict_real(
     yml = outdir / f"{label}_boltz_input.yaml"
     yml.write_text(yaml.safe_dump(spec, sort_keys=False))
 
+    # Per-label deterministic seed so the diffusion ensemble (and every feature
+    # derived from it) is REPRODUCIBLE across reruns of the same input. Without
+    # --seed, Boltz draws fresh samples every run, so a crash-resume mid-stage
+    # mixes two RNG draws and provenance can't reconstruct the result. Distinct
+    # per label so WT / each homolog / each mutant don't share an identical draw.
+    boltz_seed = derive_seed(seed, "boltz", label) % (2 ** 31 - 1)
     cmd = [
         "boltz", "predict", str(yml), "--out_dir", str(outdir),
         "--diffusion_samples", str(max(1, cfg.diffusion_samples)),
+        "--seed", str(boltz_seed),
         # Boltz defaults to mmCIF; force PDB so the structure parser works
         # (a CIF backstop parser also exists below).
         "--output_format", "pdb",

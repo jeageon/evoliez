@@ -58,8 +58,12 @@ def run(
     check: bool = True,
 ) -> RunResult:
     cmd = [str(c) for c in cmd]
-    log.info("exec: %s", " ".join(cmd))
-    if dry_run:
+    # Honour the pipeline-wide EVOLIEZ_DRY_RUN env var as well as the explicit
+    # kwarg: the orchestrator signals dry-run via the env var, so an adapter
+    # that forgets to thread dry_run= must still NOT execute a real command.
+    dry = dry_run or os.environ.get("EVOLIEZ_DRY_RUN") == "1"
+    log.info("%sexec: %s", "[dry-run] " if dry else "", " ".join(cmd))
+    if dry:
         return RunResult(cmd=cmd, returncode=0, stdout="", stderr="", dry_run=True)
     proc = subprocess.run(
         cmd,
