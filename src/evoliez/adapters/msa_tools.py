@@ -120,6 +120,61 @@ def _band(cfg: HomologConfig, ident: float) -> bool:
     return cfg.identity_min <= ident <= cfg.identity_max
 
 
+def _kmers(seq: str, k: int = 4) -> set:
+    s = seq.replace("-", "").replace(".", "").upper()
+    return {s[i:i + k] for i in range(len(s) - k + 1)} if len(s) >= k else {s}
+
+
+def assign_clusters(homologs: List[Homolog], cfg: HomologConfig) -> List[Homolog]:
+    """Greedy k-mer (k=4) Jaccard clustering -> subfamily ``cluster_id``.
+
+    The real search parsers return homologs WITHOUT a cluster_id (it defaults
+    to 0), which collapses ``s06b._pick_representatives`` to a single
+    representative and silently turns the family-geometry ensemble into
+    'top-N by identity'. This assigns real subfamily clusters with NO external
+    tool (works for mmseqs/blast/jackhmmer alike): the highest-identity
+    homologs seed clusters; each remaining sequence joins the most-similar
+    existing cluster when its k-mer Jaccard clears a threshold derived from
+    ``cfg.cluster_identity``, else it opens a new cluster. Runs on both
+    backends so mock exercises the same code path (no more hidden real-only
+    regression). For a more rigorous pass, ``mmseqs easy-cluster`` could
+    replace this, but this keeps the dependency closure light.
+    """
+    if not homologs:
+        return homologs
+    k = 4
+    p = min(0.99, max(0.05, cfg.cluster_identity))
+    jthr = (p ** k) / (2.0 - p ** k)          # pairwise identity p -> Jaccard
+    order = sorted(range(len(homologs)),
+                   key=lambda i: homologs[i].identity, reverse=True)
+    kmer_cache = {i: _kmers(homologs[i].sequence, k) for i in order}
+    centroids: List[set] = []
+    cluster_of: dict = {}
+    for i in order:
+        km = kmer_cache[i]
+        best_c, best_j = -1, 0.0
+        for c, cen in enumerate(centroids):
+            inter = len(km & cen)
+            if not inter:
+                continue
+            j = inter / (len(km) + len(cen) - inter)
+            if j > best_j:
+                best_c, best_j = c, j
+        if best_c >= 0 and best_j >= jthr:
+            cluster_of[i] = best_c
+        else:
+            cluster_of[i] = len(centroids)
+            centroids.append(km)
+    for i, h in enumerate(homologs):
+        h.cluster_id = cluster_of[i]
+    log.info(
+        "clustered %d homologs into %d subfamily group(s) "
+        "(k-mer Jaccard >= %.2f ~ %.0f%% identity)",
+        len(homologs), len(centroids), jthr, p * 100,
+    )
+    return homologs
+
+
 def _pairwise_identity(a: str, b: str) -> float:
     n = min(len(a), len(b))
     if n == 0:
@@ -195,16 +250,26 @@ def _parse_stockholm(out: Path, cfg: HomologConfig,
 def _parse_hits(out: Path, cfg: HomologConfig,
                 query_seq: str = "") -> List[Homolog]:
     if cfg.method == "mmseqs2":
-        return _parse_mmseqs_m8(out, cfg)
-    if cfg.method == "jackhmmer":
-        return _parse_stockholm(out, cfg, query_seq)
-    return _parse_blast_m8(out, cfg)
+        hs = _parse_mmseqs_m8(out, cfg)
+    elif cfg.method == "jackhmmer":
+        hs = _parse_stockholm(out, cfg, query_seq)
+    else:
+        hs = _parse_blast_m8(out, cfg)
+    return assign_clusters(hs, cfg)
 
 
 def _search_mock(sequence: str, cfg: HomologConfig) -> List[Homolog]:
     n = min(120, max(24, cfg.max_sequences // 40))
     homologs: List[Homolog] = []
     L = len(sequence)
+    # Deterministic synthetic subfamily count, INDEPENDENT of max_sequences
+    # (the old k%(max_sequences//500+1) tied subfamily structure to an
+    # unrelated search-size knob, so a small-search smoke config silently
+    # collapsed to one cluster). Always >= 3 so the s06b subfamily-holdout
+    # validator has groups to hold out. The synthetic sweep doesn't form real
+    # k-mer subfamilies, so cluster_id is assigned directly here; assign_clusters
+    # (the real-backend path) is covered by its own unit test.
+    n_subfam = max(3, min(8, n // 8))
     for k in range(n):
         # identity sweeps the configured band so strata are non-degenerate
         frac = k / max(1, n - 1)
@@ -224,7 +289,7 @@ def _search_mock(sequence: str, cfg: HomologConfig) -> List[Homolog]:
                 identity=round(ident, 3),
                 coverage=1.0,
                 annotation="synthetic",
-                cluster_id=k % max(1, cfg.max_sequences // 500 + 1),
+                cluster_id=k % n_subfam,
             )
         )
     return homologs
