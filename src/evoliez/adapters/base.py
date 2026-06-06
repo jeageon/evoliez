@@ -121,6 +121,76 @@ def write_min_pdb(
     path.write_text("\n".join(lines) + "\n")
 
 
+def parse_sdf_first_pose(path: Path) -> List[LigandAtom]:
+    """Atom coords + elements of the FIRST molecule in a V2000 SDF (the best /
+    rank-1 docked pose for gnina/diffdock). Returns [] if unparseable so the
+    caller falls back to the reference atoms."""
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return []
+    block = text.split("$$$$", 1)[0].splitlines()
+    if len(block) < 4:
+        return []
+    try:
+        natoms = int(block[3][0:3])
+    except ValueError:
+        return []
+    atoms: List[LigandAtom] = []
+    for ln in block[4:4 + natoms]:
+        tok = ln.split()
+        if len(tok) < 4:
+            continue
+        try:
+            x, y, z = float(tok[0]), float(tok[1]), float(tok[2])
+        except ValueError:
+            continue
+        elem = tok[3]
+        atoms.append(LigandAtom(id=f"{elem}{len(atoms)}", element=elem,
+                                coord=(x, y, z)))
+    return atoms
+
+
+def lock_pose_to_reference(
+    parsed: Sequence[LigandAtom],
+    reference: Sequence[LigandAtom],
+    *,
+    candidate_id: str = "",
+    method: str = "",
+    logger=None,
+) -> tuple[List[LigandAtom], "float | None"]:
+    """Relabel docked atoms onto the canonical reference (ids/chemistry kept,
+    docked xyz adopted) and compute heavy-atom RMSD-to-reference. Shared by all
+    three real dockers so pose-escape / redocking-consistency are computable
+    uniformly (gnina/diffdock previously discarded coords -> rmsd None -> a
+    falsely 'perfect' redocking_consistency in s09). Mirrors the heavy-atom
+    fallback Vina established. Returns (atoms, rmsd|None); on an unverified
+    lock, returns (reference, None)."""
+    from evoliez.features.ligand import relabel_to_canonical
+
+    ref = list(reference)
+    locked, ok = relabel_to_canonical(list(parsed), ref)
+    if ok and locked:
+        rref = ([a for a in ref if (a.element or "").upper() != "H"]
+                if len(locked) != len(ref) else ref)
+        rmsd = None
+        if len(rref) == len(locked) and locked:
+            rmsd = round(math.sqrt(sum(
+                sum((locked[i].coord[k] - rref[i].coord[k]) ** 2
+                    for k in range(3)) for i in range(len(locked))
+            ) / len(locked)), 3)
+        return locked, rmsd
+    if parsed and logger is not None:
+        logger.warning(
+            "%s pose atom ids NOT verified vs reference (%d vs %d heavy) for "
+            "%s; RMSD-to-reference unavailable", method or "docking",
+            sum(1 for a in parsed if (a.element or "").upper() != "H"),
+            sum(1 for a in ref if (a.element or "").upper() != "H"),
+            candidate_id,
+        )
+    return ref, None
+
+
 def mock_redock(
     candidate_id: str,
     method: str,

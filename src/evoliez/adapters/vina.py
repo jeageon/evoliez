@@ -9,7 +9,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
-from evoliez.adapters.base import mock_redock, write_min_pdb
+from evoliez.adapters.base import (
+    lock_pose_to_reference,
+    mock_redock,
+    write_min_pdb,
+)
 from evoliez.config import Backend, DockingConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import LigandAtom, Pose, ProteinStructure
@@ -79,7 +83,13 @@ def _redock_real(
     # Hard wall: a runaway NADP-scale dock fails loudly instead of hanging
     # forever with hidden (captured) stdout.
     run(vina_cmd, dry_run=dry_run, timeout=getattr(cfg, "timeout_s", 1800))
-    if dry_run or not out.exists():
+    if dry_run:
+        return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
+    if not out.exists():
+        log.warning(
+            "vina produced no output for %s (%s); using mock fallback "
+            "(NOT a real dock)", candidate_id, out,
+        )
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
     return _parse_vina(candidate_id, out, reference_atoms)
 
@@ -87,14 +97,9 @@ def _redock_real(
 def _parse_vina(candidate_id: str, out: Path, ref: Sequence[LigandAtom]) -> Pose:
     """Parse the BEST (first) Vina pose: affinity + the docked ligand
     coordinates. Coordinates are locked onto the canonical reference atom
-    list (ids/chemistry kept, Vina xyz adopted) so RMSD-to-reference and
-    pose-escape are computable downstream - the old parser discarded the
-    docked coords (ligand_atoms=ref, rmsd=None), making pose-quality
-    validation structurally impossible."""
-    import math
-
-    from evoliez.features.ligand import relabel_to_canonical
-
+    list (ids/chemistry kept, Vina xyz adopted) via the shared
+    lock_pose_to_reference helper so RMSD-to-reference and pose-escape are
+    computable downstream (the same helper now also backs gnina/diffdock)."""
     score = 0.0
     got_score = False
     parsed: list[LigandAtom] = []
@@ -120,33 +125,10 @@ def _parse_vina(candidate_id: str, out: Path, ref: Sequence[LigandAtom]) -> Pose
                                      element=elem, coord=(x, y, z)))
 
     # Vina pdbqt = heavy + polar H (e.g. 54), canonical = heavy + all RDKit H
-    # (e.g. 70). Delegate to the heavy-atom-aware atom-index lock instead of
-    # an exact-count check, so docked coords + RMSD survive the H asymmetry.
-    locked, ok = relabel_to_canonical(parsed, list(ref))
-    rmsd = None
-    if ok and locked:
-        rref = ([a for a in ref if (a.element or "").upper() != "H"]
-                if len(locked) != len(ref) else list(ref))
-        if len(rref) == len(locked):
-            rmsd = round(math.sqrt(sum(
-                sum((locked[i].coord[k] - rref[i].coord[k]) ** 2
-                    for k in range(3)) for i in range(len(locked))
-            ) / len(locked)), 3)
-    else:
-        # Couldn't verify the pose atom ids (count mismatch or chemistry-graph
-        # atom-order unverified - relabel_to_canonical already logged which)
-        # -> fall back to the reference atoms so downstream always has a
-        # ligand, with rmsd unavailable. Warn only when atoms WERE parsed,
-        # not when the file simply had no parseable ATOM records.
-        if parsed:
-            log.warning(
-                "Vina pose atom ids NOT verified vs reference (%d vs %d "
-                "heavy) for %s; RMSD-to-reference unavailable",
-                sum(1 for a in parsed if (a.element or "").upper() != "H"),
-                sum(1 for a in ref if (a.element or "").upper() != "H"),
-                candidate_id,
-            )
-        locked = list(ref)
+    # (e.g. 70): the heavy-atom-aware atom-index lock survives the H asymmetry.
+    locked, rmsd = lock_pose_to_reference(
+        parsed, ref, candidate_id=candidate_id, method=METHOD, logger=log,
+    )
     return Pose(candidate_id=candidate_id, method=METHOD, score=score,
                 ligand_atoms=locked, rmsd_to_reference=rmsd, cluster=0)
 

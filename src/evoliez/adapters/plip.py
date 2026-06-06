@@ -1,9 +1,17 @@
 """Standardized protein-ligand interaction fingerprint (user §3).
 
-real: PLIP (https://github.com/pharmai/plip) on a pose PDB if available.
-mock: deterministic geometry-rule fingerprint over the 8 standard
-non-covalent interaction types. Output is an edge feature / weak label and a
-report annotation - never a supervised label.
+A deterministic geometry-rule fingerprint over the 8 standard non-covalent
+interaction types. Output is an edge feature / weak label and a report
+annotation - never a supervised label.
+
+NOTE: this is the SAME geometry surrogate on both backends. A real PLIP
+(https://github.com/pharmai/plip) path is intentionally NOT wired here yet:
+PLIP's XML report is version-dependent and we have no captured fixture to verify
+the parser against on the dev box, so shipping unverified XML parsing risks
+emitting plausible-but-wrong interaction types (worse than an honest surrogate
+for a weak-label feature). When called on a real backend we log that the
+surrogate is in use so provenance/logs never over-claim. See
+docs/UPGRADE_ROADMAP.md for the real-PLIP follow-up (needs a server fixture).
 """
 
 from __future__ import annotations
@@ -14,7 +22,11 @@ from typing import List, Sequence
 
 from evoliez.config import Backend
 from evoliez.features.geometry import dist
+from evoliez.logging_utils import get_logger
 from evoliez.types import LigandAtom, ProteinStructure
+
+log = get_logger("evoliez.plip")
+_WARNED_SURROGATE = False
 
 IFP_TYPES = [
     "hbond", "salt_bridge", "hydrophobic", "pi_stack",
@@ -65,6 +77,13 @@ def fingerprint(
     workdir: Path | None = None,
     cutoff: float = 4.5,
 ) -> List[IFPContact]:
+    global _WARNED_SURROGATE
+    if backend is Backend.real and not _WARNED_SURROGATE:
+        log.warning(
+            "interaction fingerprint uses the geometry-rule SURROGATE (real "
+            "PLIP not wired); fingerprint is a weak-label feature, not a label"
+        )
+        _WARNED_SURROGATE = True
     out: List[IFPContact] = []
     for r in structure.residues:
         ref = r.sidechain_centroid or r.ca

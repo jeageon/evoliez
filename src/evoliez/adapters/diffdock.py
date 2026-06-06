@@ -9,7 +9,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
-from evoliez.adapters.base import mock_redock, write_min_pdb
+from evoliez.adapters.base import (
+    lock_pose_to_reference,
+    mock_redock,
+    parse_sdf_first_pose,
+    write_min_pdb,
+)
 from evoliez.config import Backend, DockingConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import LigandAtom, Pose, ProteinStructure
@@ -70,11 +75,24 @@ def _redock_real(
          str(cfg.poses_per_candidate)],
         dry_run=dry_run,
     )
-    if dry_run or not out.exists():
+    if dry_run:
+        return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
+    if not out.exists():
+        log.warning(
+            "diffdock produced no output for %s (%s); using mock fallback "
+            "(NOT a real dock)", candidate_id, out,
+        )
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
     score = _parse_diffdock(out)
+    # Adopt the rank-1 docked pose coordinates (was discarded -> no RMSD ->
+    # falsely 'perfect' redocking_consistency in s09).
+    ranks = sorted(Path(out).rglob("rank1*.sdf"))
+    locked, rmsd = lock_pose_to_reference(
+        parse_sdf_first_pose(ranks[0]) if ranks else [], reference_atoms,
+        candidate_id=candidate_id, method=METHOD, logger=log,
+    )
     return Pose(candidate_id=candidate_id, method=METHOD, score=score,
-                ligand_atoms=list(reference_atoms), cluster=0)
+                ligand_atoms=locked, rmsd_to_reference=rmsd, cluster=0)
 
 
 def _parse_diffdock(out_dir) -> float:

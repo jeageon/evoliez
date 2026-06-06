@@ -9,7 +9,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
-from evoliez.adapters.base import mock_redock, write_min_pdb
+from evoliez.adapters.base import (
+    lock_pose_to_reference,
+    mock_redock,
+    parse_sdf_first_pose,
+    write_min_pdb,
+)
 from evoliez.config import Backend, DockingConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import LigandAtom, Pose, ProteinStructure
@@ -64,11 +69,26 @@ def _redock_real(
          "--num_modes", str(cfg.poses_per_candidate), "-o", str(out)],
         dry_run=dry_run,
     )
-    if dry_run or not out.exists():
+    if dry_run:
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
+    if not out.exists():
+        # Real run produced no output (tool crash / wrong path). Degrade per
+        # spec 23, but LOUDLY - a fabricated mock pose must not pass silently
+        # as a real dock score into ranking.
+        log.warning(
+            "gnina produced no output for %s (%s); using mock fallback "
+            "(NOT a real dock)", candidate_id, out,
+        )
+        return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
+    # Adopt the docked pose coordinates (was discarded: ligand_atoms=reference,
+    # rmsd=None -> s09 read a falsely 'perfect' redocking_consistency).
+    locked, rmsd = lock_pose_to_reference(
+        parse_sdf_first_pose(out), reference_atoms,
+        candidate_id=candidate_id, method=METHOD, logger=log,
+    )
     return Pose(candidate_id=candidate_id, method=METHOD,
                 score=_parse_gnina(out),
-                ligand_atoms=list(reference_atoms), cluster=0)
+                ligand_atoms=locked, rmsd_to_reference=rmsd, cluster=0)
 
 
 def _parse_gnina(out) -> float:
