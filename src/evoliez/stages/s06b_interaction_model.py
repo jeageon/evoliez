@@ -116,9 +116,15 @@ class InteractionModelStage(Stage):
             cutoff=cfg.contact_cutoff,
             ligand_iptm=float(wt.metrics.get("ligand_iptm", 1.0)),
         )
+        edge_ds = edge_rows(econ)
         ctx.put("ensemble_contacts", econ)
         ctx.put("pose_dataset", pose_table)
-        ctx.put("edge_dataset", edge_rows(econ))
+        ctx.put("edge_dataset", edge_ds)
+        # Persist ALL bus artifacts (not just the model) so --resume restores a
+        # complete state: previously load() rebuilt only interaction_model, so a
+        # resumed s08/s11 silently read empty ensemble_contacts/pose/edge
+        # datasets and exported truncated ML data.
+        self._save_artifacts(ctx, econ, pose_table, edge_ds)
         self.log.info(
             "WT pose consensus: %s | %d ensemble contacts (freq>=0.5: %d)",
             pose_consensus(wt.samples), len(econ),
@@ -203,9 +209,36 @@ class InteractionModelStage(Stage):
         scores = [m.score_vector(x) for x in held_sel.X]
         return _auroc(scores, [int(v) for v in held_sel.y.tolist()])
 
+    def _artifacts_path(self, ctx: RunContext):
+        return ctx.paths.interaction_graphs / "s06b_artifacts.json"
+
+    def _save_artifacts(self, ctx, econ, pose_table, edge_ds) -> None:
+        import dataclasses
+        import json
+        self._artifacts_path(ctx).write_text(json.dumps({
+            "ensemble_contacts": [dataclasses.asdict(e) for e in econ],
+            "pose_dataset": pose_table,
+            "edge_dataset": edge_ds,
+        }))
+
     def load(self, ctx: RunContext) -> bool:
-        p = ctx.paths.interaction_graphs / "interaction_model.json"
-        if not p.exists():
+        import json
+
+        from evoliez.features.boltz_features import EnsembleContact
+
+        model_p = ctx.paths.interaction_graphs / "interaction_model.json"
+        art_p = self._artifacts_path(ctx)
+        # Only skip the (expensive) re-run if the FULL checkpoint is present.
+        # A partial checkpoint must re-run, never hand downstream empty data.
+        if not model_p.exists() or not art_p.exists():
             return False
-        ctx.put("interaction_model", InteractionModel.load(p))
+        try:
+            data = json.loads(art_p.read_text())
+            econ = [EnsembleContact(**d) for d in data["ensemble_contacts"]]
+            ctx.put("ensemble_contacts", econ)
+            ctx.put("pose_dataset", data["pose_dataset"])
+            ctx.put("edge_dataset", data["edge_dataset"])
+            ctx.put("interaction_model", InteractionModel.load(model_p))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return False
         return True
