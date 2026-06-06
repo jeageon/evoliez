@@ -130,4 +130,13 @@ def test_blast_mmseqs_stockholm_fixture_files():
 
 def test_foldx_and_rosetta_ddg():
     assert _parse_foldx(FX / "foldx") == 1.83
+    # no WT/MUT labels -> documented fallback to mean-of-tokens (with a warning)
     assert _parse_rosetta(FX / "rosetta") == 3.0     # mean(2.5, 3.5)
+
+
+def test_rosetta_wt_mut_ddg_is_mut_minus_wt():
+    # realistic cartesian_ddg: ddG = mean(MUT total) - mean(WT total), NOT the
+    # mean of every number in the file.
+    ddg = _parse_rosetta(FX / "rosetta_wtmut")
+    # mean(-608.12, -607.50) - mean(-612.34, -613.10) = -607.81 - -612.72
+    assert abs(ddg - 4.91) < 1e-6

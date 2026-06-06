@@ -148,7 +148,12 @@ class RunContext:
         self._save_state()
 
     def _save_state(self) -> None:
-        self.paths.state_path.write_text(json.dumps(self._state, indent=2, default=str))
+        # Atomic write: a crash (or the full-disk condition the disk guard
+        # warns about) mid-write would otherwise leave a truncated _state.json
+        # that the next --resume fails to parse, bricking the checkpoint.
+        tmp = self.paths.state_path.with_name(self.paths.state_path.name + ".tmp")
+        tmp.write_text(json.dumps(self._state, indent=2, default=str))
+        os.replace(tmp, self.paths.state_path)
 
     def is_stage_done(self, name: str) -> bool:
         return name in self._state.get("completed_stages", [])

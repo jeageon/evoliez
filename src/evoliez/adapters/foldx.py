@@ -78,16 +78,26 @@ def _foldx_real(
 
 
 def _parse_foldx(workdir) -> float:
-    """FoldX BuildModel `Dif_*.fxout`: skip the header block, the first
-    numeric column of a data row is total ΔΔG (kcal/mol)."""
+    """FoldX BuildModel `Dif_*.fxout`: read the 'total energy' column (located
+    from the header row) of the first data row = total ΔΔG (kcal/mol). Locating
+    the column by NAME is robust to FoldX reordering columns or emitting a
+    numeric first column, which the old 'first numeric column' heuristic was
+    not."""
     from pathlib import Path
 
-    for f in Path(workdir).glob("Dif_*.fxout"):
-        for line in f.read_text().splitlines():
+    for f in sorted(Path(workdir).glob("Dif_*.fxout")):
+        lines = f.read_text().splitlines()
+        col = 1  # FoldX Dif convention: col 0 = pdb name, col 1 = total energy
+        for line in lines:
+            low = [p.strip().lower() for p in line.split("\t")]
+            if "total energy" in low:
+                col = low.index("total energy")
+                break
+        for line in lines:
             parts = line.split("\t")
-            if len(parts) > 1:
+            if len(parts) > col:
                 try:
-                    return float(parts[1])
+                    return float(parts[col])
                 except ValueError:
                     continue
     return 0.0
