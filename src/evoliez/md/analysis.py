@@ -98,25 +98,27 @@ def analyse(result: MDResult, weights: ScoreWeights) -> MDMetrics:
         m.simulation_health_ok = False
     m.passed = not m.failure_reasons
 
-    # MD-lite score (spec 15.9)
+    # MD-lite QUALITY score (spec 15.9): a RAW, weight-free measure of how well
+    # the bound state held up. The ScoreWeights.md_lite weight is applied ONCE
+    # downstream in ranking.score.compute_final_score - it must NOT be folded in
+    # here as well (that squared the MD term at any non-1.0 weight). Integration
+    # health is penalised separately and transparently via `md_instability`
+    # (s10 -> md_instability_penalty), so it is NOT also subtracted here (that
+    # double-counted an unhealthy run). `weights` is kept on the signature for
+    # future enzyme-class threshold overrides.
     contact = m.contact_occupancy_mean
     keydist_stab = max(0.0, 1.0 - m.catalytic_distance_std / 2.0)
     cat_geom = max(0.0, 1.0 - max(0.0, m.catalytic_distance_mean - 3.5) / 5.0)
     lig_pen = max(0.0, m.ligand_rmsd_mean - 2.0) / 3.0
     pkt_pen = max(0.0, m.pocket_rmsd_mean - 1.5) / 2.0
-    inst_pen = 0.0 if m.simulation_health_ok else 1.0
     score = (
-        weights.md_lite
-        * (
-            0.30 * contact
-            + 0.20 * keydist_stab
-            + 0.20 * m.hbond_occupancy
-            + 0.20 * cat_geom
-            - 0.35 * lig_pen
-            - 0.25 * pkt_pen
-            - 0.50 * (1.0 if m.ligand_escape else 0.0)
-            - 0.60 * inst_pen
-        )
+        0.30 * contact
+        + 0.20 * keydist_stab
+        + 0.20 * m.hbond_occupancy
+        + 0.20 * cat_geom
+        - 0.35 * lig_pen
+        - 0.25 * pkt_pen
+        - 0.50 * (1.0 if m.ligand_escape else 0.0)
     )
     m.md_lite_score = round(float(score), 4)
     return m
