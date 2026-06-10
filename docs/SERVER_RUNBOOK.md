@@ -28,13 +28,13 @@ export EVOLIEZ_ROOT=/mnt/data/jglee
 echo 'export EVOLIEZ_ROOT=/mnt/data/jglee' >> ~/.bashrc
 
 mkdir -p "$EVOLIEZ_ROOT" && cd "$EVOLIEZ_ROOT"
-git clone -b feat/family-interaction-model <your-fork-url> EvoLiEZ
+git clone -b feat/server-hardening <your-fork-url> EvoLiEZ
 cd EvoLiEZ
 
 # creates the conda env at $EVOLIEZ_ROOT/envs/evoliez
 bash scripts/setup_server_env.sh
 conda activate "$EVOLIEZ_ROOT/envs/evoliez"
-pip install -e ".[science,md,gnn]"
+pip install -e ".[science,md,gnn,dev]"      # dev = pytest for the unit step
 
 bash scripts/fetch_weights.sh             # LigandMPNN/DiffDock code -> $EVOLIEZ_ROOT
 # optional, large: local homolog DB. Otherwise set msa.remote_server: true
@@ -113,15 +113,29 @@ bash scripts/run_pipeline.sh my_config.yaml
 bash scripts/run_pipeline.sh my_config.yaml --resume
 ```
 
-## Smoke test (recommended order)
+## Smoke test (recommended): one-shot script
 
-1. `evoliez run -c configs/example_fdh_nadp.yaml` (backend mock) — proves the
-   install end-to-end, ~seconds.
-2. Same config, `backend: real`, `backends: { s10_md: mock }`, `--to s04_complex`
-   — exercises Boltz-2 on one A6000 only.
-3. Add `s10_md: real`, `--from s09_nonmd` — exercises OpenMM-CUDA MD-lite on a
-   handful of candidates.
-4. Full real run.
+Don't hand-run the ladder above — `scripts/server_test.sh` does it for you. It
+activates the conda env, makes the editable install current with the pulled
+source, runs the unit suite in the server env, then the STAGED real-backend
+smoke (doctor → dryrun → boltz → dock → md → gnn), stopping on the first
+failure. Idempotent; no sudo; nothing on root `/`.
+
+```bash
+cd "$EVOLIEZ_ROOT/EvoLiEZ"
+git fetch origin && git checkout feat/server-hardening && git pull --ff-only
+export EVOLIEZ_ROOT                       # already in ~/.bashrc
+
+bash scripts/server_test.sh               # unit suite + full staged smoke
+bash scripts/server_test.sh quick         # just the unit suite (no GPU)
+bash scripts/server_test.sh boltz         # one stage: doctor|dryrun|boltz|dock|md|gnn
+```
+
+The `md` rung asserts real MD actually ran for ≥1 candidate (a degraded stage
+must not pass as OK). Steps 2–4 auto-capture real tool outputs as fixtures —
+see [`SERVER_SMOKE.md`](SERVER_SMOKE.md) for what each step proves and how to
+send the fixtures back. Only after all steps pass green do a bounded full real
+run via `scripts/run_pipeline.sh`, then scale.
 
 ## Server-grade GNN + Snakemake
 

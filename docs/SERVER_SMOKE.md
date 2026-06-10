@@ -10,7 +10,7 @@ weights — see `SERVER_RUNBOOK.md`.
 
 | Step | Command | What it proves / collect |
 |---|---|---|
-| 0 | `bash scripts/server_smoke.sh doctor` | tools/CUDA/`/mnt/data2`/config sane — fix every `[BLOCK]` first |
+| 0 | `bash scripts/server_smoke.sh doctor` | tools/CUDA/`/mnt/data2`/config sane — STRICT (exit 1 on any `[BLOCK]`); fix every `[BLOCK]` before a real run |
 | 1 | `bash scripts/server_smoke.sh dryrun` | every real tool command previews (no GPU). Already works on the default config (fixed in `119f65b`) |
 | 2 | `bash scripts/server_smoke.sh boltz` | homolog+MSA+**Boltz** real, stop at s04. Checks Boltz out path, mmCIF/PDB parse, confidence/affinity JSON, **atom-index lock** |
 | 3 | `bash scripts/server_smoke.sh dock` | s05+s09 real on few candidates: Vina ligand pdbqt prep, GNINA/DiffDock pose parse, FoldX/Rosetta input |
@@ -19,6 +19,12 @@ weights — see `SERVER_RUNBOOK.md`.
 
 `--stage-backend STAGE=real` flips just one stage to real (everything else
 mock) so each step has a minimal real surface; `--to/--from` bound the run.
+
+> Note: the `all` ladder (and `scripts/server_test.sh`) runs step 0 doctor in
+> ADVISORY mode — it surfaces every check but does NOT abort plumbing
+> validation on the expected placeholder-target `[BLOCK]`, so a fresh clone can
+> exercise the tool integration. The standalone `server_smoke.sh doctor` stays
+> strict (exit 1) — run it once you've set a real target, before a real run.
 
 ## After steps 2–4: send the captured fixtures back
 

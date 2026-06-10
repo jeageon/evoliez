@@ -142,7 +142,18 @@ gnn)      # step 6: 1-epoch single-GPU GNN train (DDP comes later)
 all)
   for s in doctor dryrun boltz dock md gnn; do
     echo "==== smoke step: $s ===="
-    bash "$0" "$s" "$SMOKE_CFG"
+    if [ "$s" = doctor ]; then
+      # ADVISORY inside the staged smoke: surface tool/CUDA/disk + config
+      # checks, but don't abort plumbing validation on the EXPECTED
+      # placeholder-target BLOCK (the run steps use the smoke config, not the
+      # real one). Run `server_smoke.sh doctor` standalone for the STRICT
+      # real-run gate (exit 1 on any block) before a real full run.
+      bash "$0" doctor "$SMOKE_CFG" || echo ">> doctor reported blocking" \
+        "issue(s) - continuing staged smoke. Set a real target and re-run" \
+        "'bash scripts/server_smoke.sh doctor' (strict) before a REAL run."
+    else
+      bash "$0" "$s" "$SMOKE_CFG"
+    fi
   done
   ;;
 *) echo "unknown step '$STEP'"; exit 1 ;;

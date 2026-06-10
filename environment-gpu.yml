@@ -30,6 +30,7 @@ dependencies:
   - networkx
   - typer
   - rich
+  - pytest           # so `python -m pytest` / server_test.sh unit step runs
   # science
   - rdkit
   - biopython

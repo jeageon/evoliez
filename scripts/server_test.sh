@@ -13,7 +13,7 @@
 #   export EVOLIEZ_ROOT=/mnt/data2/$USER          # where env/weights/runs live
 #   bash scripts/server_test.sh                   # = quick + staged real smoke
 #
-#   bash scripts/server_test.sh quick             # just the 120 unit tests (no GPU)
+#   bash scripts/server_test.sh quick             # just the unit suite (no GPU)
 #   bash scripts/server_test.sh doctor|dryrun|boltz|dock|md|gnn   # one stage
 set -euo pipefail
 
@@ -41,17 +41,19 @@ conda activate "$ENV_PREFIX"
 echo ">> python: $(command -v python)  ($(python -V 2>&1))"
 echo ">> EVOLIEZ_ROOT=$EVOLIEZ_ROOT  ENV=$ENV_PREFIX"
 
-# --- make the pulled source live (idempotent; picks up the new adapters/MD) ---
-pip install -e . -q
+# --- make the pulled source live (idempotent; picks up the new adapters/MD).
+#     '.[dev]' also pulls pytest so the unit step below runs even if the env
+#     predates the pytest addition to environment-gpu.yml. ----------------------
+pip install -e '.[dev]' -q
 echo ">> evoliez: $(python -c 'import evoliez,inspect,os;print(os.path.dirname(inspect.getfile(evoliez)))')"
 
-# --- step 0: fast unit sanity in the SERVER env (the 120 dev-box tests; no GPU)
+# --- step 0: fast unit sanity in the SERVER env (the full dev-box suite; no GPU)
 if [ "$STEP" = "quick" ] || [ "$STEP" = "all" ]; then
   echo "==== unit suite (server env) ===="
   if python -c "import pytest" 2>/dev/null; then
     python -m pytest -q
   else
-    echo ">> pytest not installed in env; skipping (pip install -e '.[dev]' to enable)"
+    echo ">> pytest still missing after '.[dev]' install; skipping unit suite"
   fi
   [ "$STEP" = "quick" ] && { echo ">> server_test 'quick' OK"; exit 0; }
 fi
