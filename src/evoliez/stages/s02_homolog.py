@@ -19,6 +19,7 @@ class HomologStage(Stage):
             ctx.paths.homologs,
             backend=self.backend(ctx),
             dry_run=ctx.dry_run,
+            remote_server=ctx.config.msa.remote_server,
         )
         # Stratify (spec 7.3): core (40-90% id) vs diverse (20-40%).
         core = [h for h in homologs if 0.40 <= h.identity <= 0.90]

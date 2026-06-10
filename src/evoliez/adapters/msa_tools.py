@@ -40,14 +40,17 @@ def search_homologs(
     *,
     backend: Backend,
     dry_run: bool = False,
+    remote_server: bool = False,
 ) -> List[Homolog]:
     if backend is Backend.real:
-        return _search_real(sequence, cfg, workdir, dry_run=dry_run)
+        return _search_real(sequence, cfg, workdir, dry_run=dry_run,
+                            remote_server=remote_server)
     return _search_mock(sequence, cfg)
 
 
 def _search_real(
-    sequence: str, cfg: HomologConfig, workdir: Path, *, dry_run: bool
+    sequence: str, cfg: HomologConfig, workdir: Path, *, dry_run: bool,
+    remote_server: bool = False,
 ) -> List[Homolog]:
     workdir.mkdir(parents=True, exist_ok=True)
     query = workdir / "query.fasta"
@@ -77,6 +80,20 @@ def _search_real(
         return _search_mock(sequence, cfg)
 
     if cfg.database is None:
+        if remote_server:
+            # msa.remote_server: real structural MSA comes from Boltz's hosted
+            # server (--use_msa_server); there is no local DB to mine homologs
+            # from, so the EvoLiEZ homolog stage (and its evolutionary /
+            # subfamily features) falls back to SYNTHETIC homologs. Loud so the
+            # degraded evolutionary signal is never mistaken for real. Set
+            # homologs.database to a local UniRef/BFD DB for real homolog mining.
+            log.warning(
+                "homologs.database unset + msa.remote_server: using SYNTHETIC "
+                "homologs (evolutionary/subfamily features are not real); "
+                "Boltz structural MSA is still real via --use_msa_server. Set "
+                "homologs.database for real homolog evolutionary signal."
+            )
+            return _search_mock(sequence, cfg)
         raise ValueError(
             "homologs.database is required for backend=real "
             "(point it at a UniRef/BFD DB on /mnt/data2), "

@@ -65,6 +65,27 @@ def test_blast_band_filter(tmp_path):
     assert [h.sequence for h in hs] == ["CCCC"]
 
 
+def test_remote_server_homolog_search_falls_back_not_raises(tmp_path):
+    """`msa.remote_server: true` (no local homolog DB) is a valid real config
+    that `evoliez doctor` blesses, so s02 must NOT crash on it: with no DB and
+    remote MSA selected, the homolog search falls back to synthetic homologs
+    (real structural MSA still comes from Boltz's --use_msa_server). Without
+    remote_server, a real run with no DB still raises (the DB requirement)."""
+    import pytest
+
+    from evoliez.adapters.msa_tools import search_homologs
+    from evoliez.config import Backend, HomologConfig
+
+    cfg = HomologConfig()  # database defaults to None
+    seq = "ACDEFGHIKLMNPQRSTVWY" * 3
+    hs = search_homologs(seq, cfg, tmp_path, backend=Backend.real,
+                         remote_server=True)
+    assert hs, "remote_server real run must yield homologs, not raise"
+    with pytest.raises(ValueError):
+        search_homologs(seq, cfg, tmp_path, backend=Backend.real,
+                        remote_server=False)
+
+
 def test_stockholm_identity_is_alignment_aware_under_indel(tmp_path):
     """jackhmmer identity must be computed against the ALIGNED query, not by
     gap-stripping both then comparing positionally. A homolog identical to the
