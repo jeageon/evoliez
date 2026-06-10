@@ -72,6 +72,13 @@ class MDStage(Stage):
                 __import__("json").dumps(aj, indent=2)
             )
             with ctx.store.session() as s:
+                # idempotent: no load() guard, so a --resume re-runs MD; clear
+                # this candidate's prior MD row(s) before inserting to avoid
+                # duplicate rows (no unique constraint rejects them).
+                s.query(MDSimulation).filter_by(
+                    project_id=ctx.project_id,
+                    candidate_id=cand.candidate_id,
+                ).delete()
                 s.add(
                     MDSimulation(
                         project_id=ctx.project_id,

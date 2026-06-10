@@ -48,6 +48,12 @@ class DockingStage(Stage):
 
         assert ctx.store is not None
         with ctx.store.session() as s:
+            # idempotent: this stage has no load() guard so it re-runs on every
+            # --resume; clear prior WT poses first so a resume does not append
+            # DUPLICATE rows (there is no unique constraint to reject them).
+            s.query(DockingPose).filter_by(
+                project_id=ctx.project_id, candidate_id="wt"
+            ).delete()
             for p in poses:
                 s.add(
                     DockingPose(

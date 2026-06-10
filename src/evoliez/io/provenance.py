@@ -23,6 +23,26 @@ def _sha1(text: str) -> str:
     return hashlib.sha1(text.encode()).hexdigest()[:16]
 
 
+def _sha256_file(path: Optional[str]) -> Optional[str]:
+    """sha256 of a checkpoint's bytes so an in-place retrain at the SAME path
+    yields a different provenance/fingerprint (the path string alone could not
+    distinguish two different models written to one file). None when the path is
+    missing/unreadable."""
+    if not path:
+        return None
+    try:
+        p = Path(path)
+        if not p.is_file():
+            return None
+        h = hashlib.sha256()
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()[:16]
+    except OSError:
+        return None
+
+
 RANKING_FORMULA_VERSION = "2026-05-19.v5"  # bump when scoring math changes
 
 
@@ -102,6 +122,7 @@ def build_provenance(
         "config_sha1": _sha1(json.dumps(config_dict, sort_keys=True,
                                         default=str)),
         "gnn_checkpoint": gnn_ckpt,
+        "gnn_checkpoint_sha256": _sha256_file(gnn_ckpt),
         "tools": _tool_provenance(),
         "note": "Boltz/affinity/pLDDT used as features, never labels "
                 "(see docs/ML_DATA_POLICY.md).",

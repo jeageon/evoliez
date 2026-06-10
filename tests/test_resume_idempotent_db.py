@@ -8,6 +8,8 @@ from evoliez.config import load_config
 from evoliez.context import RunContext
 from evoliez.db.schema import (
     ComplexPrediction,
+    DockingPose,
+    MDSimulation,
     MutationCandidate,
     Sequence,
 )
@@ -43,6 +45,8 @@ def _counts(db):
             .filter_by(source="homolog").scalar(),
             ses.query(func.count(ComplexPrediction.complex_id)).scalar(),
             ses.query(func.count(MutationCandidate.candidate_id)).scalar(),
+            ses.query(func.count(DockingPose.pose_id)).scalar(),
+            ses.query(func.count(MDSimulation.md_id)).scalar(),
         )
 
 
@@ -52,7 +56,8 @@ def test_resume_does_not_duplicate_db_rows(tmp_path):
     ctx = RunContext(cfg, allow_small_disk=True).setup()
     Pipeline().run(ctx)
     first = _counts(ctx.paths.db_path)
-    assert first[0] > 0 and first[1] >= 1 and first[2] >= 1
+    # homologs, complexes, candidates, AND docking poses + MD rows all present
+    assert all(v >= 1 for v in first), first
 
     # fresh context, same dir + config (fingerprint unchanged -> NOT
     # invalidated); stages re-run but inserts must be idempotent

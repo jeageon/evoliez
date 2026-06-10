@@ -112,6 +112,16 @@ class RunContext:
         cfg_blob = json.dumps(
             self.config.model_dump(mode="json"), sort_keys=True, default=str
         )
+        # Pin the GNN weights by CONTENT: an in-place `train-gnn` at the same
+        # path changes ml_score but not the config, so without this a retrain
+        # would not invalidate the resume checkpoint. "none" when GNN disabled,
+        # "missing" when enabled but the file is absent (both stable).
+        gnn_ckpt_sha = "none"
+        g = self.config.gnn
+        if g.enabled:
+            from evoliez.io.provenance import _sha256_file
+            ckpt = str(self.paths.root / g.checkpoint)
+            gnn_ckpt_sha = _sha256_file(ckpt) or "missing"
         return {
             "evoliez_version": __version__,
             "ranking_formula_version": RANKING_FORMULA_VERSION,
@@ -121,13 +131,25 @@ class RunContext:
             "dry_run": "1" if self.dry_run else "0",
             "input_sha1": self._sha1(input_blob),
             "config_sha1": self._sha1(cfg_blob),
+            "gnn_checkpoint_sha256": gnn_ckpt_sha,
         }
 
     def _load_state(self) -> None:
         sp = self.paths.state_path
         current = self.run_fingerprint()
         if sp.exists():
-            self._state = json.loads(sp.read_text())
+            try:
+                self._state = json.loads(sp.read_text())
+            except (json.JSONDecodeError, OSError) as exc:
+                # a corrupt _state.json (power-loss / partial NFS write / a
+                # pre-fix crash) must NOT brick --resume: discard it and re-run
+                # from scratch rather than aborting setup().
+                log.warning(
+                    "resume checkpoint %s is unreadable/corrupt (%s); "
+                    "discarding it and re-running all stages", sp, exc,
+                )
+                self._state = {}
+                self.invalidated = True
             self._state.setdefault("completed_stages", [])
             self._state.setdefault("meta", {})
             stored = self._state.get("fingerprint", {})
@@ -148,12 +170,29 @@ class RunContext:
         self._save_state()
 
     def _save_state(self) -> None:
-        # Atomic write: a crash (or the full-disk condition the disk guard
-        # warns about) mid-write would otherwise leave a truncated _state.json
-        # that the next --resume fails to parse, bricking the checkpoint.
-        tmp = self.paths.state_path.with_name(self.paths.state_path.name + ".tmp")
-        tmp.write_text(json.dumps(self._state, indent=2, default=str))
-        os.replace(tmp, self.paths.state_path)
+        # Atomic + DURABLE write: a crash / full-disk / power-loss mid-write
+        # would otherwise leave a truncated _state.json that the next --resume
+        # fails to parse, bricking the checkpoint. fsync the data before the
+        # rename and the directory after, so recovery sees either the old or the
+        # new complete file - never a torn write.
+        target = self.paths.state_path
+        tmp = target.with_name(target.name + ".tmp")
+        data = json.dumps(self._state, indent=2, default=str)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, data.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, target)
+        try:
+            dir_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass  # directory fsync unsupported on some platforms; rename is atomic
 
     def is_stage_done(self, name: str) -> bool:
         return name in self._state.get("completed_stages", [])

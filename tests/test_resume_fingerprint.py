@@ -40,7 +40,28 @@ def test_fingerprint_deterministic(tmp_path):
     b = RunContext(cfg, allow_small_disk=True).run_fingerprint()
     assert a == b
     assert set(a) == {"evoliez_version", "ranking_formula_version",
-                      "backend", "dry_run", "input_sha1", "config_sha1"}
+                      "backend", "dry_run", "input_sha1", "config_sha1",
+                      "gnn_checkpoint_sha256"}
+
+
+def test_corrupt_state_recovers_instead_of_crashing(tmp_path):
+    """A truncated/garbage _state.json (power-loss / pre-fix crash) must NOT
+    abort setup() with JSONDecodeError - it should discard the checkpoint and
+    re-run from scratch (invalidated)."""
+    import json
+
+    cfg = _cfg(tmp_path)
+    ctx = _setup(cfg, tmp_path)
+    ctx.mark_stage_done("s01_input")
+    sp = ctx.paths.state_path
+    assert sp.exists()
+    sp.write_text("{not valid json,,,")          # corrupt the checkpoint
+
+    ctx2 = _setup(_cfg(tmp_path), tmp_path)       # must not raise
+    assert ctx2.invalidated is True
+    assert ctx2._state["completed_stages"] == []
+    assert not ctx2.is_stage_done("s01_input")
+    json.loads(sp.read_text())                    # rewritten as valid JSON
 
 
 def test_unchanged_config_keeps_resume(tmp_path):
