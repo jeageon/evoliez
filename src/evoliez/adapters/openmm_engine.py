@@ -29,6 +29,41 @@ log = get_logger("evoliez.openmm")
 # configured production length. 25_000 steps = 50 ps at a 2 fs timestep.
 _LITE_MAX_STEPS = 25_000
 
+# Tiered positional-restraint shells, in nm from the ligand centroid: the
+# POCKET backbone is left FREE so pocket_rmsd measures the binding-site
+# response, the active-site SHELL is held weakly, distant backbone strongly.
+_POCKET_NM = 0.8   # 8 Å
+_SHELL_NM = 1.2    # 12 Å
+
+
+def _production_nsteps(cfg: "MDConfig") -> tuple:
+    """(nsteps, actual_ns) for the production block.
+
+    steps = total simulated time / timestep (1 ns = 1e6 fs). The previous
+    formula divided by 1000 twice, running ~1 ps for a "1 ns" request. L1/L2
+    are capped at _LITE_MAX_STEPS; floor at 50 steps. actual_ns is derived FROM
+    nsteps so the report reflects what ACTUALLY ran, never echoes production_ns.
+    """
+    nsteps = int(cfg.production_ns * 1e6 / cfg.timestep_fs)
+    if cfg.protocol_level < 3:          # L1/L2 are short screening rungs
+        nsteps = min(nsteps, _LITE_MAX_STEPS)
+    nsteps = max(50, nsteps)
+    actual_ns = nsteps * cfg.timestep_fs / 1e6
+    return nsteps, actual_ns
+
+
+def _ca_restraint_tier(distance_nm: "float | None") -> str:
+    """Positional-restraint tier for one CA at ``distance_nm`` from the ligand
+    centroid (None = apo / no ligand atoms). 'free' = pocket backbone, added
+    with NO restraint; 'weak' = active-site shell; 'strong' = distant backbone.
+    The pocket being free is the unfreeze-pocket fix - the previous build
+    strong-restrained EVERY CA, pinning the pocket so pocket_rmsd was ~0."""
+    if distance_nm is None:             # apo / no ligand: hold backbone
+        return "strong"
+    if distance_nm <= _POCKET_NM:
+        return "free"
+    return "strong" if distance_nm > _SHELL_NM else "weak"
+
 
 @dataclass
 class MDResult:
@@ -497,7 +532,6 @@ def _run_real(
     _lig_idx0 = [a.index for a in modeller.topology.atoms()
                  if a.residue.name in ("LIG", "UNL", "UNK")]
     _ca_atoms = [a for a in modeller.topology.atoms() if a.name == "CA"]
-    POCKET_NM, SHELL_NM = 0.8, 1.2          # 8 Å pocket / 12 Å active-site shell
     K_STRONG = (5.0 * unit.kilocalories_per_mole / unit.angstrom**2
                 ).value_in_unit(unit.kilojoule_per_mole / unit.nanometer**2)
     K_WEAK = (0.5 * unit.kilocalories_per_mole / unit.angstrom**2
@@ -511,14 +545,13 @@ def _run_real(
     lc0 = pos_nm[_lig_idx0].mean(axis=0) if _lig_idx0 else None
     n_strong = n_weak = 0
     for ca in _ca_atoms:
-        if lc0 is None:                     # apo / no ligand atoms: hold backbone
-            kval, is_strong = K_STRONG, True
-        else:
-            d = float(np.linalg.norm(pos_nm[ca.index] - lc0))
-            if d <= POCKET_NM:
-                continue                    # pocket backbone: FREE to move
-            is_strong = d > SHELL_NM
-            kval = K_STRONG if is_strong else K_WEAK
+        d = (None if lc0 is None
+             else float(np.linalg.norm(pos_nm[ca.index] - lc0)))
+        tier = _ca_restraint_tier(d)
+        if tier == "free":                  # pocket backbone: FREE to move
+            continue
+        is_strong = tier == "strong"
+        kval = K_STRONG if is_strong else K_WEAK
         x0, y0, z0 = pos_nm[ca.index]
         restraint.addParticle(int(ca.index), [kval, x0, y0, z0])
         n_strong += int(is_strong)
@@ -556,7 +589,7 @@ def _run_real(
         ca_idx = [a.index for a in modeller.topology.atoms()
                   if a.name == "CA"]
         pkt_idx = [i for i in ca_idx
-                   if float(((init[i] - lc) ** 2).sum()) ** 0.5 <= 0.8]
+                   if float(((init[i] - lc) ** 2).sum()) ** 0.5 <= _POCKET_NM]
     else:
         pkt_idx = [a.index for a in modeller.topology.atoms()
                    if a.name == "CA"]
@@ -573,14 +606,7 @@ def _run_real(
     actual_ns = 0.0
     if cfg.protocol_level >= 1:
         sim.context.setVelocitiesToTemperature(cfg.temperature_K * unit.kelvin)
-        # steps = total simulated time / timestep (1 ns = 1e6 fs). The previous
-        # formula divided by 1000 twice, running ~1 ps for a "1 ns" request and
-        # then reporting production_ns regardless of what ran; both are fixed.
-        nsteps = int(cfg.production_ns * 1e6 / cfg.timestep_fs)
-        if cfg.protocol_level < 3:          # L1/L2 are short screening rungs
-            nsteps = min(nsteps, _LITE_MAX_STEPS)
-        nsteps = max(50, nsteps)
-        actual_ns = nsteps * cfg.timestep_fs / 1e6   # report what ACTUALLY ran
+        nsteps, actual_ns = _production_nsteps(cfg)   # report what ACTUALLY ran
         traj = workdir / f"{candidate_id}.dcd"
         sim.reporters.append(app.DCDReporter(str(traj), max(1, nsteps // 50)))
         for blk in range(50):
