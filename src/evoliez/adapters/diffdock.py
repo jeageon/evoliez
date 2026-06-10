@@ -85,8 +85,10 @@ def _redock_real(
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
     score = _parse_diffdock(out)
     # Adopt the rank-1 docked pose coordinates (was discarded -> no RMSD ->
-    # falsely 'perfect' redocking_consistency in s09).
-    ranks = sorted(Path(out).rglob("rank1*.sdf"))
+    # falsely 'perfect' redocking_consistency in s09). Use the SAME confidence-
+    # first selection as the score parser so the score and the coords come from
+    # one pose (a bare rank1.sdf sorts first and would mismatch them).
+    ranks = _rank1_pose_files(out)
     locked, rmsd = lock_pose_to_reference(
         parse_sdf_first_pose(ranks[0]) if ranks else [], reference_atoms,
         candidate_id=candidate_id, method=METHOD, logger=log,
@@ -95,14 +97,33 @@ def _redock_real(
                 ligand_atoms=locked, rmsd_to_reference=rmsd, cluster=0)
 
 
-def _parse_diffdock(out_dir) -> float:
-    """DiffDock writes `rank1_confidence-X.XX.sdf`; the confidence is encoded
-    in the filename. Return it (higher = better; 0.0 if no pose)."""
-    import re
+def _rank1_pose_files(out_dir):
+    """rank-1 pose SDFs, confidence-bearing files FIRST. DiffDock writes
+    `rank1_confidence-X.XX.sdf`, but some versions also emit a bare `rank1.sdf`
+    which sorts before it ('.' < '_') and carries no confidence token. Preferring
+    confidence-bearing files keeps the score and the adopted coords on the SAME
+    real pose instead of pairing a fabricated score with a bare-file pose."""
     from pathlib import Path
 
-    confs = sorted(Path(out_dir).rglob("rank1*.sdf"))
+    conf = sorted(Path(out_dir).rglob("rank1*confidence*.sdf"))
+    return conf or sorted(Path(out_dir).rglob("rank1*.sdf"))
+
+
+def _parse_diffdock(out_dir):
+    """DiffDock writes `rank1_confidence-X.XX.sdf`; the confidence is encoded in
+    the filename. Return it (higher = better; 0.0 if no pose). A pose with no
+    confidence token is treated as unscored (0.0) WITH a warning - never the old
+    fabricated -7.0, which looked like a real affinity paired with real coords."""
+    import re
+
+    confs = _rank1_pose_files(out_dir)
     if not confs:
         return 0.0
     m = re.search(r"confidence(-?\d+\.?\d*)", confs[0].name)
-    return round(float(m.group(1)), 4) if m else -7.0
+    if m:
+        return round(float(m.group(1)), 4)
+    log.warning(
+        "diffdock rank-1 pose %s has no confidence token; treating as unscored",
+        confs[0].name,
+    )
+    return 0.0

@@ -47,11 +47,13 @@ def estimate_stability(
     )
     if dry_run:
         return _ddg_mock(candidate_id, structure, mutations)
-    return {"ddg_fold": round(_parse_rosetta(workdir), 3),
-            "clash_score": 0.0}
+    ddg = _parse_rosetta(workdir)
+    if ddg is None:                       # honest failure, not a fake 0.0
+        return {"ddg_fold": None, "clash_score": 0.0}
+    return {"ddg_fold": round(ddg, 3), "clash_score": 0.0}
 
 
-def _parse_rosetta(workdir) -> float:
+def _parse_rosetta(workdir):
     """cartesian_ddg `*.ddg`: ΔΔG = mean(MUT total) - mean(WT total), reading
     the total score (first float) from each WT/MUT round line. The old code
     averaged ALL numeric tokens in the file, conflating WT vs mutant energies,
@@ -83,7 +85,13 @@ def _parse_rosetta(workdir) -> float:
                 "format and the parser", len(nums),
             )
             return sum(nums) / len(nums)
-    return 0.0
+    # No .ddg file / no numeric content: return None (not 0.0, the BEST ddG)
+    # so a failed cartesian_ddg run is recorded as 'stability unavailable'.
+    log.warning(
+        "rosetta produced no parseable *.ddg in %s; stability unavailable "
+        "(not scored as max-stable)", workdir,
+    )
+    return None
 
 
 def _first_float(line: str):

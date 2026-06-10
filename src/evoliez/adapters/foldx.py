@@ -74,15 +74,22 @@ def _foldx_real(
     )
     if dry_run:
         return _mock(candidate_id, structure, mutations)
-    return {"ddg_fold": round(_parse_foldx(workdir), 3), "clash_score": 0.0}
+    ddg = _parse_foldx(workdir)
+    if ddg is None:                       # honest failure, not a fake 0.0
+        return {"ddg_fold": None, "clash_score": 0.0}
+    return {"ddg_fold": round(ddg, 3), "clash_score": 0.0}
 
 
-def _parse_foldx(workdir) -> float:
+def _parse_foldx(workdir):
     """FoldX BuildModel `Dif_*.fxout`: read the 'total energy' column (located
     from the header row) of the first data row = total ΔΔG (kcal/mol). Locating
     the column by NAME is robust to FoldX reordering columns or emitting a
     numeric first column, which the old 'first numeric column' heuristic was
-    not."""
+    not.
+
+    Returns None (not 0.0) when no Dif file / no numeric row is found, so a
+    failed FoldX run is recorded as 'stability unavailable' rather than the BEST
+    possible ddG=0.0 (zero penalty, stability_score 1.0, passes the filter)."""
     from pathlib import Path
 
     for f in sorted(Path(workdir).glob("Dif_*.fxout")):
@@ -100,7 +107,11 @@ def _parse_foldx(workdir) -> float:
                     return float(parts[col])
                 except ValueError:
                     continue
-    return 0.0
+    log.warning(
+        "FoldX produced no parseable Dif_*.fxout ddG in %s; "
+        "stability unavailable (not scored as max-stable)", workdir,
+    )
+    return None
 
 
 def _mock(

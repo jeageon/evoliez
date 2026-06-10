@@ -43,6 +43,18 @@ def _instability(cand: Candidate) -> float:
     return float(max(0.0, min(1.0, val)))
 
 
+def _redock_metrics(rmsd):
+    """(redocking_consistency, docking_uncertainty, ligand_escape) from the
+    pose's RMSD-to-reference. ``rmsd`` is None when the docked pose could NOT be
+    graph-verified vs the reference: treat as UNKNOWN (neutral consistency,
+    surfaced uncertainty), NEVER as a perfect (consistency 1.0) redock that also
+    silently bypasses the ligand-escape filter."""
+    if rmsd is None:
+        return 0.5, 0.5, False
+    c = max(0.0, 1.0 - rmsd / 4.0)
+    return round(c, 4), round(1.0 - c, 4), rmsd > 4.5
+
+
 class NonMDValidationStage(Stage):
     name = "s09_nonmd"
 
@@ -75,16 +87,30 @@ class NonMDValidationStage(Stage):
                     ctx.paths.validation / "foldx", backend=backend,
                     dry_run=ctx.dry_run,
                 )
-            ddg = stab.get("ddg_fold", 0.0)
-            cand.scores["ddg_fold"] = ddg
+            ddg = stab.get("ddg_fold")
             cand.scores["clash_score"] = stab.get("clash_score", 0.0)
             # positive stability contribution (was dead: score.py reads
             # "stability_score" which nothing set). Favourable/neutral ddG
             # (<=0) -> 1.0; at the allowed cap -> 0.0.
-            cap = scfg.max_ddg_allowed or 2.5
-            cand.scores["stability_score"] = round(
-                max(0.0, 1.0 - max(0.0, ddg) / cap), 4
-            )
+            if ddg is None:
+                # stability measurement FAILED (tool produced no parseable ddG).
+                # Do NOT default to 0.0 - that is the BEST value (zero penalty,
+                # stability_score 1.0, passes the ddG filter), so a tool failure
+                # would masquerade as a maximally-stable mutant. Surface it, give
+                # NO positive reward, and route to MD rather than reject.
+                self.log.warning(
+                    "stability ddG unavailable for %s; not scored as stable",
+                    cand.candidate_id,
+                )
+                cand.details["stability_unavailable"] = True
+                cand.scores["ddg_fold"] = 0.0       # neutral for penalty/filter
+                cand.scores["stability_score"] = 0.0  # no positive reward (was 1.0)
+            else:
+                cand.scores["ddg_fold"] = ddg
+                cap = scfg.max_ddg_allowed or 2.5
+                cand.scores["stability_score"] = round(
+                    max(0.0, 1.0 - max(0.0, ddg) / cap), 4
+                )
 
             inst = _instability(cand)
             pose = redock_with(
@@ -93,12 +119,11 @@ class NonMDValidationStage(Stage):
                 wt.ligand.smiles,
             )
             cand.scores["docking_score"] = pose.score
-            consistency = max(
-                0.0, 1.0 - (pose.rmsd_to_reference or 0.0) / 4.0
+            consistency, uncertainty, ligand_escape = _redock_metrics(
+                pose.rmsd_to_reference
             )
-            cand.scores["redocking_consistency"] = round(consistency, 4)
-            cand.scores["docking_uncertainty"] = round(1.0 - consistency, 4)
-            ligand_escape = (pose.rmsd_to_reference or 0.0) > 4.5
+            cand.scores["redocking_consistency"] = consistency
+            cand.scores["docking_uncertainty"] = uncertainty
 
             mut_cat = catalytic_distances(mc.structure, ref_atoms, catalytic)
             geom_pen = 0.0
