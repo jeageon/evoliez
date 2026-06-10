@@ -128,10 +128,21 @@ def _spearman(xs: List[float], ys: List[float]) -> float:
         return 0.0
 
     def ranks(v):
+        # AVERAGE ranks for ties (matches scipy.stats.spearmanr): tied values
+        # each receive the mean of the positions they span, so the metric is
+        # numerically correct AND invariant to input row order. Ordinal ranks
+        # let input order decide ties, making the reported correlation unstable.
         order = sorted(range(n), key=lambda i: v[i])
         rk = [0.0] * n
-        for pos, i in enumerate(order):
-            rk[i] = pos
+        i = 0
+        while i < n:
+            j = i
+            while j < n and v[order[j]] == v[order[i]]:
+                j += 1
+            avg = (i + j - 1) / 2.0  # mean of 0-based positions i .. j-1
+            for p in range(i, j):
+                rk[order[p]] = avg
+            i = j
         return rk
 
     rx, ry = ranks(xs), ranks(ys)
@@ -156,7 +167,15 @@ def calibration_curve(
     ranked: Sequence[Candidate], bench: Sequence[dict]
 ) -> Dict[str, object]:
     """Reliability of the (min-max normalised) final score vs the
-    beneficial/non-beneficial label (expert review #4)."""
+    beneficial/non-beneficial label (expert review #4).
+
+    NOTE: this is NOT probabilistic calibration. final_score is min-max scaled
+    to [0,1] - the worst candidate is pinned to 0 and the best to 1 regardless
+    of true confidence - so `ece` measures the reliability of a monotonic
+    rescaling of a RANKING score, not a fitted probability. The result is tagged
+    `metric: rank_score_reliability` so a benchmark.json reader cannot mistake
+    it for genuine probabilistic ECE. A true ECE would need a Platt/isotonic
+    calibrator fit on a held-out split."""
     from evoliez.ml.calibration import (
         expected_calibration_error,
         reliability_diagram,
@@ -167,7 +186,8 @@ def calibration_curve(
     pts = [(c.mutation_str, c.scores.get("final_score", 0.0))
            for c in ranked if c.mutation_str in label]
     if len(pts) < 3:
-        return {"ece": 0.0, "bins": [], "n": len(pts)}
+        return {"ece": 0.0, "bins": [], "n": len(pts),
+                "metric": "rank_score_reliability"}
     vals = [v for _, v in pts]
     lo, hi = min(vals), max(vals)
     span = (hi - lo) or 1.0
@@ -177,6 +197,7 @@ def calibration_curve(
         "ece": expected_calibration_error(probs, ys),
         "bins": reliability_diagram(probs, ys),
         "n": len(pts),
+        "metric": "rank_score_reliability",
     }
 
 

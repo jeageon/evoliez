@@ -39,7 +39,16 @@ def train(
     coord_noise_min: float = 0.1,
     coord_noise_alpha: float = 1.5,
     equivariant: bool = False,
+    rbf_n: int = 16,
+    graph_geom: Optional[dict] = None,
 ) -> Path:
+    # graph-construction geometry the dataset was built with; persisted in the
+    # checkpoint so inference (gnn_scorer) rebuilds graphs identically.
+    geom = graph_geom or {
+        "radius_lr": 6.0, "radius_rr": 8.0,
+        "low_plddt_cutoff": 50.0, "drop_far_low_plddt": True,
+        "use_disorder": True,
+    }
     if not egnn.is_available():
         raise RuntimeError(
             "torch not installed - EvoLigand-GNN training is server-only. "
@@ -62,7 +71,7 @@ def train(
              len(samples), device, ddp)
 
     model = egnn.EvoLigandGNN(NODE_DIM, EDGE_DIM, hidden=hidden,
-                              layers=layers,
+                              layers=layers, rbf_n=rbf_n,
                               equivariant=equivariant).to(device)
     if ddp:
         torch.distributed.init_process_group("nccl")
@@ -116,7 +125,9 @@ def train(
                 "edge_dim": EDGE_DIM,
                 "hidden": hidden,
                 "layers": layers,
+                "rbf_n": rbf_n,
                 "equivariant": equivariant,
+                "graph_geom": geom,
             },
             out_ckpt,
         )

@@ -112,6 +112,91 @@ def test_egnn_forward_if_torch_available():
     assert torch.isfinite(loss)
 
 
+def test_inference_score_ignores_untrained_graph_head():
+    """The graph_score head gets NO gradient in multitask_loss (no graph-level
+    label), so it stays at random init. It must NOT influence the inference
+    family-consistency score - otherwise ~50% of gnn_score is init-noise. Force
+    the head to large +/- outputs and assert the score is unchanged."""
+    if not egnn.is_available():
+        return
+    import torch
+
+    cx, pf, econ = _ctx()
+    model = egnn.EvoLigandGNN(NODE_DIM, EDGE_DIM, hidden=32, layers=2).eval()
+    scorer = EvoLigandGNNScorer(model, {})
+    base = scorer.score_complex(cx, pf, econ)
+    with torch.no_grad():
+        for p in model.score_head.parameters():
+            p.copy_(p * 0 + 50.0)            # graph_score -> +inf, sigmoid ~1
+        hi = scorer.score_complex(cx, pf, econ)
+        for p in model.score_head.parameters():
+            p.copy_(p * 0 - 50.0)            # graph_score -> -inf, sigmoid ~0
+        lo = scorer.score_complex(cx, pf, econ)
+    assert hi == lo == base, (
+        "inference score depends on the untrained graph_score head "
+        f"(base={base}, hi={hi}, lo={lo})"
+    )
+
+
+def test_disorder_changes_last_two_node_columns():
+    """Training passes a DisorderTrack; inference must too. A graph built WITH
+    disorder differs from one WITHOUT it in exactly the last 2 node-feature
+    columns (dis_iup, dis_lc) - the train/inference skew this guards. Torch-free
+    (build_graph_sample is numpy)."""
+    from evoliez.adapters.disorder import predict_disorder
+
+    cx, pf, econ = _ctx()
+    dis = predict_disorder(cx.structure.sequence, Path("/tmp/ez_dis"),
+                           backend=Backend.mock)
+    s_no = build_graph_sample(cx, pf, econ)                 # disorder=None
+    s_yes = build_graph_sample(cx, pf, econ, disorder=dis)
+    a, b = s_no["node_feat"], s_yes["node_feat"]
+    assert a.shape == b.shape
+    assert not np.allclose(a[:, -2:], b[:, -2:])            # disorder cols differ
+    assert np.allclose(a[:, :-2], b[:, :-2])                # other cols identical
+
+
+def test_score_complex_accepts_disorder():
+    """gnn_scorer.score_complex must accept (and thread) a disorder track so
+    inference matches training - it previously did not, zeroing 2/21 features."""
+    if not egnn.is_available():
+        return
+    from evoliez.adapters.disorder import predict_disorder
+
+    cx, pf, econ = _ctx()
+    dis = predict_disorder(cx.structure.sequence, Path("/tmp/ez_dis2"),
+                           backend=Backend.mock)
+    model = egnn.EvoLigandGNN(NODE_DIM, EDGE_DIM, hidden=32, layers=2).eval()
+    scorer = EvoLigandGNNScorer(model, {})
+    v = scorer.score_complex(cx, pf, econ, disorder=dis)
+    assert 0.0 <= v <= 1.0
+
+
+def test_train_persists_rbf_n_and_graph_geom(tmp_path):
+    """gnn.rbf and the graph geometry must round-trip through the checkpoint so
+    they are not silently ignored (rbf inert) / defaulted (geometry skew)."""
+    if not egnn.is_available():
+        return
+    import torch
+    from evoliez.ml.train_gnn import train
+
+    cx, pf, econ = _ctx()
+    s = build_graph_sample(cx, pf, econ)
+    save_graph_dataset([s, s], tmp_path / "ds")
+    ckpt = tmp_path / "m.pt"
+    geom = {"radius_lr": 3.0, "radius_rr": 3.0, "low_plddt_cutoff": 40.0,
+            "drop_far_low_plddt": False, "use_disorder": True}
+    train(tmp_path / "ds", ckpt, epochs=1, hidden=16, layers=2, amp=False,
+          rbf_n=8, graph_geom=geom)
+    blob = torch.load(ckpt, map_location="cpu", weights_only=True)
+    assert blob["rbf_n"] == 8
+    assert blob["graph_geom"]["radius_lr"] == 3.0
+    scorer = EvoLigandGNNScorer.load(ckpt)        # weights_only load must work
+    assert scorer is not None
+    assert scorer.meta["rbf_n"] == 8
+    assert scorer.meta["graph_geom"]["radius_lr"] == 3.0
+
+
 def test_equivariant_readout_is_invariant_if_torch():
     """E(3)-equivariant message passing -> rotation/translation-invariant
     contact/score readout (expert review #6 / terminology)."""

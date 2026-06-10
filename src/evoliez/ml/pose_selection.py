@@ -28,7 +28,7 @@ class PoseRecord:
 
 @dataclass
 class SelectionResult:
-    X: np.ndarray  # (n, fingerprint + 3 extra features)
+    X: np.ndarray  # (n, fingerprint) - interaction fingerprint only, no leakage scalars
     y: np.ndarray  # binary back-compat: 1 = consensus/alternative, 0 = neg
     # Per-row training weight = Boltz pose reliability (spec: use Boltz score
     # as a SAMPLE WEIGHT, never as a label).
@@ -53,11 +53,13 @@ def _robust_z(dists: np.ndarray) -> np.ndarray:
 
 
 def _augment(rec: PoseRecord) -> np.ndarray:
-    return np.concatenate(
-        [rec.fingerprint,
-         np.array([rec.msa_membership, rec.identity_to_target, rec.pred_score],
-                  dtype=float)]
-    )
+    # Feature matrix = the interaction fingerprint ONLY. msa_membership /
+    # identity_to_target / pred_score are NOT features: decoys hardcode them to
+    # fixed values distinct from real poses (see _aug_fp), so they leak the
+    # real-vs-decoy label perfectly. msa_membership/identity_to_target are kept
+    # on PoseRecord as metadata; pred_score is used as the per-row SAMPLE WEIGHT
+    # in select_poses (its correct role per the data policy).
+    return np.asarray(rec.fingerprint, dtype=float)
 
 
 def select_poses(
@@ -137,7 +139,7 @@ def select_poses(
             n_hard += 1
 
     if not rows:
-        return SelectionResult(np.zeros((0, fp_dim + 3)), np.zeros(0),
+        return SelectionResult(np.zeros((0, fp_dim)), np.zeros(0),
                                consensus=consensus)
     X = np.vstack(rows)
     soft_y = np.array(soft, dtype=float)
@@ -154,4 +156,5 @@ def select_poses(
 
 
 def _aug_fp(fp: np.ndarray) -> np.ndarray:
-    return np.concatenate([fp, np.array([0.0, 0.0, -1.0])])
+    # decoy feature row = the (perturbed) fingerprint only; no leakage scalars.
+    return np.asarray(fp, dtype=float)

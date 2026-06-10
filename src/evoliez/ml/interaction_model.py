@@ -2,9 +2,10 @@
 
 Trained on (representative homolog, docking pose) examples: positives =
 family-consensus poses, negatives = statistical-outlier poses + synthetic
-decoys (see ``pose_selection``). Features per row = ligand-atom
-interaction-distance fingerprint + [msa_membership, identity_to_target,
-per-pose prediction score].
+decoys (see ``pose_selection``). Features per row = the ligand-atom
+interaction-distance fingerprint ONLY. (msa_membership / identity_to_target /
+pred_score are NOT features - decoys hardcoded them to fixed values that leaked
+the real-vs-decoy label; pred_score is used as a per-row sample weight.)
 
 Backends, auto-selected by availability: xgboost -> sklearn logistic ->
 dependency-free heuristic (distance-to-consensus logistic). All deterministic.
@@ -136,19 +137,18 @@ class InteractionModel:
         self,
         structure: ProteinStructure,
         ligand_atoms: Sequence[LigandAtom],
-        *,
-        msa_membership: float = 0.0,
-        identity_to_target: float = 1.0,
-        pred_score: float = 0.0,
     ) -> float:
+        # Inference feature vector = the interaction fingerprint ONLY, matching
+        # the (now fingerprint-only) training matrix. The previous code appended
+        # [msa_membership, identity_to_target, pred_score]; at inference s08 fed
+        # the decoy value msa_membership=0.0 and a pred_score derived from an
+        # unpopulated docking_score (default -7.0) -> a per-run CONSTANT ~7.8
+        # far outside the training [0,1] range, making the head non-discriminative.
         fp = complex_fingerprint(
             structure, ligand_atoms, cutoff=self.cutoff,
             k_nearest=self.k_nearest, n_bins=self.n_bins,
         )
-        x = np.concatenate(
-            [fp, np.array([msa_membership, identity_to_target, pred_score])]
-        )
-        return round(self.score_vector(x), 4)
+        return round(self.score_vector(fp), 4)
 
     # ------------------------------------------------------------------ #
     def save(self, path: Path) -> None:
@@ -175,6 +175,13 @@ class InteractionModel:
             thr=meta["thr"], scale=meta["scale"], cutoff=meta["cutoff"],
             k_nearest=meta["k_nearest"], n_bins=meta["n_bins"],
         )
+        # TRUST BOUNDARY: the .pkl holds a fitted sklearn/xgboost estimator,
+        # which pickle.load deserializes by EXECUTING its reduce code - there is
+        # no weights_only equivalent for a fitted estimator. The path is the
+        # JSON model's own sibling (written by s06b under this run's workspace),
+        # so it is trusted by construction. Do NOT point ctx.paths.interaction_*
+        # at an externally-supplied directory; treat the run workspace as
+        # trusted input. (Single-user research threat model.)
         pkl = path.with_suffix(".pkl")
         if pkl.exists():
             with open(pkl, "rb") as fh:

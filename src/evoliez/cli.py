@@ -122,6 +122,14 @@ def train_gnn(
             coord_noise_min=cfg.gnn.coord_noise_min,
             coord_noise_alpha=cfg.gnn.coord_noise_alpha,
             equivariant=cfg.gnn.equivariant,
+            rbf_n=cfg.gnn.rbf,
+            graph_geom={
+                "radius_lr": cfg.gnn.radius_lr,
+                "radius_rr": cfg.gnn.radius_rr,
+                "low_plddt_cutoff": cfg.gnn.low_plddt_cutoff,
+                "drop_far_low_plddt": cfg.gnn.drop_far_low_plddt,
+                "use_disorder": cfg.gnn.use_disorder,
+            },
         )
         typer.echo(f"trained EvoLigand-GNN -> {out}")
     except RuntimeError as exc:

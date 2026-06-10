@@ -25,7 +25,7 @@ _BOLTZ_SCALED = (
 )
 
 
-def _approx_mutant_complex(cx, cand):
+def _approx_mutant_complex(cx, cand, *, conservation=None):
     """Proxy mutant complex for WT-delta + family-interaction features
     WITHOUT a per-candidate Boltz run AND without a full deepcopy.
 
@@ -58,9 +58,12 @@ def _approx_mutant_complex(cx, cand):
     mc = copy.copy(cx)                  # shallow: ligand/samples shared (RO)
     mc.structure = st
     mc.metrics = dict(cx.metrics)       # copy so scaling can't touch WT
-    f = cand.details.get("features", {})
-    inst = min(1.0, 0.5 * f.get("conservation", 0.5)
-               + 0.15 * (len(cand.mutations) - 1))
+    # disruptiveness needs the REAL conservation. s08 builds this proxy before
+    # cand.details['features'] is populated, so the caller passes conservation
+    # explicitly; fall back to features only when it is already set (s11).
+    cons = (conservation if conservation is not None
+            else cand.details.get("features", {}).get("conservation", 0.5))
+    inst = min(1.0, 0.5 * cons + 0.15 * (len(cand.mutations) - 1))
     for k in _BOLTZ_SCALED:
         if k in mc.metrics:
             mc.metrics[k] = round(mc.metrics[k] * (1.0 - 0.30 * inst), 4)
@@ -80,7 +83,8 @@ _FEATURE_KEYS = [
     "n_mutations",
     "buried_fraction",
     "dist_to_ligand",
-    "family_interaction_score",
+    # family_interaction_score is intentionally NOT a reranker feature: it has a
+    # dedicated weighted contribution in ranking.score (avoids double-counting).
     "d_ligand_iptm",
     "d_complex_iplddt",
     "d_complex_ipde",
@@ -129,6 +133,17 @@ class RerankerStage(Stage):
                     "gnn.enabled but no usable checkpoint/torch; "
                     "falling back to heuristic family model"
                 )
+        # WT disorder track, computed ONCE on the shared backbone and reused for
+        # every candidate - mirrors how s11 builds the training graphs, so the
+        # inference disorder node features match training (else they are 0).
+        gnn_disorder = None
+        if gnn_scorer is not None and gcfg.use_disorder:
+            from evoliez.adapters.disorder import predict_disorder
+            gnn_disorder = predict_disorder(
+                cx.structure.sequence, ctx.paths.root / "datasets",
+                backend=ctx.config.backend_for("s06b_interaction"),
+                dry_run=ctx.dry_run,
+            )
         # GNN-fallback transparency (expert review #5): record what scored
         gnn_status = (
             "trained" if gnn_scorer is not None
@@ -144,15 +159,14 @@ class RerankerStage(Stage):
             # ONE lightweight approx-mutant build, reused for the family
             # interaction score, the WT-delta features and the GNN (was two
             # full deepcopies of the 471-residue complex per candidate).
-            amc = _approx_mutant_complex(cx, cand)
+            amc = _approx_mutant_complex(
+                cx, cand, conservation=feat["conservation"]
+            )
             if imodel is not None:
-                fam = imodel.score_complex(
-                    amc.structure, amc.ligand.atoms,
-                    msa_membership=0.0,  # designed mutant, not an MSA homolog
-                    identity_to_target=1.0,
-                    pred_score=round(-cand.scores.get("docking_score", -7.0)
-                                     + cx.confidence, 4),
-                )
+                # fingerprint-only: the model scores the mutant's interaction
+                # geometry. (No msa_membership/pred_score scalars - those leaked
+                # the label in training and were fed out-of-distribution here.)
+                fam = imodel.score_complex(amc.structure, amc.ligand.atoms)
             else:
                 fam = 0.5  # neutral when the interaction model is disabled
             feat["family_interaction_score"] = fam
@@ -171,6 +185,7 @@ class RerankerStage(Stage):
                 gscore = gnn_scorer.score_complex(
                     amc, feats, econ,
                     catalytic_positions=catalytic,
+                    disorder=gnn_disorder,
                 )
                 cand.scores["gnn_score"] = gscore
                 feat["gnn_score"] = gscore
@@ -252,9 +267,13 @@ class RerankerStage(Stage):
     def _score_heuristic(self, candidates: List[Candidate]) -> None:
         for c in candidates:
             f = c.details["features"]
+            # family_interaction_score is NOT folded in here: it has its own
+            # dedicated `family_interaction` contribution in ranking.score with
+            # weight w.family_interaction. Including it both here (via ml_score
+            # -> ml_mutation) and there double-counted it to ~2.5x the
+            # documented weight and broke the additive decomposition.
             score = (
-                1.5 * f.get("family_interaction_score", 0.5)
-                + 1.2 * f["interaction_gain"]
+                1.2 * f["interaction_gain"]
                 + 0.9 * f["msa_permissiveness"]
                 - 0.8 * max(0.0, f["conservation"] - 0.55)
                 - 0.15 * (f["n_mutations"] - 1)

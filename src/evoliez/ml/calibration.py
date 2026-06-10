@@ -59,7 +59,11 @@ def reliability_diagram(
     out = []
     for b in range(bins):
         lo, hi = b / bins, (b + 1) / bins
-        idx = [i for i, p in enumerate(probs) if lo < p <= hi]
+        # mirror expected_calibration_error's binning: bin 0 includes prob==0,
+        # so the diagram covers the SAME population as the reported ECE and the
+        # per-bin counts sum to n.
+        idx = [i for i, p in enumerate(probs)
+               if lo < p <= hi or (b == 0 and p == 0)]
         if idx:
             out.append({
                 "bin": f"{lo:.1f}-{hi:.1f}",
