@@ -39,21 +39,21 @@ CAT_DIST_MAX = 7.0
 def analyse(result: MDResult, weights: ScoreWeights) -> MDMetrics:
     m = MDMetrics()
 
-    # ONLY skipped_parameterization is neutral: an optional small-molecule
-    # FF was unavailable (common for metals/cofactors) - judge the candidate
-    # on the other layers, don't penalise (expert review). Any OTHER skip
-    # (e.g. skipped_no_full_atom_structure) means real MD never ran on this
-    # candidate -> NOT a pass; surfacing it honestly is the difference
-    # between "MD validated" and "MD silently didn't run".
-    if result.status == "skipped_parameterization":
-        m.passed = True
-        m.md_lite_score = 0.0
-        m.failure_reasons.append(f"MD {result.status}: "
-                                 f"{result.failure_reason or 'n/a'}")
-        return m
+    # EVERY skip is NEUTRAL for scoring: a skip means real MD never RAN for
+    # this candidate (optional FF unavailable, or no mutant / full-atom
+    # structure), which is a pipeline COVERAGE gap, not evidence the mutant is
+    # unstable. So md_lite stays 0.0 AND simulation_health_ok stays True - the
+    # latter is crucial: it keeps md_instability at 0 (s10) so a skipped
+    # candidate does NOT get the -md_instability penalty. Otherwise a
+    # structure-skipped candidate scores BELOW one never sent to MD (s11
+    # setdefault 0.0), biasing the ranking by coverage rather than biology.
+    # The skip is still surfaced honestly: skipped_parameterization is a
+    # neutral PASS (judged on other layers); any other skip is passed=False
+    # (real MD did not validate it), and both carry the status/reason +
+    # n_md_skipped provenance counter. simulation_health_ok means "the run
+    # that happened was healthy" - undefined when nothing ran, so not False.
     if result.status.startswith("skipped"):
-        m.passed = False
-        m.simulation_health_ok = False
+        m.passed = result.status == "skipped_parameterization"
         m.md_lite_score = 0.0
         m.failure_reasons.append(f"MD {result.status}: "
                                  f"{result.failure_reason or 'n/a'}")

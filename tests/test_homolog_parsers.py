@@ -63,3 +63,24 @@ def test_blast_band_filter(tmp_path):
     )
     hs = _parse_blast_m8(f, HomologConfig(identity_min=0.2, identity_max=0.95))
     assert [h.sequence for h in hs] == ["CCCC"]
+
+
+def test_stockholm_identity_is_alignment_aware_under_indel(tmp_path):
+    """jackhmmer identity must be computed against the ALIGNED query, not by
+    gap-stripping both then comparing positionally. A homolog identical to the
+    query except ONE deletion is ~0.95 identical; the old gap-strip method
+    frame-shifts everything after the indel to ~0.21 and silently DROPS the
+    homolog under any realistic identity_min (and seeds the wrong subfamily
+    representative)."""
+    q = "ACDEFGHIKLMNPQRSTVWY"
+    sto = tmp_path / "indel.sto"
+    sto.write_text(
+        "# STOCKHOLM 1.0\n\n"
+        "query   ACDEFGHIKLMNPQRSTVWY\n"
+        "homo    ACDE-GHIKLMNPQRSTVWY\n"   # single deletion at column 5
+        "//\n"
+    )
+    hs = _parse_stockholm(sto, HomologConfig(identity_min=0.5, identity_max=1.0), q)
+    homo = [h for h in hs if h.sequence == "ACDEGHIKLMNPQRSTVWY"]
+    assert homo, "near-identical homolog with one indel was dropped (frame-shift bug)"
+    assert homo[0].identity > 0.9

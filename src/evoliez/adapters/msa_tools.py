@@ -222,11 +222,37 @@ def _parse_blast_m8(out: Path, cfg: HomologConfig) -> List[Homolog]:
     return hs[: cfg.max_sequences]
 
 
+def _aligned_identity(a: str, b: str) -> float:
+    """Identity between two ALIGNED (gapped, equal-column) rows: matched
+    non-gap columns / columns where either row has a residue. Alignment-aware,
+    so an insertion or deletion no longer frame-shifts the comparison the way
+    gap-stripping-then-positional-compare did."""
+    n = min(len(a), len(b))
+    same = cols = 0
+    for i in range(n):
+        ag = a[i] in "-."
+        bg = b[i] in "-."
+        if ag and bg:
+            continue
+        cols += 1
+        if not ag and not bg and a[i].upper() == b[i].upper():
+            same += 1
+    return same / cols if cols else 0.0
+
+
 def _parse_stockholm(out: Path, cfg: HomologConfig,
                      query_seq: str) -> List[Homolog]:
     """jackhmmer -A Stockholm MSA: aggregate aligned rows per sequence,
-    identity computed vs the query."""
+    identity computed vs the query.
+
+    Identity is computed COLUMN-BY-COLUMN against the aligned query row (the
+    seed, present as a row in -A output). Comparing two independently
+    gap-stripped sequences positionally frame-shifts everything past any indel
+    - a ~95%-identical homolog with one deletion scored ~0.20, was dropped by
+    the band filter, and corrupted subfamily-representative selection. When the
+    query row cannot be located we fall back to the positional estimate."""
     rows: dict[str, str] = {}
+    order: List[str] = []
     for line in out.read_text().splitlines():
         s = line.strip()
         if not s or s.startswith("#") or s == "//":
@@ -235,13 +261,27 @@ def _parse_stockholm(out: Path, cfg: HomologConfig,
         if len(parts) != 2:
             continue
         name, aln = parts
+        if name not in rows:
+            order.append(name)
         rows[name] = rows.get(name, "") + aln
+
+    q = (query_seq or "").replace("-", "").replace(".", "").upper()
+    query_aln = None
+    for name in order:
+        if q and rows[name].replace("-", "").replace(".", "").upper() == q:
+            query_aln = rows[name]
+            break
+
     hs: List[Homolog] = []
-    for i, (name, aln) in enumerate(rows.items()):
+    for i, name in enumerate(order):
+        aln = rows[name]
         seq = aln.replace("-", "").replace(".", "").upper()
         if not seq:
             continue
-        ident = _pairwise_identity(seq, query_seq)
+        if query_aln is not None:
+            ident = _aligned_identity(aln, query_aln)
+        else:
+            ident = _pairwise_identity(seq, q)
         if _band(cfg, ident):
             hs.append(Homolog(f"jh_{i}", seq, round(ident, 4), 1.0))
     return hs[: cfg.max_sequences]

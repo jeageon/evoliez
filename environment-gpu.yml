@@ -40,6 +40,9 @@ dependencies:
   - openff-toolkit
   - openmmforcefields
   - ambertools
+  # repairs Boltz chain termini (OXT) / missing heavy atoms before Amber
+  # parameterization; without it real MD hits "No template for residue".
+  - pdbfixer
   # homology / MSA / docking
   - mafft
   - hmmer

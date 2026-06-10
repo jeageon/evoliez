@@ -278,18 +278,52 @@ def _predict_real(
         )
         return _predict_mock(label, sequence, ligand, cfg, outdir)
 
+    return _assemble_real_complex(
+        outdir, found, sequence, ligand, cfg.primary_method
+    )
+
+
+def _assign_residue_plddt(residues, token_plddt) -> None:
+    """Map Boltz per-TOKEN pLDDT (protein residues first, then ligand atoms)
+    onto Residue.plddt. Only the leading protein-token slice is used (ligand
+    tokens dropped); values are normalized to the 0-100 scale the mock path
+    uses so Residue.plddt is backend-consistent. No-op on a missing array.
+
+    Without this the real path left Residue.plddt at its 0.0 dataclass default
+    and every per-residue confidence feature (confidence windows, pocket /
+    catalytic pLDDT, GNN node feature, ML export, PDB b-factor) read zero."""
+    if not residues or not token_plddt:
+        return
+    for r, v in zip(residues, token_plddt[:len(residues)]):
+        fv = float(v)
+        r.plddt = fv * 100.0 if fv <= 1.5 else fv
+
+
+def _assemble_real_complex(outdir, found, sequence, ligand, primary_method) -> Complex:
+    """Parse a finished Boltz run (shared backbone + per-sample ligand poses +
+    confidence + per-residue pLDDT) into a finalized Complex. Split out of
+    _predict_real so the real-output assembly is testable without the binary."""
     structure_file = found[0]
     cx = _parse_real_structure(structure_file, sequence, ligand)
-    cx.method = cfg.primary_method
+    cx.method = primary_method
     cx.path = str(structure_file)
-    cx.samples = _parse_real_samples(outdir, cx.ligand.atoms)
+    cx.samples = _parse_real_samples(outdir, cx.ligand.atoms, found)
     if not cx.samples:  # at least one sample from aggregate scores
         m = _parse_one_confidence(outdir) or {}
         cx.samples = [BoltzSample(idx=0, ligand_atoms=cx.ligand.atoms, metrics=m)]
+    # Wire real per-residue pLDDT onto the structure we kept (found[0] is model
+    # index 0, aligned with plddt index 0).
+    _assign_residue_plddt(cx.structure.residues, _load_plddt(outdir, 0))
     return _finalize(cx)
 
 
-def _parse_real_samples(outdir: Path, lig_atoms) -> List[BoltzSample]:
+def _parse_real_samples(outdir: Path, lig_atoms, structure_files=None) -> List[BoltzSample]:
+    from evoliez.features.ligand import relabel_to_canonical
+
+    # Per-model structure files, sorted to the SAME model order as the
+    # confidence/plddt files so position i refers to the same diffusion sample.
+    structure_files = list(structure_files or [])
+    canonical = list(lig_atoms)
     samples: List[BoltzSample] = []
     conf_files = sorted(outdir.rglob("confidence*model_*.json")) or sorted(
         outdir.rglob("confidence*.json")
@@ -315,7 +349,20 @@ def _parse_real_samples(outdir: Path, lig_atoms) -> List[BoltzSample]:
             0.8 * m.get("complex_plddt", 0.0) + 0.2 * m.get("iptm", 0.0),
         )
         rp = _load_plddt(outdir, i)
-        samples.append(BoltzSample(idx=i, ligand_atoms=lig_atoms, metrics=m,
+        # DISTINCT ligand pose per diffusion sample: parse THIS model's own
+        # structure file and adopt its HETATM coords onto the canonical atom
+        # ids. Without this every sample reused one pose, so the priority-#1
+        # ensemble contact-frequency feature was degenerate (freq always 0/1).
+        pose = canonical
+        if i < len(structure_files):
+            _res, model_lig = _parse_structure_atoms(structure_files[i])
+            if model_lig:
+                if canonical:
+                    relabeled, _ok = relabel_to_canonical(model_lig, canonical)
+                    pose = relabeled or model_lig
+                else:
+                    pose = model_lig
+        samples.append(BoltzSample(idx=i, ligand_atoms=pose, metrics=m,
                                    residue_plddt=rp))
     samples.sort(key=lambda s: -s.metrics.get("confidence_score", 0.0))
     for j, s in enumerate(samples):
@@ -404,31 +451,45 @@ def _parse_cif_atoms(path: Path):
     return residues, lig
 
 
-def _parse_real_structure(pdb: Path, sequence: str, ligand: Ligand) -> Complex:
-    from evoliez.types import ProteinStructure, Residue
+def _parse_pdb_atoms(path: Path):
+    """Minimal PDB parser: (residues[CA], ligand_atoms[HETATM]). Mirrors
+    _parse_cif_atoms so the structure backbone and the per-sample ligand poses
+    share one extraction path."""
+    from evoliez.types import LigandAtom, Residue
 
     residues: list[Residue] = []
-    lig_atoms: list[LigandAtom] = []
-    if pdb.suffix in (".cif", ".mmcif"):
-        residues, lig_atoms = _parse_cif_atoms(pdb)
-    else:
-        for line in pdb.read_text().splitlines():
-            if line.startswith("ATOM") and line[12:16].strip() == "CA":
-                idx = int(line[22:26])
-                x, y, z = (float(line[30:38]), float(line[38:46]),
-                           float(line[46:54]))
-                residues.append(
-                    Residue(index=idx, aa="X", ca=(x, y, z),
-                            sidechain_centroid=(x, y, z))
-                )
-            elif line.startswith("HETATM"):
-                x, y, z = (float(line[30:38]), float(line[38:46]),
-                           float(line[46:54]))
-                el = line[76:78].strip() or line[12:14].strip()
-                lig_atoms.append(
-                    LigandAtom(id=f"{el}{len(lig_atoms)}", element=el or "C",
-                               coord=(x, y, z))
-                )
+    lig: list[LigandAtom] = []
+    for line in path.read_text().splitlines():
+        if line.startswith("ATOM") and line[12:16].strip() == "CA":
+            idx = int(line[22:26])
+            x, y, z = (float(line[30:38]), float(line[38:46]),
+                       float(line[46:54]))
+            residues.append(
+                Residue(index=idx, aa="X", ca=(x, y, z),
+                        sidechain_centroid=(x, y, z))
+            )
+        elif line.startswith("HETATM"):
+            x, y, z = (float(line[30:38]), float(line[38:46]),
+                       float(line[46:54]))
+            el = line[76:78].strip() or line[12:14].strip()
+            lig.append(
+                LigandAtom(id=f"{el}{len(lig)}", element=el or "C",
+                           coord=(x, y, z))
+            )
+    return residues, lig
+
+
+def _parse_structure_atoms(path: Path):
+    """(residues[CA], ligand_atoms[HETATM]) from a Boltz .cif or .pdb model."""
+    if path.suffix in (".cif", ".mmcif"):
+        return _parse_cif_atoms(path)
+    return _parse_pdb_atoms(path)
+
+
+def _parse_real_structure(pdb: Path, sequence: str, ligand: Ligand) -> Complex:
+    from evoliez.types import ProteinStructure
+
+    residues, lig_atoms = _parse_structure_atoms(pdb)
     for i, r in enumerate(residues):
         if i < len(sequence):
             r.aa = sequence[i]
