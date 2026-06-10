@@ -210,7 +210,8 @@ class AdvancedConfig(_Base):
     active_learning: bool = True
     provenance: bool = True
     al_beta: float = 0.3   # uncertainty (explore) weight
-    al_gamma: float = 0.2  # diversity weight
+    # (diversity is enforced by the focused-library cluster round-robin, not a
+    # score weight, so there is no al_gamma knob.)
 
 
 class GNNConfig(_Base):
@@ -242,18 +243,6 @@ class GNNConfig(_Base):
     drop_far_low_plddt: bool = True      # drop only if also >10 Å from ligand
     coord_noise_min: float = 0.1         # Å jitter for high-pLDDT residues
     coord_noise_alpha: float = 1.5       # extra Å jitter scaled by (1 - pLDDT)
-
-
-class DataScaleConfig(_Base):
-    """Server-grade data-generation funnel (spec §6, §12)."""
-
-    target_diffusion_samples: int = 30
-    homolog_diffusion_samples: int = 10
-    mutant_diffusion_samples: int = 10
-    top_for_redocking: int = 500
-    top_for_stability: int = 100
-    top_for_md: int = 30
-    final_library: int = 96
 
 
 class OutputConfig(_Base):
@@ -313,7 +302,6 @@ class Config(_Base):
     )
     gnn: GNNConfig = Field(default_factory=GNNConfig)
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)
-    data_scale: DataScaleConfig = Field(default_factory=DataScaleConfig)
     mutation_generation: MutationGenConfig = Field(default_factory=MutationGenConfig)
     reranking: RerankConfig = Field(default_factory=RerankConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)

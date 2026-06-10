@@ -70,7 +70,12 @@ class MutantBoltzStage(Stage):
                 mut_cx, wt, catalytic_positions=catalytic
             )
             cand.details["delta"] = delta
-            cand.details["boltz_delta_source"] = backend.value  # mock | real
+            # dry-run + backend=real returns a MOCK contract; label it honestly
+            # ('dry-run') instead of 'real' so provenance matches the stage-level
+            # mutant_boltz_backend meta (which already special-cases dry-run).
+            cand.details["boltz_delta_source"] = (
+                "dry-run" if ctx.dry_run else backend.value  # dry-run | mock | real
+            )
             feat = cand.details.setdefault("features", {})
             for dk in _DELTA_KEYS:
                 v = delta.get(dk, 0.0)

@@ -160,7 +160,19 @@ def test_provenance_is_deterministic():
 
 def test_advanced_features_never_labels():
     for bad in ("neg_catalytic_mut", "mechanism_ts", "ifp_hbond",
-                "subfamily_conservation", "specificity_divergence",
+                "specificity_divergence",
                 "acquisition_score", "uncertainty"):
         with pytest.raises(LabelPolicyError):
             assert_supervised_label_allowed(bad)
+
+
+def test_dead_subfamily_conservation_feature_removed():
+    """subfamily_conservation was always 1.0 (target is a singleton cluster) and
+    never read by any ranking/ML code. The silently-constant feature is removed;
+    the consumed specificity_divergence stays."""
+    from dataclasses import fields
+
+    from evoliez.features.evolutionary import PositionFeature
+    names = {f.name for f in fields(PositionFeature)}
+    assert "subfamily_conservation" not in names
+    assert "specificity_divergence" in names

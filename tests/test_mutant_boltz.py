@@ -49,6 +49,30 @@ def test_top_n_get_real_delta_rest_proxy(tmp_path):
     assert "proxy" in srcs[3:]                        # remainder untouched
 
 
+def test_dry_run_real_labels_source_as_dry_run(tmp_path):
+    # dry-run + backend=real returns a mock contract; boltz_delta_source must be
+    # 'dry-run', NOT 'real' (which would mislabel mock deltas as real science).
+    cfg = load_config(ROOT / "configs" / "example_fdh_nadp.yaml", {
+        "project.output_dir": str(tmp_path / "dry"),
+        "input.target_fasta": str(ROOT / "examples" / "fdh" / "target.fasta"),
+        "backend": "real",
+        "mutation_generation": {"methods": ["chemistry_rules"],
+                                "max_candidates": 20},
+        "reranking": {"top_for_redocking": 8, "top_for_md": 3,
+                      "mutant_boltz_enabled": True, "mutant_boltz_top_n": 3},
+        "validation": {"md": {"top_candidates": 3}},
+        "gnn": {"build_dataset": False},
+    })
+    seed_everything(cfg.seed)
+    ctx = RunContext(cfg, allow_small_disk=True)
+    ctx.dry_run = True
+    ctx.setup()
+    Pipeline().run(ctx)
+    cands = ctx.get("redock_candidates", [])
+    srcs = [c.details.get("boltz_delta_source") for c in cands]
+    assert srcs[:3] == ["dry-run", "dry-run", "dry-run"]
+
+
 def test_disabled_keeps_proxy(tmp_path):
     ctx = _run(tmp_path, reranking={
         "top_for_redocking": 8, "top_for_md": 3,

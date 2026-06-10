@@ -25,8 +25,11 @@ input:
     id: NADP_cofactor
     type: smiles
     value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
-  catalytic_residues: ["H155", "R285"]
-  fixed_residues: ["G10", "G12", "H155", "R285"]
+  # Tokens are self-consistent with the bundled illustrative placeholder
+  # (His@154, Arg@285, Gly@15/33) - NOT a verified FDH active site. Replace the
+  # target + numbering for real work; `evoliez doctor` BLOCKs a real backend.
+  catalytic_residues: ["H154", "R285"]
+  fixed_residues: ["G15", "G33", "H154", "R285"]
   cofactor: NADP
   ec_number: "1.2.1.2"
 
@@ -66,15 +69,6 @@ gnn:
   epochs: 60
   amp: true
   ddp: false                             # set true when launched via torchrun
-
-data_scale:
-  target_diffusion_samples: 30
-  homolog_diffusion_samples: 15
-  mutant_diffusion_samples: 10
-  top_for_redocking: 500
-  top_for_stability: 100
-  top_for_md: 30
-  final_library: 96
 
 mutation_generation:
   methods: [chemistry_rules, msa_sampler, ligandmpnn]

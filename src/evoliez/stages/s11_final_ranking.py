@@ -12,6 +12,17 @@ from evoliez.stages.base import Stage
 from evoliez.types import Candidate
 
 
+def _ranked(candidates: List[Candidate]) -> List[Candidate]:
+    """Final ranking order: descending final_score with candidate_id as a
+    deterministic tie-breaker, so equal scores (final_score is rounded to 4
+    decimals, ties are common) resolve identically regardless of upstream
+    ordering. Rank numbers carry into focused-library well assignment."""
+    return sorted(
+        candidates,
+        key=lambda c: (-c.scores["final_score"], c.candidate_id),
+    )
+
+
 class FinalRankingStage(Stage):
     name = "s11_final"
 
@@ -44,7 +55,7 @@ class FinalRankingStage(Stage):
             }
             breakdowns[c.candidate_id] = bd
 
-        ranked = sorted(validated, key=lambda c: -c.scores["final_score"])
+        ranked = _ranked(validated)
         n = len(ranked)
         adv = ctx.config.advanced
         if adv.calibration:
@@ -187,7 +198,7 @@ class FinalRankingStage(Stage):
 
             lib = select_focused_library(
                 ranked, ctx.config.output.final_library_size,
-                beta=adv.al_beta, gamma=adv.al_gamma,
+                beta=adv.al_beta,
             )
             p = ctx.paths.reports / "focused_library.csv"
             with p.open("w", newline="") as fh:
