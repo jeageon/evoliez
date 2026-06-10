@@ -9,6 +9,12 @@
 #     config defaults to configs/server_fdh_nadp.yaml
 set -euo pipefail
 
+# Resolve repo root from this script's location and cd in, so the cwd-relative
+# refs below (configs/*.yaml, scripts/capture_fixtures.sh) resolve no matter
+# where the script is invoked from. Mirrors server_test.sh.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_DIR"
+
 # Shared 48-core server (SERVER_RUNBOOK #2): bound BLAS / numexpr / xgboost
 # thread pools for the whole process tree so the per-pose/per-candidate loops
 # in s06b/s08 don't oversubscribe and thrash (was 5-6 min of pure context

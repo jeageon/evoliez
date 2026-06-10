@@ -19,8 +19,16 @@ case "$BOLTZ_ENV" in
 esac
 
 CREATE=(conda create); command -v mamba >/dev/null 2>&1 && CREATE=(mamba create)
-echo ">> creating isolated Boltz env at $BOLTZ_ENV"
-"${CREATE[@]}" -p "$BOLTZ_ENV" -y -c conda-forge python=3.10 pip
+# Idempotent: `conda/mamba create -p` ERRORS on an existing prefix (and -y does
+# not clobber), so under `set -e` a re-run would abort here before refreshing
+# boltz/torch. Only create when the env isn't there; always run the refresh
+# steps below so re-running picks up a newer boltz / re-pins torch.
+if [ ! -x "$BOLTZ_ENV/bin/python" ]; then
+  echo ">> creating isolated Boltz env at $BOLTZ_ENV"
+  "${CREATE[@]}" -p "$BOLTZ_ENV" -y -c conda-forge python=3.10 pip
+else
+  echo ">> reusing existing Boltz env at $BOLTZ_ENV"
+fi
 conda run -p "$BOLTZ_ENV" pip install -U boltz
 
 # PyPI's default `torch` now ships CUDA-13 wheels. The lab server driver is

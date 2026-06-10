@@ -42,8 +42,11 @@ CREATE=(conda env create)
 if command -v mamba >/dev/null 2>&1; then
   CREATE=(mamba env create)
   echo ">> using mamba (fast solver)"
-elif conda config --show solver >/dev/null 2>&1 \
-     || conda list -n base 2>/dev/null | grep -q conda-libmamba-solver; then
+elif conda list -n base 2>/dev/null | grep -q conda-libmamba-solver; then
+  # Gate ONLY on the plugin actually being installed. `conda config --show
+  # solver` exits 0 regardless (it just prints the configured setting), so it
+  # would select --solver=libmamba even when the plugin is absent -> env
+  # creation then fails under `set -e`.
   CREATE=(conda env create --solver=libmamba)
   echo ">> using conda libmamba solver"
 else
