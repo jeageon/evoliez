@@ -373,6 +373,68 @@ PY
   rm -f "$ACC_PY"
   exit $rc
   ;;
+s03)
+  ACC_PY="$(mktemp "${TMPDIR:-/tmp}/evoliez_accept.XXXXXX")"
+  cat > "$ACC_PY" <<'PY'
+import json, os, sqlite3, sys
+run, _cfg, log_path = sys.argv[1], sys.argv[2], sys.argv[3]
+fails = warns = 0
+def line(tag, name, detail):
+    global fails, warns
+    if tag == "FAIL": fails += 1
+    if tag == "WARN": warns += 1
+    print(f"  [{tag:<4}] {name:<22} {detail}")
+
+sp = os.path.join(run, "_state.json")
+state = json.load(open(sp)) if os.path.exists(sp) else {}
+meta, done = state.get("meta", {}), state.get("completed_stages", [])
+
+line("PASS" if "s03_msa" in done else "FAIL", "stage_complete", str(done))
+depth = meta.get("msa_depth", 0)
+line("PASS" if depth >= 10 else "FAIL", "msa_depth",
+     f"{depth} aligned sequences")
+cons = meta.get("mean_conservation", 0.0)
+line("PASS" if 0.0 < cons < 1.0 else "FAIL", "conservation",
+     f"mean={cons} (must be non-degenerate 0<c<1)")
+
+# real alignment: aligned rows are equal-length and carry gaps (indels). A
+# synthetic identity-alignment is uniform with no internal gaps.
+aln = os.path.join(run, "msa", "alignment.fasta")
+rows = []
+if os.path.exists(aln):
+    cur = []
+    for ln in open(aln):
+        if ln.startswith(">"):
+            if cur: rows.append("".join(cur)); cur = []
+        else:
+            cur.append(ln.strip())
+    if cur: rows.append("".join(cur))
+gaps = sum(r.count("-") for r in rows)
+line("PASS" if gaps > 0 else "WARN", "alignment_gaps",
+     f"{gaps} gap chars over {len(rows)} rows ({'real MSA' if gaps else 'no gaps - synthetic?'})")
+
+esm = meta.get("mean_esm_variability")
+if esm is None:
+    line("WARN", "esm_prior", "msa.esm_enabled is off (no ESM2 prior attached)")
+else:
+    line("PASS" if esm > 0 else "FAIL", "esm_prior", f"mean variability={esm}")
+
+db = os.path.join(run, "evoliez.sqlite")
+if os.path.exists(db):
+    con = sqlite3.connect(db)
+    n = con.execute("SELECT count(*) FROM msa_position").fetchone()[0]
+    con.close()
+    line("PASS" if n > 0 else "FAIL", "msa_positions_db", f"{n} MSAPosition rows")
+
+print()
+verdict = "FAIL" if fails else ("WARN" if warns else "PASS")
+print(f"  ==> s03 {verdict}  ({fails} fail, {warns} warn)")
+sys.exit(1 if fails else 0)
+PY
+  set +e; python "$ACC_PY" "$RUN" "$RUN_CFG" "$LOG"; rc=$?; set -e
+  rm -f "$ACC_PY"
+  exit $rc
+  ;;
 *)
   # Auto-acceptance is wired stage-by-stage as we validate each gate together;
   # s01 is live. Until $STAGE is wired, drive it by the code-grounded checklist
