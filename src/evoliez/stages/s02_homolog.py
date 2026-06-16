@@ -69,3 +69,45 @@ class HomologStage(Stage):
         )
         if len(homologs) < 10:
             self.log.warning("few homologs - evolutionary signal will be weak")
+
+        self._write_report(ctx, seq, homologs)
+
+    def _write_report(self, ctx, seq, homologs) -> None:
+        """Auto-generate the self-contained HTML homolog-analysis report. Every
+        axis / table / colour is derived from the data, so it works for any
+        target; the footer documents the exact analysis conditions."""
+        from datetime import datetime
+
+        from evoliez import __version__
+        from evoliez.io.homolog_report import write_homolog_report
+
+        h, m = ctx.config.homologs, ctx.config.msa
+        a3m = ctx.paths.msa / "remote.a3m"
+        depth = (sum(1 for ln in a3m.open() if ln.startswith(">"))
+                 if a3m.exists() else None)
+        srcs = list(h.sources) + (["structure"] if h.use_foldseek
+                                  and "structure" not in h.sources else [])
+        conditions = [
+            ("backend", self.backend(ctx).value),
+            ("homolog sources", ", ".join(srcs)),
+            ("sequence search",
+             "ColabFold remote MSA" if m.remote_server
+             else f"{h.method}, DB={h.database or 'unset'}"),
+            ("structural search",
+             f"Foldseek (ProstT5), DB={h.foldseek_database}"
+             if "structure" in srcs and h.foldseek_database
+             else ("Foldseek (DB unset)" if "structure" in srcs else "off")),
+            ("identity band", f"{h.identity_min:.2f} – {h.identity_max:.2f}"),
+            ("subfamily clustering", f"k-mer Jaccard @ cluster_identity={h.cluster_identity:.2f}"),
+            ("max sequences", f"{h.max_sequences:,}"),
+            ("MSA alignment", "ColabFold remote" if m.remote_server else m.method),
+            ("ESM2 prior", m.esm_model if m.esm_enabled else "off"),
+            ("evoliez version", __version__),
+        ]
+        out = ctx.paths.reports / "homolog_report.html"
+        write_homolog_report(
+            out, target_id=ctx.config.input.target_id, target_len=len(seq),
+            homologs=homologs, msa_depth=depth, conditions=conditions,
+            generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        )
+        self.log.info("homolog analysis report: %s", out)
