@@ -1,0 +1,44 @@
+# =====================================================================
+# YOUR TARGET  —  fill this in, then:  bash scripts/prod_validate.sh s01
+# ---------------------------------------------------------------------
+# One-time:   cp configs/target.local.yaml.example configs/target.local.yaml
+#             $EDITOR configs/target.local.yaml          # fill [1][2][3]
+#
+# This file is GITIGNORED (*.local.yaml) so `git pull` never conflicts.
+# prod_validate.sh MERGES it over configs/prod_fdh_nadp.yaml: this file
+# supplies the `input` block + output_dir; the base supplies every backend
+# / stage / scoring setting (so base updates reach you on the next pull).
+# =====================================================================
+
+project:
+  # ${EVOLIEZ_ROOT} and ${USER} are expanded by prod_validate.sh.
+  # MUST live on /mnt/data2 or /mnt/data — NEVER "/" or "~" (disk guard).
+  output_dir: ${EVOLIEZ_ROOT}/runs/fdh_nadp_prod
+
+input:
+  target_id: fdh
+
+  # ---- [1] YOUR PROTEIN SEQUENCE  (single chain, raw 1-letter AA) ------
+  # Paste inline — NO FASTA file needed. Newlines/spaces are stripped, so a
+  # wrapped block is fine. Replace the placeholder entirely.
+  target_sequence: >
+    PASTE_YOUR_SINGLE_CHAIN_PROTEIN_SEQUENCE_HERE
+
+  # ---- [2] YOUR LIGAND / COFACTOR -------------------------------------
+  # RDKit must parse `value` (s01 reports source==rdkit, not synthetic).
+  # Default below is NADP+ (the FDH cofactor-switching example).
+  ligand:
+    id: NADP_cofactor
+    type: smiles            # smiles | inchi | sdf | mol2 | pdb | ccd
+    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
+
+  # ---- [3] ACTIVE-SITE NUMBERING  (authoritative: UniProt/PDB/paper) ---
+  # 'H123' asserts His@position-123 in YOUR sequence above. `doctor` BLOCKs
+  # the run if a token disagrees with the residue actually there — so these
+  # double as a numbering sanity check. Replace the placeholders.
+  catalytic_residues: ["H123", "R456"]   # active-site / chemistry residues
+  fixed_residues:     ["H123", "R456"]   # never-mutate anchors (>= catalytic)
+
+  # Optional context (safe to leave as-is):
+  cofactor: NADP
+  ec_number: "1.2.1.2"
