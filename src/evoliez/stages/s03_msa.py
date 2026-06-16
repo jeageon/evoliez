@@ -60,6 +60,27 @@ class MSAStage(Stage):
                       / max(1, len(feats)), 4),
             )
 
+        # ESM2 single-sequence prior (roadmap P1.1): MSA-free per-position
+        # substitution variability, attached alongside the MSA conservation.
+        if mcfg.esm_enabled:
+            from evoliez.adapters.esm import esm_position_priors
+
+            priors = esm_position_priors(
+                seq, model=mcfg.esm_model, backend=self.backend(ctx),
+                dry_run=ctx.dry_run, workdir=ctx.paths.msa,
+            )
+            by_pos = {i + 1: v for i, v in enumerate(priors)}   # 1-based target
+            for f in feats:
+                if f.target_position in by_pos:
+                    f.esm_variability = by_pos[f.target_position]
+            ctx.persist_meta(
+                "mean_esm_variability",
+                round(sum(f.esm_variability for f in feats)
+                      / max(1, len(feats)), 4),
+            )
+            self.log.info("ESM2 prior attached to %d positions (model=%s)",
+                          len(priors), mcfg.esm_model)
+
         # MSA QC (spec 8.2): effective sequence count.
         neff = len(msa)
         ctx.persist_meta("msa_depth", neff)
@@ -74,6 +95,7 @@ class MSAStage(Stage):
                 "entropy": f.entropy,
                 "gap_frequency": f.gap_frequency,
                 "allowed_aa": f.allowed_aa,
+                "esm_variability": f.esm_variability,
             }
             for f in feats
             if f.target_position is not None

@@ -28,6 +28,7 @@ class Homolog:
     coverage: float
     annotation: str = ""
     cluster_id: int = 0
+    source: str = "sequence"   # sequence | structure (which retriever found it)
 
 
 # --------------------------------------------------------------------------- #
@@ -46,6 +47,80 @@ def search_homologs(
         return _search_real(sequence, cfg, workdir, dry_run=dry_run,
                             remote_server=remote_server)
     return _search_mock(sequence, cfg)
+
+
+def gather_homologs(
+    sequence: str,
+    cfg: HomologConfig,
+    workdir: Path,
+    *,
+    backend: Backend,
+    dry_run: bool = False,
+    remote_server: bool = False,
+) -> List[Homolog]:
+    """Integrated multi-source homolog acquisition (roadmap P1.1).
+
+    Runs each source in ``cfg.sources`` (``sequence`` = mmseqs/jackhmmer/blastp
+    or ColabFold remote; ``structure`` = Foldseek) and MERGES the results into
+    one homolog set with a unified subfamily cluster-id space, so s03's MSA and
+    s06b's family model see structure + sequence homologs together. A single
+    source returns unchanged (backward compatible)."""
+    sources = list(cfg.sources or ["sequence"])
+    if cfg.use_foldseek and "structure" not in sources:
+        sources.append("structure")                 # legacy alias
+    per_source: List[Tuple[str, List[Homolog]]] = []
+    if "sequence" in sources:
+        per_source.append((
+            "sequence",
+            search_homologs(sequence, cfg, workdir, backend=backend,
+                            dry_run=dry_run, remote_server=remote_server),
+        ))
+    if "structure" in sources:
+        from evoliez.adapters.foldseek import search_structural_homologs
+        per_source.append((
+            "structure",
+            search_structural_homologs(sequence, cfg, workdir / "foldseek",
+                                       backend=backend, dry_run=dry_run),
+        ))
+    per_source = [(s, h) for s, h in per_source if h]
+    if not per_source:                               # nothing enabled / found
+        return search_homologs(sequence, cfg, workdir, backend=backend,
+                               dry_run=dry_run, remote_server=remote_server)
+    if len(per_source) == 1:
+        for h in per_source[0][1]:
+            h.source = per_source[0][0]
+        return per_source[0][1]
+    return _merge_sources(per_source)
+
+
+def _merge_sources(per_source: List[Tuple[str, List["Homolog"]]]) -> List[Homolog]:
+    """Dedupe by sequence (keep the higher-identity hit) and map each source's
+    cluster ids into ONE global id space. We deliberately do NOT re-run k-mer
+    clustering on the merged set: it would collapse the equal-length synthetic
+    mock homologs into a single group and break the s06b subfamily holdout."""
+    best: dict[str, Homolog] = {}
+    order: List[str] = []
+    global_of: dict[Tuple[str, int], int] = {}
+    for src, homs in per_source:
+        for h in homs:
+            key = h.sequence
+            if key in best and best[key].identity >= h.identity:
+                continue
+            gkey = (src, h.cluster_id)
+            if gkey not in global_of:
+                global_of[gkey] = len(global_of)
+            h.source = src
+            h.cluster_id = global_of[gkey]
+            if key not in best:
+                order.append(key)
+            best[key] = h
+    merged = [best[k] for k in order]
+    log.info(
+        "merged homologs (%s) -> %d unique across %d subfamily group(s)",
+        ", ".join(f"{src}={len(h)}" for src, h in per_source),
+        len(merged), len({h.cluster_id for h in merged}),
+    )
+    return merged
 
 
 def _search_real(

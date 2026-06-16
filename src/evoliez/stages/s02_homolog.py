@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from evoliez.adapters.msa_tools import search_homologs
+from collections import Counter
+
+from evoliez.adapters.msa_tools import gather_homologs
 from evoliez.context import RunContext
 from evoliez.db.schema import Sequence
 from evoliez.stages.base import Stage
@@ -13,7 +15,8 @@ class HomologStage(Stage):
 
     def run(self, ctx: RunContext) -> None:
         seq = ctx.require("target_sequence")
-        homologs = search_homologs(
+        # Integrated multi-source homology (sequence + structure), merged.
+        homologs = gather_homologs(
             seq,
             ctx.config.homologs,
             ctx.paths.homologs,
@@ -21,6 +24,7 @@ class HomologStage(Stage):
             dry_run=ctx.dry_run,
             remote_server=ctx.config.msa.remote_server,
         )
+        by_source = dict(Counter(h.source for h in homologs))
         # Stratify (spec 7.3): core (40-90% id) vs diverse (20-40%).
         core = [h for h in homologs if 0.40 <= h.identity <= 0.90]
         diverse = [h for h in homologs if h.identity < 0.40]
@@ -34,6 +38,7 @@ class HomologStage(Stage):
         ctx.persist_meta("n_homologs", len(homologs))
         ctx.persist_meta("n_core_homologs", len(core))
         ctx.persist_meta("n_diverse_homologs", len(diverse))
+        ctx.persist_meta("homolog_sources", by_source)
 
         assert ctx.store is not None
         with ctx.store.session() as s:
@@ -57,8 +62,8 @@ class HomologStage(Stage):
                         )
                     )
         self.log.info(
-            "homologs=%d (core=%d, diverse=%d)",
-            len(homologs), len(core), len(diverse),
+            "homologs=%d (core=%d, diverse=%d) sources=%s",
+            len(homologs), len(core), len(diverse), by_source,
         )
         if len(homologs) < 10:
             self.log.warning("few homologs - evolutionary signal will be weak")

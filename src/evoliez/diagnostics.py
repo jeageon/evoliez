@@ -40,6 +40,7 @@ _TOOLS = {
     "jackhmmer": ("s02_homolog (alt)", None),
     "blastp": ("s02_homolog (alt)", None),
     "mafft": ("s03_msa (real)", None),
+    "foldseek": ("s02 structural homologs (real, sources: structure)", None),
     "vina": ("s05/s09 docking (real)", None),
     "gnina": ("s05/s09 docking (real, CUDA)", None),
     "obabel": ("docking prep (real)", None),
@@ -130,6 +131,11 @@ def _required_under_real(cfg, up_to: Optional[str] = None) -> tuple:
             tools.add({"mmseqs2": "mmseqs"}.get(cfg.homologs.method, cfg.homologs.method))
         if within("s03_msa") and cfg.msa.method == "mafft":
             tools.add("mafft")
+    # structural-homolog source needs Foldseek (roadmap P1.1)
+    if real and within("s02_homolog") and (
+        "structure" in (cfg.homologs.sources or []) or cfg.homologs.use_foldseek
+    ):
+        tools.add("foldseek")
     if (sreal("s05_docking") and within("s05_docking")) or \
        (sreal("s09_nonmd") and within("s09_nonmd")):
         methods = cfg.validation.redocking.methods

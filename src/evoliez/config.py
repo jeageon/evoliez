@@ -73,7 +73,13 @@ class HomologConfig(_Base):
     length_ratio_min: float = 0.7
     length_ratio_max: float = 1.3
     cluster_identity: float = 0.90
-    use_foldseek: bool = False
+    # Integrated multi-source homology: merge any of these (s02 gather_homologs).
+    #   sequence  -> local mmseqs/jackhmmer/blastp DB, OR ColabFold remote MSA
+    #   structure -> Foldseek (ProstT5 seq->3Di) against a 3Di structure DB
+    sources: List[str] = Field(default_factory=lambda: ["sequence"])
+    use_foldseek: bool = False          # legacy alias: true => adds 'structure'
+    foldseek_database: Optional[str] = None   # Foldseek 3Di DB (AFDB50/PDB100)
+    foldseek_max_seqs: int = 2000
 
 
 class MSAConfig(_Base):
@@ -83,6 +89,10 @@ class MSAConfig(_Base):
     compute_covariation: bool = False
     max_gap_frequency: float = 0.5
     remote_server: bool = False  # use a hosted MSA API instead of local DBs
+    # ESM2 single-sequence prior (s03): per-position substitution variability
+    # from a protein language model — MSA-free, complements the MSA columns.
+    esm_enabled: bool = False
+    esm_model: str = "esm2_t33_650M_UR50D"
 
 
 class ComplexPredictionConfig(_Base):

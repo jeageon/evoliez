@@ -51,6 +51,15 @@ as P0/P1 items; they are now closed and removed from the active lists below.
   (`RealToolError`) unless `allow_mock_fallback` is explicitly set, and `doctor`
   **blocks** when a required tool is missing. Mock fallback is opt-in and visible,
   not a silent default.
+- **Integrated multi-source homology + ESM prior (part of P1.1).** `s02`
+  `gather_homologs` merges SEQUENCE (mmseqs/jackhmmer/blastp or ColabFold remote)
+  and STRUCTURE (Foldseek, ProstT5 seq→3Di) homologs into one set with a unified
+  subfamily cluster space (`homologs.sources: [sequence, structure]`,
+  `homologs.foldseek_database`); `s03` attaches an MSA-free **ESM2** per-position
+  variability prior (`msa.esm_enabled`, `PositionFeature.esm_variability`). New
+  `adapters/foldseek.py` + `adapters/esm.py` (mock/real); `doctor` requires
+  Foldseek when the structure source is enabled. STILL OPEN in P1.1:
+  ColabFold-style MSA-depth truncation policy and the Neff/coverage/motif card.
 
 > Note: the monotonic-constraint and exploit/explore-split portions of the
 > former P0.5 are *not* shipped and remain active below (see P0.4 and S08/S11).
