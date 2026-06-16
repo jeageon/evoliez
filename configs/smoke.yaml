@@ -14,7 +14,7 @@ input:
   ligand:
     id: NADP_cofactor
     type: smiles
-    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
+    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2OP([O-])([O-])=O)[C@@H](O)[C@H]1O"
   # NOTE: examples/fdh/target.fasta is an ILLUSTRATIVE placeholder. These
   # tokens are chosen to be self-consistent with that sequence (His@154,
   # Arg@285, Gly@15/33) so the wiring smoke is clean - they are NOT a

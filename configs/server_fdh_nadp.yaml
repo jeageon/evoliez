@@ -24,7 +24,7 @@ input:
   ligand:
     id: NADP_cofactor
     type: smiles
-    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
+    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2OP([O-])([O-])=O)[C@@H](O)[C@H]1O"
   # Tokens are self-consistent with the bundled illustrative placeholder
   # (His@154, Arg@285, Gly@15/33) - NOT a verified FDH active site. Replace the
   # target + numbering for real work; `evoliez doctor` BLOCKs a real backend.

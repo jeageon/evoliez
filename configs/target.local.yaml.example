@@ -30,7 +30,7 @@ input:
   ligand:
     id: NADP_cofactor
     type: smiles            # smiles | inchi | sdf | mol2 | pdb | ccd
-    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O"
+    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2OP([O-])([O-])=O)[C@@H](O)[C@H]1O"
 
   # ---- [3] ACTIVE-SITE NUMBERING  (authoritative: UniProt/PDB/paper) ---
   # 'H123' asserts His@position-123 in YOUR sequence above. `doctor` BLOCKs
