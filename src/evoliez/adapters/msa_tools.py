@@ -57,24 +57,32 @@ def gather_homologs(
     backend: Backend,
     dry_run: bool = False,
     remote_server: bool = False,
+    msa_dir: "Path | None" = None,
 ) -> List[Homolog]:
     """Integrated multi-source homolog acquisition (roadmap P1.1).
 
-    Runs each source in ``cfg.sources`` (``sequence`` = mmseqs/jackhmmer/blastp
-    or ColabFold remote; ``structure`` = Foldseek) and MERGES the results into
-    one homolog set with a unified subfamily cluster-id space, so s03's MSA and
-    s06b's family model see structure + sequence homologs together. A single
-    source returns unchanged (backward compatible)."""
+    Runs each source in ``cfg.sources`` (``sequence`` = local mmseqs/jackhmmer/
+    blastp DB OR ColabFold remote MSA when ``remote_server``; ``structure`` =
+    Foldseek) and MERGES the results into one homolog set with a unified
+    subfamily cluster-id space, so s03's MSA and s06b's family model see
+    structure + sequence homologs together. A single source returns unchanged
+    (backward compatible). ``msa_dir`` shares the ColabFold a3m with s03."""
     sources = list(cfg.sources or ["sequence"])
     if cfg.use_foldseek and "structure" not in sources:
         sources.append("structure")                 # legacy alias
     per_source: List[Tuple[str, List[Homolog]]] = []
     if "sequence" in sources:
-        per_source.append((
-            "sequence",
-            search_homologs(sequence, cfg, workdir, backend=backend,
-                            dry_run=dry_run, remote_server=remote_server),
-        ))
+        seq_h: List[Homolog] = []
+        # Real sequence homologs WITHOUT a local DB: mine them from the
+        # ColabFold remote MSA (shared with s03 via msa_dir). Falls back to the
+        # local-DB / synthetic search if there is no network or no msa_dir.
+        if (remote_server and backend is Backend.real and not dry_run
+                and msa_dir is not None):
+            seq_h = _colabfold_homologs(sequence, msa_dir, cfg)
+        if not seq_h:
+            seq_h = search_homologs(sequence, cfg, workdir, backend=backend,
+                                    dry_run=dry_run, remote_server=remote_server)
+        per_source.append(("sequence", seq_h))
     if "structure" in sources:
         from evoliez.adapters.foldseek import search_structural_homologs
         per_source.append((
@@ -121,6 +129,32 @@ def _merge_sources(per_source: List[Tuple[str, List["Homolog"]]]) -> List[Homolo
         len(merged), len({h.cluster_id for h in merged}),
     )
     return merged
+
+
+def _colabfold_homologs(
+    sequence: str, msa_dir: Path, cfg: HomologConfig
+) -> List[Homolog]:
+    """Real SEQUENCE homologs mined from the ColabFold remote MSA (no local DB).
+    Each aligned row becomes a Homolog with identity computed vs the query row;
+    returns [] if the MSA is unavailable (no network) so the caller falls back."""
+    from evoliez.adapters.remote_msa import cached_fetch_msa
+
+    msa = cached_fetch_msa(sequence, msa_dir)
+    if not msa or len(msa) < 2:
+        return []
+    query_aln = msa[0][1]
+    hs: List[Homolog] = []
+    for i, (_, aln) in enumerate(msa[1:]):
+        seq = aln.replace("-", "").replace(".", "").upper()
+        if not seq:
+            continue
+        ident = _aligned_identity(aln, query_aln)
+        if _band(cfg, ident):
+            hs.append(Homolog(f"cf_{i}", seq, round(ident, 4), 1.0,
+                              annotation="colabfold", source="sequence"))
+    hs = hs[: cfg.max_sequences]
+    log.info("ColabFold remote MSA -> %d sequence homologs", len(hs))
+    return assign_clusters(hs, cfg)
 
 
 def _search_real(

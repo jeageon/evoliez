@@ -23,6 +23,7 @@ class HomologStage(Stage):
             backend=self.backend(ctx),
             dry_run=ctx.dry_run,
             remote_server=ctx.config.msa.remote_server,
+            msa_dir=ctx.paths.msa,          # share the ColabFold a3m with s03
         )
         by_source = dict(Counter(h.source for h in homologs))
         # Stratify (spec 7.3): core (40-90% id) vs diverse (20-40%).

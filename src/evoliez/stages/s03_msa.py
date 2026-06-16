@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from evoliez.adapters.msa_tools import build_msa
-from evoliez.adapters.remote_msa import fetch_msa
+from evoliez.adapters.remote_msa import cached_fetch_msa
 from evoliez.context import RunContext
 from evoliez.db.schema import MSAPosition
 from evoliez.features.evolutionary import compute_position_features
@@ -30,7 +30,7 @@ class MSAStage(Stage):
                     "server (ColabFold/MMseqs2 API) - skipped, no network"
                 )
             else:
-                msa = fetch_msa(seq, ctx.paths.msa)
+                msa = cached_fetch_msa(seq, ctx.paths.msa)
                 if msa:
                     self.log.info(
                         "using remote MSA (%d sequences)", len(msa)

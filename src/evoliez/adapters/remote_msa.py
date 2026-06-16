@@ -64,6 +64,25 @@ def fetch_msa(
         return None
 
 
+def cached_fetch_msa(
+    sequence: str, msa_dir: Path, *, api_base: str = DEFAULT_API,
+    timeout: float = 120.0,
+) -> Optional[List[Tuple[str, str]]]:
+    """``fetch_msa`` but reuse a previously-downloaded ``remote.a3m`` in
+    ``msa_dir`` so s02 (homolog extraction) and s03 (the alignment) share ONE
+    ColabFold request instead of querying the API twice."""
+    cached = msa_dir / "remote.a3m"
+    if cached.exists() and cached.stat().st_size > 0:
+        try:
+            msa = _read_a3m(cached)
+            if msa:
+                log.info("reusing cached remote MSA (%d sequences)", len(msa))
+                return msa
+        except OSError:
+            pass
+    return fetch_msa(sequence, msa_dir, api_base=api_base, timeout=timeout)
+
+
 def _read_a3m(path: Path) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     cid, buf = None, []

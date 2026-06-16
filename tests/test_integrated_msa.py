@@ -66,6 +66,22 @@ def test_use_foldseek_legacy_alias_adds_structure(tmp_path):
     assert any(h.source == "structure" for h in merged)
 
 
+# --------------------- ColabFold sequence homologs (mined from MSA) ---------
+def test_colabfold_homologs_mined_from_msa(tmp_path, monkeypatch):
+    q = _SEQ
+    h1 = "".join("G" if (i % 5 == 0 and c != "G") else c for i, c in enumerate(q))
+    h2 = "".join("A" if (i % 2 == 0 and c != "A") else c for i, c in enumerate(q))
+    fake = [("query", q), ("cf_a", h1), ("cf_b", h2)]   # aligned (equal length)
+    import evoliez.adapters.remote_msa as rm
+    monkeypatch.setattr(rm, "cached_fetch_msa", lambda s, d, **k: fake)
+
+    from evoliez.adapters.msa_tools import _colabfold_homologs
+    hs = _colabfold_homologs(q, tmp_path, HomologConfig())
+    assert len(hs) == 2
+    assert all(h.source == "sequence" and h.annotation == "colabfold" for h in hs)
+    assert all(0.20 <= h.identity <= 0.95 for h in hs)
+
+
 # --------------------------- s02/s03 integration ----------------------------
 def _cfg(tmp_path, **over):
     base = {"project.output_dir": str(tmp_path / "run"),
