@@ -78,6 +78,20 @@ def test_required_set_real_vs_mock(tmp_path):
     assert _required_under_real(_cfg(tmp_path, "mock")) == (set(), set())
 
 
+def test_required_set_up_to_limits_per_stage(tmp_path):
+    # per-stage gating: an s01 run must not require Boltz/FoldX (later stages);
+    # the full run does. So `prod_validate.sh s01` is not blocked by an unbuilt
+    # downstream tool.
+    cfg = _cfg(tmp_path, "real")
+    s01_tools, _ = _required_under_real(cfg, "s01_input")
+    full_tools, _ = _required_under_real(cfg, None)
+    assert "boltz" not in s01_tools and "foldx" not in s01_tools
+    assert "boltz" in full_tools                       # full run still requires it
+    # monotonic: requiring up to s04 includes Boltz but still not FoldX (s09)
+    s04_tools, _ = _required_under_real(cfg, "s04_complex")
+    assert "boltz" in s04_tools and "foldx" not in s04_tools
+
+
 def test_doctor_blocks_missing_required_tool(tmp_path):
     # boltz is not installed in the dev env; under a real config it must BLOCK
     # (a gate), but under a mock config the same absence is only MISSING.

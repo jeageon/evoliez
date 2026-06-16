@@ -195,12 +195,14 @@ if [ "$STAGE_ORD" -ge 4 ] && [ "$BACKEND" = real ] && [ "$ACCEPT_ONLY" -eq 0 ]; 
 fi
 
 # --- doctor gate (strict under real; advisory under mock) ---------------------
+# --up-to <stage>: only require tools for stages up to the one being validated,
+# so e.g. `s01` is not blocked by a missing Boltz/FoldX that only s04/s09 need.
 if [ "$ACCEPT_ONLY" -eq 0 ] && [ "$NO_DOCTOR" -eq 0 ]; then
-  echo "==== doctor (gate) ===="
+  echo "==== doctor (gate, up to $FULL_STAGE) ===="
   if [ "$BACKEND" = real ]; then
-    evoliez doctor -c "$RUN_CFG"      # exits 1 on any BLOCK -> set -e aborts
+    evoliez doctor -c "$RUN_CFG" --up-to "$FULL_STAGE"   # exits 1 on BLOCK -> set -e aborts
   else
-    evoliez doctor -c "$RUN_CFG" || echo ">> doctor advisory under mock backend"
+    evoliez doctor -c "$RUN_CFG" --up-to "$FULL_STAGE" || echo ">> doctor advisory under mock backend"
   fi
 fi
 

@@ -218,13 +218,18 @@ def doctor(
     config: Optional[str] = typer.Option(
         None, "-c", "--config", help="also validate this run config"
     ),
+    up_to: Optional[str] = typer.Option(
+        None, "--up-to",
+        help="only require tools for stages up to this one (per-stage gating, "
+             "e.g. --up-to s01_input); default = full run, every stage's tools",
+    ),
 ) -> None:
     """Preflight: check tools / deps / GPU / disk before a real server run."""
     from evoliez.diagnostics import BLOCK, MISSING, OK, WARN, collect
 
     mark = {OK: "[OK]   ", WARN: "[WARN] ", MISSING: "[MISS] ",
             BLOCK: "[BLOCK]"}
-    rep = collect(config)
+    rep = collect(config, up_to)
     for c in rep.checks:
         typer.echo(f"{mark[c.status]} {c.name:<22} {c.detail}")
     n_warn = sum(1 for c in rep.checks if c.status in (WARN, MISSING))

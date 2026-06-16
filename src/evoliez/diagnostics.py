@@ -93,45 +93,61 @@ def _load_cfg(config_path: Optional[str]):
         return None, exc
 
 
-def _required_under_real(cfg) -> tuple:
+def _required_under_real(cfg, up_to: Optional[str] = None) -> tuple:
     """(required_tools, required_pydeps) whose ABSENCE must BLOCK — i.e. the
     real tools/deps THIS config will actually invoke. Anything not required is a
     mere MISSING (informational). Makes `doctor` a real production gate without
-    false-blocking configs that don't use a given tool (audit P0 #6)."""
+    false-blocking configs that don't use a given tool (audit P0 #6).
+
+    ``up_to`` (a stage name) limits the requirement to stages AT OR BEFORE it,
+    so per-stage validation (`prod_validate.sh s01`) is not blocked by tools a
+    later stage needs (Boltz/FoldX for an s01 run). Default None = full run =
+    every stage's tools required."""
     tools: set = set()
     deps: set = set()
     if cfg is None:
         return tools, deps
     from evoliez.config import Backend
+    from evoliez.stages import ALL_STAGES
+
+    order = [s.name for s in ALL_STAGES]
+    limit = order.index(up_to) if up_to in order else len(order) - 1
+
+    def within(stage: str) -> bool:           # is `stage` at/ before the limit?
+        return stage in order and order.index(stage) <= limit
 
     real = cfg.backend is Backend.real
 
     def sreal(stage: str) -> bool:
         return cfg.backend_for(stage) is Backend.real
 
-    if real:
+    if real and within("s01_input"):
         deps.add("rdkit")                       # ligand chemistry: no real fallback
-    if sreal("s04_complex"):
+    if sreal("s04_complex") and within("s04_complex"):
         tools.add("boltz")                      # the central real stage
     if real and not cfg.msa.remote_server:      # local homolog search + align
-        tools.add({"mmseqs2": "mmseqs"}.get(cfg.homologs.method, cfg.homologs.method))
-        if cfg.msa.method == "mafft":
+        if within("s02_homolog"):
+            tools.add({"mmseqs2": "mmseqs"}.get(cfg.homologs.method, cfg.homologs.method))
+        if within("s03_msa") and cfg.msa.method == "mafft":
             tools.add("mafft")
-    if sreal("s05_docking") or sreal("s09_nonmd"):
+    if (sreal("s05_docking") and within("s05_docking")) or \
+       (sreal("s09_nonmd") and within("s09_nonmd")):
         methods = cfg.validation.redocking.methods
         for m in methods:
             if m in _TOOLS:                      # vina|gnina (diffdock = python+env)
                 tools.add(m)
         if "vina" in methods:
             tools.add("obabel")
-    if sreal("s09_nonmd") and cfg.validation.stability.method == "foldx":
+    if sreal("s09_nonmd") and within("s09_nonmd") \
+       and cfg.validation.stability.method == "foldx":
         tools.add("foldx")
-    if sreal("s10_md") and cfg.validation.md.enabled:
+    if sreal("s10_md") and within("s10_md") and cfg.validation.md.enabled:
         deps.add("openmm")
     return tools, deps
 
 
-def collect(config_path: Optional[str] = None) -> Report:
+def collect(config_path: Optional[str] = None,
+            up_to: Optional[str] = None) -> Report:
     r = Report()
     r.add("evoliez", OK, f"v{__version__}")
 
@@ -142,7 +158,7 @@ def collect(config_path: Optional[str] = None) -> Report:
     # Load the run config up front so a missing tool/dep this run will ACTUALLY
     # invoke is reported as a BLOCK (a real gate), not a mere MISSING (P0 #6).
     cfg, cfg_err = _load_cfg(config_path)
-    req_tools, req_deps = _required_under_real(cfg)
+    req_tools, req_deps = _required_under_real(cfg, up_to)
 
     for mod, why in _PY_DEPS.items():
         if _has_module(mod):
