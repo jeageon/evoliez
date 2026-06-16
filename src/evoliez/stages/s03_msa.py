@@ -107,20 +107,23 @@ class MSAStage(Stage):
 
         assert ctx.store is not None
         with ctx.store.session() as s:
-            if not s.query(MSAPosition).first():
-                for f in feats:
-                    s.add(
-                        MSAPosition(
-                            project_id=ctx.project_id,
-                            alignment_position=f.alignment_position,
-                            target_position=f.target_position,
-                            conservation_score=f.conservation_score,
-                            entropy=f.entropy,
-                            gap_frequency=f.gap_frequency,
-                            amino_acid_frequencies=f.amino_acid_frequencies,
-                            pssm_vector=f.pssm_vector,
-                        )
+            # refresh on re-run (delete-then-insert), so an MSA from new
+            # sources / a code fix replaces stale rows instead of being skipped
+            # (audit P0 #4).
+            s.query(MSAPosition).filter_by(project_id=ctx.project_id).delete()
+            for f in feats:
+                s.add(
+                    MSAPosition(
+                        project_id=ctx.project_id,
+                        alignment_position=f.alignment_position,
+                        target_position=f.target_position,
+                        conservation_score=f.conservation_score,
+                        entropy=f.entropy,
+                        gap_frequency=f.gap_frequency,
+                        amino_acid_frequencies=f.amino_acid_frequencies,
+                        pssm_vector=f.pssm_vector,
                     )
+                )
         self.log.info(
             "MSA depth=%d, mean conservation=%.3f",
             neff, ctx.meta("mean_conservation"),
