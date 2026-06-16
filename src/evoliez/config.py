@@ -79,6 +79,8 @@ class HomologConfig(_Base):
     sources: List[str] = Field(default_factory=lambda: ["sequence"])
     use_foldseek: bool = False          # legacy alias: true => adds 'structure'
     foldseek_database: Optional[str] = None   # Foldseek 3Di DB (AFDB50/PDB100)
+    foldseek_prostt5: Optional[str] = None    # ProstT5 weights: predict 3Di from
+    # the query SEQUENCE (no structure needed). `foldseek databases ProstT5 <dir>`
     foldseek_max_seqs: int = 2000
 
 

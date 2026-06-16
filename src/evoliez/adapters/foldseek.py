@@ -64,6 +64,17 @@ def _search_real(
         "query,target,fident,alnlen,evalue,tseq",
         "--max-seqs", str(cfg.foldseek_max_seqs),
     ]
+    # A FASTA (amino-acid) query needs ProstT5 to predict its 3Di before
+    # searching the structure DB. Without the weights Foldseek treats the input
+    # as structures and fails -> warn so the degraded result isn't a surprise.
+    if cfg.foldseek_prostt5:
+        cmd += ["--prostt5-model", cfg.foldseek_prostt5]
+    elif not preview:
+        log.warning(
+            "Foldseek from a sequence query needs ProstT5 weights; set "
+            "homologs.foldseek_prostt5 (`foldseek databases ProstT5 <dir> tmp`). "
+            "Without it easy-search on a FASTA query will fail."
+        )
     if preview:
         require("foldseek")
         run(cmd, dry_run=True)
