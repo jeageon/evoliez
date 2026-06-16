@@ -319,6 +319,60 @@ PY
   rm -f "$ACC_PY"
   exit $rc
   ;;
+s02)
+  ACC_PY="$(mktemp "${TMPDIR:-/tmp}/evoliez_accept.XXXXXX")"
+  cat > "$ACC_PY" <<'PY'
+import json, os, sqlite3, sys
+run, _cfg, log_path = sys.argv[1], sys.argv[2], sys.argv[3]
+fails = warns = 0
+def line(tag, name, detail):
+    global fails, warns
+    if tag == "FAIL": fails += 1
+    if tag == "WARN": warns += 1
+    print(f"  [{tag:<4}] {name:<22} {detail}")
+
+sp = os.path.join(run, "_state.json")
+state = json.load(open(sp)) if os.path.exists(sp) else {}
+meta, done = state.get("meta", {}), state.get("completed_stages", [])
+
+line("PASS" if "s02_homolog" in done else "FAIL", "stage_complete", str(done))
+n = meta.get("n_homologs", 0)
+line("PASS" if n >= 10 else "FAIL", "n_homologs",
+     f"{n} (core={meta.get('n_core_homologs')}, diverse={meta.get('n_diverse_homologs')})")
+srcs = meta.get("homolog_sources", {}) or {}
+line("PASS" if srcs else "WARN", "homolog_sources", str(srcs))
+
+db = os.path.join(run, "evoliez.sqlite")
+if os.path.exists(db):
+    con = sqlite3.connect(db)
+    tot, ncl = con.execute("SELECT count(*), count(distinct cluster_id) "
+                           "FROM sequence WHERE source='homolog'").fetchone()
+    anns = dict(con.execute("SELECT annotation, count(*) FROM sequence "
+                            "WHERE source='homolog' GROUP BY annotation").fetchall())
+    con.close()
+    line("PASS" if (ncl or 0) >= 3 else "FAIL", "cluster_diversity",
+         f"{ncl} distinct subfamily cluster(s) / {tot} rows (s06b holdout needs >=3)")
+    real = sum(v for k, v in anns.items() if k and not str(k).startswith("synthetic"))
+    line("PASS" if real > 0 else "WARN", "real_homologs",
+         f"{real}/{tot} real, annotations={anns}")
+else:
+    line("FAIL", "db", "evoliez.sqlite missing")
+
+log = open(log_path).read() if os.path.exists(log_path) else ""
+if "using SYNTHETIC homologs" in log:
+    line("WARN", "sequence_source",
+         "sequence homologs fell back to SYNTHETIC (ColabFold/local DB "
+         "unavailable) - structural homologs may still be real")
+
+print()
+verdict = "FAIL" if fails else ("WARN" if warns else "PASS")
+print(f"  ==> s02 {verdict}  ({fails} fail, {warns} warn)")
+sys.exit(1 if fails else 0)
+PY
+  set +e; python "$ACC_PY" "$RUN" "$RUN_CFG" "$LOG"; rc=$?; set -e
+  rm -f "$ACC_PY"
+  exit $rc
+  ;;
 *)
   # Auto-acceptance is wired stage-by-stage as we validate each gate together;
   # s01 is live. Until $STAGE is wired, drive it by the code-grounded checklist
