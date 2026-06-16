@@ -19,10 +19,10 @@ input:
   target_id: fdh
 
   # ---- [1] YOUR PROTEIN SEQUENCE  (single chain, raw 1-letter AA) ------
-  # Paste inline — NO FASTA file needed. Newlines/spaces are stripped, so a
-  # wrapped block is fine. Replace the placeholder entirely.
-  target_sequence: >
-    PASTE_YOUR_SINGLE_CHAIN_PROTEIN_SEQUENCE_HERE
+  # Paste the WHOLE sequence on ONE line, inside the quotes (no FASTA file).
+  # Case + any stray spaces are normalised by the script. Keep it one line —
+  # do NOT use a `>` block (text on the `>` line is invalid YAML).
+  target_sequence: "PASTE_YOUR_SINGLE_CHAIN_PROTEIN_SEQUENCE_ON_ONE_LINE"
 
   # ---- [2] YOUR LIGAND / COFACTOR -------------------------------------
   # RDKit must parse `value` (s01 reports source==rdkit, not synthetic).
