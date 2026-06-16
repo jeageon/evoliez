@@ -85,23 +85,32 @@ class HomologStage(Stage):
         a3m = ctx.paths.msa / "remote.a3m"
         depth = (sum(1 for ln in a3m.open() if ln.startswith(">"))
                  if a3m.exists() else None)
-        srcs = list(h.sources) + (["structure"] if h.use_foldseek
-                                  and "structure" not in h.sources else [])
+        raw = list(h.sources) + (["structure"] if h.use_foldseek
+                                 and not ({"structure", "foldseek"} & set(h.sources))
+                                 else [])
+        norm = []
+        for s in raw:
+            norm.append({"sequence": "colabfold" if m.remote_server else "local",
+                         "structure": "foldseek"}.get(s, s))
+        norm = list(dict.fromkeys(norm))
         conditions = [
             ("backend", self.backend(ctx).value),
-            ("homolog sources", ", ".join(srcs)),
-            ("sequence search",
-             "ColabFold remote MSA" if m.remote_server
-             else f"{h.method}, DB={h.database or 'unset'}"),
-            ("structural search",
-             f"Foldseek (ProstT5), DB={h.foldseek_database}"
-             if "structure" in srcs and h.foldseek_database
-             else ("Foldseek (DB unset)" if "structure" in srcs else "off")),
+            ("homolog retrievers (independent, merged)", ", ".join(norm)),
+            ("local sequence search",
+             f"{h.method} vs {h.database}" if ("local" in norm and h.database)
+             else ("DB unset — skipped" if "local" in norm else "off")),
+            ("ColabFold remote MSA (sequence)",
+             "on (remote MMseqs2 vs UniRef30+env)" if "colabfold" in norm else "off"),
+            ("Foldseek (structure)",
+             f"ProstT5 seq→3Di vs {h.foldseek_database}"
+             if ("foldseek" in norm and h.foldseek_database)
+             else ("DB unset — skipped" if "foldseek" in norm else "off")),
             ("identity band", f"{h.identity_min:.2f} – {h.identity_max:.2f}"),
-            ("subfamily clustering", f"k-mer Jaccard @ cluster_identity={h.cluster_identity:.2f}"),
+            ("subfamily clustering",
+             f"k-mer Jaccard @ cluster_identity={h.cluster_identity:.2f}"),
             ("max sequences", f"{h.max_sequences:,}"),
             ("MSA alignment", "ColabFold remote" if m.remote_server else m.method),
-            ("ESM2 prior", m.esm_model if m.esm_enabled else "off"),
+            ("ESM2 prior (s03)", m.esm_model if m.esm_enabled else "off"),
             ("evoliez version", __version__),
         ]
         out = ctx.paths.reports / "homolog_report.html"

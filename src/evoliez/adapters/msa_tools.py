@@ -67,38 +67,73 @@ def gather_homologs(
     subfamily cluster-id space, so s03's MSA and s06b's family model see
     structure + sequence homologs together. A single source returns unchanged
     (backward compatible). ``msa_dir`` shares the ColabFold a3m with s03."""
-    sources = list(cfg.sources or ["sequence"])
-    if cfg.use_foldseek and "structure" not in sources:
-        sources.append("structure")                 # legacy alias
+    # Concrete, INDEPENDENT retrievers (each stands on its own, all merge):
+    #   local     - local mmseqs/jackhmmer/blastp vs homologs.database
+    #   colabfold - ColabFold remote MSA (sequence; no local DB)
+    #   foldseek  - Foldseek structural homologs
+    # Abstract aliases keep old configs working: 'sequence' -> local OR
+    # colabfold (by remote_server), 'structure' -> foldseek.
+    raw = list(cfg.sources or ["sequence"])
+    if cfg.use_foldseek and not ({"structure", "foldseek"} & set(raw)):
+        raw.append("structure")
+    norm: List[str] = []
+    for s in raw:
+        norm.append({"sequence": "colabfold" if remote_server else "local",
+                     "structure": "foldseek"}.get(s, s))
+    norm = list(dict.fromkeys(norm))                 # dedupe, keep order
+
     per_source: List[Tuple[str, List[Homolog]]] = []
-    if "sequence" in sources:
-        seq_h: List[Homolog] = []
-        # Real sequence homologs WITHOUT a local DB: mine them from the
-        # ColabFold remote MSA (shared with s03 via msa_dir). Falls back to the
-        # local-DB / synthetic search if there is no network or no msa_dir.
-        if (remote_server and backend is Backend.real and not dry_run
-                and msa_dir is not None):
-            seq_h = _colabfold_homologs(sequence, msa_dir, cfg)
-        if not seq_h:
-            seq_h = search_homologs(sequence, cfg, workdir, backend=backend,
-                                    dry_run=dry_run, remote_server=remote_server)
-        per_source.append(("sequence", seq_h))
-    if "structure" in sources:
-        from evoliez.adapters.foldseek import search_structural_homologs
-        per_source.append((
-            "structure",
-            search_structural_homologs(sequence, cfg, workdir / "foldseek",
-                                       backend=backend, dry_run=dry_run),
-        ))
-    per_source = [(s, h) for s, h in per_source if h]
+    for s in norm:
+        hs = _run_source(s, sequence, cfg, workdir, backend=backend,
+                         dry_run=dry_run, remote_server=remote_server,
+                         msa_dir=msa_dir)
+        if hs:
+            per_source.append((s, hs))
     if not per_source:                               # nothing enabled / found
         return search_homologs(sequence, cfg, workdir, backend=backend,
                                dry_run=dry_run, remote_server=remote_server)
     if len(per_source) == 1:
-        for h in per_source[0][1]:
-            h.source = per_source[0][0]
         return per_source[0][1]
     return _merge_sources(per_source)
+
+
+def _run_source(
+    name: str, sequence: str, cfg: HomologConfig, workdir: Path, *,
+    backend: Backend, dry_run: bool, remote_server: bool, msa_dir,
+) -> List[Homolog]:
+    """One independent homolog retriever -> tagged Homolog list ([] if it
+    cannot contribute, e.g. local search without a DB)."""
+    if name == "colabfold":
+        if (remote_server and backend is Backend.real and not dry_run
+                and msa_dir is not None):
+            hs = _colabfold_homologs(sequence, msa_dir, cfg)
+            for h in hs:
+                h.source = "sequence"
+            return hs
+        return []
+    if name == "local":
+        if backend is Backend.real and cfg.database is None:
+            log.warning(
+                "homologs.sources includes a local sequence search but "
+                "homologs.database is unset; skipping (no UniRef/BFD to mine). "
+                "Download a DB + set homologs.database for an independent "
+                "local mmseqs/jackhmmer/blastp search."
+            )
+            return []
+        hs = search_homologs(sequence, cfg, workdir / "local", backend=backend,
+                             dry_run=dry_run, remote_server=False)
+        meth = {"mmseqs2": "mmseqs"}.get(cfg.method, cfg.method)
+        for h in hs:
+            h.source = "sequence"
+            if not h.annotation:                     # tag the tool (keep 'synthetic')
+                h.annotation = meth
+        return hs
+    if name == "foldseek":
+        from evoliez.adapters.foldseek import search_structural_homologs
+        return search_structural_homologs(sequence, cfg, workdir / "foldseek",
+                                          backend=backend, dry_run=dry_run)
+    log.warning("unknown homolog source %r; skipping", name)
+    return []
 
 
 def _merge_sources(per_source: List[Tuple[str, List["Homolog"]]]) -> List[Homolog]:
@@ -117,7 +152,9 @@ def _merge_sources(per_source: List[Tuple[str, List["Homolog"]]]) -> List[Homolo
             gkey = (src, h.cluster_id)
             if gkey not in global_of:
                 global_of[gkey] = len(global_of)
-            h.source = src
+            # keep h.source (sequence|structure category) + h.annotation (tool)
+            # as set by the retriever; `src` (retriever name) only keys the
+            # global cluster space so each retriever's subfamilies stay distinct.
             h.cluster_id = global_of[gkey]
             if key not in best:
                 order.append(key)
