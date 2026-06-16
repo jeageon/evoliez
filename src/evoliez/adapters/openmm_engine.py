@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from evoliez.adapters.base import write_min_pdb
+from evoliez.adapters.base import is_full_atom_pdb, write_min_pdb
 from evoliez.config import Backend, MDConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import Complex, LigandAtom
@@ -82,21 +82,6 @@ class MDResult:
     energy_drift: float = 0.0
     integration_failed: bool = False
     failure_reason: Optional[str] = None
-
-
-def _is_full_atom_pdb(path: Path) -> bool:
-    """True if the PDB has more than a CA trace per residue. write_min_pdb
-    (mock) emits ONLY CA ATOM records, which OpenMM cannot turn into Amber
-    residue templates ('HIS residue has the wrong set of atoms')."""
-    try:
-        for line in path.read_text().splitlines():
-            if line.startswith("ATOM") and line[12:16].strip() not in (
-                "CA", ""
-            ):
-                return True
-    except OSError:
-        return False
-    return False
 
 
 _AA3TO1 = {
@@ -365,7 +350,7 @@ def _run_real(
 
     apply_gpu_selection()
     src = getattr(cx.structure, "pdb_path", None)
-    if src and Path(src).exists() and _is_full_atom_pdb(Path(src)):
+    if src and Path(src).exists() and is_full_atom_pdb(Path(src)):
         pdb_path = Path(src)                       # real full-atom structure
     else:
         # Our internal ProteinStructure is a CA-only trace and write_min_pdb

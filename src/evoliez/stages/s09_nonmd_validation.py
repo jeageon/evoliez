@@ -71,9 +71,19 @@ class NonMDValidationStage(Stage):
         wt_mech = ctx.get("mechanism")
         pfeats = ctx.get("position_features", [])
         adv = ctx.config.advanced
+        # Real per-mutant Boltz structures from s08b (top-N only). Redocking the
+        # ACTUAL mutant pocket is more meaningful than the WT-coords proxy
+        # (audit P1 #2). Stability stays on the proxy: FoldX/Rosetta build the
+        # mutant from the WT structure + mutation list, so they want WT coords.
+        mutant_complexes = ctx.get("mutant_complexes", {}) or {}
         kept: List[Candidate] = []
         for cand in candidates:
             mc = _mutant_complex(wt, cand)
+            redock_cx = mutant_complexes.get(cand.candidate_id)
+            redock_structure = (redock_cx.structure if redock_cx is not None
+                                else mc.structure)
+            cand.details["redock_structure_source"] = (
+                "mutant_boltz" if redock_cx is not None else "wt_proxy")
 
             if scfg.method == "rosetta":
                 stab = rosetta.estimate_stability(
@@ -114,9 +124,9 @@ class NonMDValidationStage(Stage):
 
             inst = _instability(cand)
             pose = redock_with(
-                dcfg.methods[0], ctx, cand.candidate_id, mc.structure,
+                dcfg.methods[0], ctx, cand.candidate_id, redock_structure,
                 ref_atoms, dcfg, ctx.paths.validation / "redock", inst,
-                wt.ligand.smiles,
+                wt.ligand.smiles, stage_name=self.name,
             )
             cand.scores["docking_score"] = pose.score
             consistency, uncertainty, ligand_escape = _redock_metrics(

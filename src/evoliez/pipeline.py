@@ -30,8 +30,14 @@ class Pipeline:
         to_stage: Optional[str] = None,
     ) -> RunContext:
         prev_dry = os.environ.get("EVOLIEZ_DRY_RUN")
+        prev_amf = os.environ.get("EVOLIEZ_ALLOW_MOCK_FALLBACK")
         if ctx.dry_run:
             os.environ["EVOLIEZ_DRY_RUN"] = "1"
+        # Whether a real-backend tool may silently degrade to mock (default no;
+        # audit P0 #3). Adapters read this via base.mock_fallback_allowed().
+        os.environ["EVOLIEZ_ALLOW_MOCK_FALLBACK"] = (
+            "1" if ctx.config.allow_mock_fallback else "0"
+        )
         try:
             names = self.stage_names()
             start = names.index(from_stage) if from_stage else 0
@@ -58,6 +64,10 @@ class Pipeline:
                 os.environ.pop("EVOLIEZ_DRY_RUN", None)
             else:
                 os.environ["EVOLIEZ_DRY_RUN"] = prev_dry
+            if prev_amf is None:
+                os.environ.pop("EVOLIEZ_ALLOW_MOCK_FALLBACK", None)
+            else:
+                os.environ["EVOLIEZ_ALLOW_MOCK_FALLBACK"] = prev_amf
 
 
 def run_pipeline(

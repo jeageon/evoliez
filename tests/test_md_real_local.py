@@ -15,10 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from evoliez.adapters.openmm_engine import (
-    _is_full_atom_pdb,
-    _pdb_one_letter_seq,
-)
+from evoliez.adapters.base import is_full_atom_pdb
+from evoliez.adapters.openmm_engine import _pdb_one_letter_seq
 
 _CA_ONLY = textwrap.dedent("""\
     ATOM      1  CA  MET A   1       0.000   0.000   0.000  1.00  0.00           C
@@ -40,8 +38,8 @@ def test_full_atom_vs_ca_only_detection(tmp_path):
     ca.write_text(_CA_ONLY)
     fa = tmp_path / "fa.pdb"
     fa.write_text(_FULL_ATOM)
-    assert _is_full_atom_pdb(ca) is False        # CA trace -> unusable for MD
-    assert _is_full_atom_pdb(fa) is True         # has N/C/O -> real structure
+    assert is_full_atom_pdb(ca) is False        # CA trace -> unusable for MD
+    assert is_full_atom_pdb(fa) is True         # has N/C/O -> real structure
 
 
 def test_pdb_one_letter_seq(tmp_path):

@@ -14,15 +14,78 @@ Four CLI flags (`src/evoliez/cli.py:25-36`):
 - `--stage-backend s04_complex=real` (repeatable) flips ONE stage to the real
   GPU backend while the rest stay mock — cheaper than a global `--backend real`.
   A typo throws immediately (`cli.py:59`).
-- `--resume` skips stages already marked complete (re-enter mid-pipeline).
+- `--resume` re-enters and skips already-complete stages — but see RESUME NOTE.
 - `--dry-run` prints the real tool command lines without executing — confirm
   Boltz/FoldX/DiffDock invocations + DB paths before burning GPU.
 
+> ### ⚠ RESUME NOTE — cross-process resume only reloads s01 + s06b
+> The in-memory artifact bus is rebuilt across processes ONLY by stages that
+> implement `load()` — today that is **s01 and s06b only** (`grep -l 'def load'
+> src/evoliez/stages/`). Consequences for stage-by-stage gating:
+> - **`--from <stage> --resume` fails** for any `<stage>` whose upstream isn't
+>   s01/s06b: `stages[start:end]` skips the predecessors without calling their
+>   `load()`, so `run()` dies on a missing `target_sequence`/`wt_complex`/...
+>   (`pipeline.py:37-40`). The `--from` commands below are kept for reference
+>   but **use `--to <stage> --resume` instead** (it reloads s01/s06b and
+>   re-runs the rest).
+> - On `--to <stage> --resume`, every stage except s01/s06b **RE-RUNS** (its
+>   `load()` returns `False`). For CPU stages (s02/s03) that's free; for **s04
+>   Boltz / s08b / s10 MD it re-pays full GPU cost** — `adapters/boltz.py:260`
+>   re-invokes `boltz predict` (seed-reproducible, not cached).
+> - **Workflow:** validate s01–s03 incrementally; then run the GPU tail **once**
+>   (`--to s11`) and gate s04…s11 from their persisted `reports/`/DB output
+>   (re-inspect with no recompute). `scripts/prod_validate.sh` drives exactly
+>   this. Proper fix (follow-up): implement `load()` per stage, or add a
+>   Boltz/MD output-reuse guard so resume is cheap.
+
 **Gating loop:** run a stage → read its `reports/`/`_state.json`/DB → run the
-2-4 acceptance checks → only then run the next `--from/--to`. Before the FIRST
-real run gate everything on `evoliez doctor -c configs/prod_fdh_nadp.yaml`
-(must show 0 BLOCK — it cross-checks catalytic/fixed tokens against your real
-sequence, `diagnostics.py:188-223`).
+2-4 acceptance checks → only then advance. Before the FIRST real run gate
+everything on `evoliez doctor -c configs/prod_fdh_nadp.yaml` (must show 0 BLOCK
+— it cross-checks catalytic/fixed tokens against your real sequence,
+`diagnostics.py:188-223`). The one-shot driver `scripts/prod_validate.sh <stage>`
+does doctor + run + auto-acceptance in a single command.
+
+### Resolved — "real means real" (audit P0 #3 + #6)
+Under `backend=real`, a missing/failed real tool no longer silently degrades to
+a mock artifact: **Boltz / Vina / GNINA / DiffDock raise `RealToolError`** when
+they produce no output, and **s01 raises** if RDKit cannot parse the ligand
+(synthetic). Set `allow_mock_fallback: true` (→ `EVOLIEZ_ALLOW_MOCK_FALLBACK=1`,
+e.g. partial-coverage smoke) to permit degradation with a loud warning. And
+**`evoliez doctor` now BLOCKs** (not just MISSING) a tool/dep the config will
+actually invoke — Boltz (s04 real), the configured docking engines + obabel
+(s05/s09 real), FoldX (s09 real, `stability.method=foldx`), OpenMM (s10 real,
+`md.enabled`), RDKit (real), mmseqs/mafft (real, non-remote MSA). So before a
+real run, `doctor -c <cfg>` must show 0 BLOCK — and now that genuinely gates the
+toolchain, not only the target/numbering. FoldX/Rosetta still return
+`ddg_fold=None` on a missing structure (honest neutral → MD), not a hard error.
+
+### Resolved — full-atom structures for real docking/stability (audit P0 #1)
+Real Vina/GNINA/DiffDock/FoldX/Rosetta now use the FULL-ATOM Boltz structure
+(`structure.pdb_path`, protein-only) via `base.full_atom_receptor_pdb()` instead
+of the CA-only `write_min_pdb` trace. If no full-atom structure exists (upstream
+mock / CA-only), they degrade HONESTLY: dockers return a mock pose ("NOT a real
+dock" warning), FoldX/Rosetta return `ddg_fold=None` (→ `stability_unavailable`,
+routed to MD) — never a fabricated score on a backbone-only receptor. So during
+real s05/s09: **all-identical `docking_score` or blanket `stability_unavailable`
+means s04/s08b emitted a CA-only/mock structure**, not a tool failure — verify
+s04 ran real first (`method=boltz2`, pLDDT>0).
+
+### Resolved — s09 redocks the real mutant + honours its own backend (P1 #8, #2-redock)
+s09 redocking now uses the per-mutant Boltz structure from s08b (top-N; the rest
+fall back to the WT proxy) — check `details.redock_structure_source ∈
+{mutant_boltz, wt_proxy}`; the top-`mutant_boltz_top_n` should read
+`mutant_boltz` under real. And `redock_with(stage_name=...)` uses the CALLING
+stage's backend, so `--stage-backend s09_nonmd=real` makes s09 redocking real
+without also flipping s05. Stability stays on the WT proxy by design (FoldX
+builds the mutant from WT + mutation list).
+
+### Resolved — reusing an output_dir can't contaminate evidence (P0 #4)
+A changed run fingerprint (new target / config / backend / dry↔real / retrained
+GNN) now purges the stale SQLite DB **and** artifact dirs, not just
+`_state.json` — `checkpoints/` and `logs/` are kept. So you can safely point a
+new target at an old `output_dir`: the stages' idempotent inserts no longer
+preserve the previous target's rows. (Still simplest to use a fresh dir per
+target; the purge logs `reused output_dir with a changed fingerprint`.)
 
 ### Two known limitations that look like bugs — flag, don't chase
 - **#15 md_lite constant terms:** the real MD path hardcodes `hbond_occupancy`
@@ -31,9 +94,10 @@ sequence, `diagnostics.py:188-223`).
   Confirm `nsteps>0` and `energy_drift` populated → documented limitation, not a
   parser failure.
 - **#22 catalytic geometry under coords-unchanged proxy:**
-  `catalytic_geometry_penalty` is all-0.0 whenever mutants use the proxy model
-  (WT coords reused). It is a penalty-only term, never a hard filter. Non-zero
-  only when real per-mutant Boltz (s08b) supplies distinct structures.
+  `catalytic_geometry_penalty` reuses the WT-proxy coordinates for the geometry
+  calc (`s09` computes `mut_cat` from `mc.structure`, not the s08b mutant), so
+  it stays ~0.0. Penalty-only, never a hard filter — distinct from the
+  #2-redock fix above (which only switched the REDOCK structure). Out of scope.
 
 ### Remote-MSA caveat (this config)
 `prod_fdh_nadp.yaml` uses `msa.remote_server: true` (no local DB). Boltz's

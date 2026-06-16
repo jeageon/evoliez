@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Sequence
 
 from evoliez.adapters.base import (
+    fail_unless_mock_allowed,
+    full_atom_receptor_pdb,
     lock_pose_to_reference,
     mock_redock,
     parse_sdf_first_pose,
@@ -62,7 +64,21 @@ def _redock_real(
     rec = workdir / f"{candidate_id}_rec.pdb"
     lig = workdir / f"{candidate_id}_ref_lig.pdb"
     out = workdir / f"{candidate_id}_gnina_out.sdf"
-    write_min_pdb(rec, structure)
+    # Full-atom Boltz receptor for real docking; honest mock fallback if the
+    # upstream structure is a CA-only trace (dry-run keeps a placeholder).
+    if not full_atom_receptor_pdb(structure, rec):
+        if dry_run:
+            write_min_pdb(rec, structure)
+        else:
+            fail_unless_mock_allowed(
+                f"gnina: no full-atom receptor for {candidate_id} "
+                "(upstream s04/s08b emitted a CA-only/mock structure)")
+            log.warning(
+                "gnina: no full-atom receptor for %s; mock fallback "
+                "(NOT a real dock)", candidate_id,
+            )
+            return mock_redock(candidate_id, METHOD, reference_atoms,
+                               instability=0.2)
     write_min_pdb(lig, structure.__class__(sequence="", residues=[]), reference_atoms)
     run(
         ["gnina", "-r", str(rec), "-l", str(lig), "--autobox_ligand", str(lig),
@@ -72,9 +88,11 @@ def _redock_real(
     if dry_run:
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
     if not out.exists():
-        # Real run produced no output (tool crash / wrong path). Degrade per
-        # spec 23, but LOUDLY - a fabricated mock pose must not pass silently
-        # as a real dock score into ranking.
+        # Real run produced no output (tool crash / wrong path). A fabricated
+        # mock pose must not pass silently as a real dock score into ranking:
+        # hard-fail unless mock fallback is explicitly allowed (audit P0 #3).
+        fail_unless_mock_allowed(
+            f"gnina produced no output for {candidate_id} ({out})")
         log.warning(
             "gnina produced no output for %s (%s); using mock fallback "
             "(NOT a real dock)", candidate_id, out,

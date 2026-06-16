@@ -13,8 +13,11 @@ from evoliez.stages.base import Stage
 
 
 def redock_with(method: str, ctx: RunContext, cand_id, structure, ref_atoms,
-                cfg, workdir, instability, smiles):
-    backend = ctx.config.backend_for("s05_docking")
+                cfg, workdir, instability, smiles, *, stage_name="s05_docking"):
+    # Backend of the CALLING stage, not always s05: s09 redocking must honour
+    # `--stage-backend s09_nonmd=real` instead of silently using s05's backend
+    # (audit P1 #8). s05's own call keeps the default.
+    backend = ctx.config.backend_for(stage_name)
     if method == "gnina":
         return gnina.redock(cand_id, structure, ref_atoms, cfg, workdir,
                             instability=instability, backend=backend,

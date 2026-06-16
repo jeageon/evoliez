@@ -313,6 +313,12 @@ class Config(_Base):
     backend: Backend = Backend.mock
     backends: Dict[str, Backend] = Field(default_factory=dict)
 
+    # Production safety: under backend=real a missing/failed real tool (Boltz,
+    # Vina, GNINA, DiffDock) or an unparseable ligand HARD-FAILS instead of
+    # silently degrading to a mock/synthetic artifact (audit P0 #3). Set true to
+    # permit that degradation (warns loudly) - e.g. partial-coverage smoke runs.
+    allow_mock_fallback: bool = False
+
     seed: int = 1234
 
     def backend_for(self, stage_name: str) -> Backend:

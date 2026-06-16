@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Sequence
 
-from evoliez.adapters.base import write_min_pdb
+from evoliez.adapters.base import full_atom_receptor_pdb, write_min_pdb
 from evoliez.adapters.foldx import _mock as _ddg_mock
 from evoliez.config import Backend
 from evoliez.logging_utils import get_logger
@@ -33,7 +33,18 @@ def estimate_stability(
     require("cartesian_ddg.default.linuxgccrelease")
     workdir.mkdir(parents=True, exist_ok=True)
     pdb = workdir / f"{candidate_id}.pdb"
-    write_min_pdb(pdb, structure)
+    # cartesian_ddg needs a full-atom structure; a CA-only trace -> ddG honestly
+    # unavailable (neutral, routed to MD), never a fake 0.0. Dry-run keeps a
+    # placeholder to preview the command.
+    if not full_atom_receptor_pdb(structure, pdb):
+        if dry_run:
+            write_min_pdb(pdb, structure)
+        else:
+            log.warning(
+                "rosetta: no full-atom structure for %s (upstream CA-only/mock)"
+                "; ddG unavailable", candidate_id,
+            )
+            return {"ddg_fold": None, "clash_score": 0.0}
     muts = workdir / "mutations.txt"
     muts.write_text(
         "total {}\n".format(len(mutations))

@@ -4,11 +4,36 @@ placement, and a minimal PDB writer (no Biopython dependency required)."""
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 from typing import List, Sequence
 
 from evoliez.types import Ligand, LigandAtom, Pose, ProteinStructure, Residue
 from evoliez.utils.seeds import derive_seed
+
+
+class RealToolError(RuntimeError):
+    """A real-backend tool produced no usable result and mock fallback is
+    forbidden (the default). Raised instead of silently degrading a real run to
+    a mock/synthetic artifact (audit P0 #3)."""
+
+
+def mock_fallback_allowed() -> bool:
+    """True only when the run explicitly permits mock degradation in a real run
+    (Config.allow_mock_fallback -> EVOLIEZ_ALLOW_MOCK_FALLBACK, set by
+    Pipeline.run). Default False: a missing/failed real tool hard-fails."""
+    return os.environ.get("EVOLIEZ_ALLOW_MOCK_FALLBACK") == "1"
+
+
+def fail_unless_mock_allowed(detail: str) -> None:
+    """On the REAL path, raise unless mock fallback was explicitly enabled.
+    Caller logs + returns its mock contract only when this returns normally."""
+    if not mock_fallback_allowed():
+        raise RealToolError(
+            detail + " — refusing to substitute a mock result in a real run. "
+            "Fix the tool/inputs, or set allow_mock_fallback=true "
+            "(EVOLIEZ_ALLOW_MOCK_FALLBACK=1) to permit degradation."
+        )
 
 _THREE = {
     "A": "ALA", "R": "ARG", "N": "ASN", "D": "ASP", "C": "CYS", "Q": "GLN",
@@ -119,6 +144,50 @@ def write_min_pdb(
             serial += 1
     lines.append("END")
     path.write_text("\n".join(lines) + "\n")
+
+
+def is_full_atom_pdb(path: Path) -> bool:
+    """True if the PDB carries more than a CA-only trace (>=1 non-CA protein
+    ATOM record). ``write_min_pdb`` (mock / our CA-only ProteinStructure) emits
+    ONLY CA records — Vina/GNINA dock into a sidechain-less pocket and
+    FoldX/Rosetta cannot build residue templates from such a file."""
+    try:
+        for line in Path(path).read_text().splitlines():
+            if line.startswith("ATOM") and line[12:16].strip() not in ("CA", ""):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def full_atom_receptor_pdb(structure: ProteinStructure, out_path: Path) -> bool:
+    """Write a FULL-ATOM, protein-only receptor PDB for REAL docking/stability.
+
+    Real Boltz writes a full-atom complex to ``structure.pdb_path``; our
+    in-memory ``ProteinStructure`` is a CA-only trace, so ``write_min_pdb``
+    produces a backbone-only receptor that makes real Vina/GNINA/DiffDock
+    scientifically meaningless and FoldX/Rosetta fail. Prefer the real
+    structure: copy its protein ``ATOM`` records (dropping ligand ``HETATM`` —
+    docking re-adds the reference ligand separately, FoldX builds the mutant
+    from the WT) into ``out_path``.
+
+    Returns ``False`` when no full-atom structure is available (mock / CA-only
+    upstream) so the caller degrades HONESTLY (mock dock / unavailable ddG)
+    instead of running the tool on a CA-only trace. Mirrors the guard OpenMM
+    already applies (`openmm_engine._run_real`)."""
+    src = getattr(structure, "pdb_path", None)
+    if not src:
+        return False
+    src = Path(src)
+    if not src.exists() or not is_full_atom_pdb(src):
+        return False
+    kept = [ln for ln in src.read_text().splitlines()
+            if ln.startswith(("ATOM", "TER"))]
+    if not any(ln.startswith("ATOM") for ln in kept):
+        return False
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(kept) + "\nEND\n")
+    return True
 
 
 def parse_sdf_first_pose(path: Path) -> List[LigandAtom]:

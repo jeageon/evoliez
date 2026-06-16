@@ -80,6 +80,57 @@ def _has_module(mod: str) -> bool:
         return False
 
 
+def _load_cfg(config_path: Optional[str]):
+    """(cfg, error) — load the run config once so the tool/dep checks know what
+    this run actually needs. error is the exception if it failed to load."""
+    if not config_path:
+        return None, None
+    try:
+        from evoliez.config import load_config
+
+        return load_config(config_path), None
+    except Exception as exc:  # surfaced as a BLOCK by _check_config
+        return None, exc
+
+
+def _required_under_real(cfg) -> tuple:
+    """(required_tools, required_pydeps) whose ABSENCE must BLOCK — i.e. the
+    real tools/deps THIS config will actually invoke. Anything not required is a
+    mere MISSING (informational). Makes `doctor` a real production gate without
+    false-blocking configs that don't use a given tool (audit P0 #6)."""
+    tools: set = set()
+    deps: set = set()
+    if cfg is None:
+        return tools, deps
+    from evoliez.config import Backend
+
+    real = cfg.backend is Backend.real
+
+    def sreal(stage: str) -> bool:
+        return cfg.backend_for(stage) is Backend.real
+
+    if real:
+        deps.add("rdkit")                       # ligand chemistry: no real fallback
+    if sreal("s04_complex"):
+        tools.add("boltz")                      # the central real stage
+    if real and not cfg.msa.remote_server:      # local homolog search + align
+        tools.add({"mmseqs2": "mmseqs"}.get(cfg.homologs.method, cfg.homologs.method))
+        if cfg.msa.method == "mafft":
+            tools.add("mafft")
+    if sreal("s05_docking") or sreal("s09_nonmd"):
+        methods = cfg.validation.redocking.methods
+        for m in methods:
+            if m in _TOOLS:                      # vina|gnina (diffdock = python+env)
+                tools.add(m)
+        if "vina" in methods:
+            tools.add("obabel")
+    if sreal("s09_nonmd") and cfg.validation.stability.method == "foldx":
+        tools.add("foldx")
+    if sreal("s10_md") and cfg.validation.md.enabled:
+        deps.add("openmm")
+    return tools, deps
+
+
 def collect(config_path: Optional[str] = None) -> Report:
     r = Report()
     r.add("evoliez", OK, f"v{__version__}")
@@ -88,8 +139,17 @@ def collect(config_path: Optional[str] = None) -> Report:
 
     r.add("python", OK, sys.version.split()[0])
 
+    # Load the run config up front so a missing tool/dep this run will ACTUALLY
+    # invoke is reported as a BLOCK (a real gate), not a mere MISSING (P0 #6).
+    cfg, cfg_err = _load_cfg(config_path)
+    req_tools, req_deps = _required_under_real(cfg)
+
     for mod, why in _PY_DEPS.items():
-        r.add(f"py:{mod}", OK if _has_module(mod) else MISSING, why)
+        if _has_module(mod):
+            st = OK
+        else:
+            st = BLOCK if mod in req_deps else MISSING
+        r.add(f"py:{mod}", st, why)
 
     if _has_module("torch"):
         try:
@@ -107,7 +167,11 @@ def collect(config_path: Optional[str] = None) -> Report:
 
     for tool, (stage, _) in _TOOLS.items():
         present = shutil.which(tool) is not None
-        r.add(f"tool:{tool}", OK if present else MISSING, stage)
+        if present:
+            st = OK
+        else:
+            st = BLOCK if tool in req_tools else MISSING
+        r.add(f"tool:{tool}", st, stage)
 
     # GPU inventory (shared server)
     try:
@@ -146,17 +210,15 @@ def collect(config_path: Optional[str] = None) -> Report:
         r.add(f"env:{ev}", OK if val else MISSING, val or "(unset)")
 
     if config_path:
-        _check_config(r, config_path)
+        _check_config(r, cfg, cfg_err, config_path)
     return r
 
 
-def _check_config(r: Report, config_path: str) -> None:
-    try:
-        from evoliez.config import Backend, load_config
+def _check_config(r: Report, cfg, cfg_err, config_path: str) -> None:
+    from evoliez.config import Backend
 
-        cfg = load_config(config_path)
-    except Exception as exc:
-        r.add("config", BLOCK, f"failed to load: {exc}")
+    if cfg_err is not None:
+        r.add("config", BLOCK, f"failed to load: {cfg_err}")
         return
     r.add("config", OK, f"{config_path} (backend={cfg.backend.value})")
 

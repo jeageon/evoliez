@@ -33,6 +33,15 @@ class Store:
         Base.metadata.create_all(self.engine)
         self._Session = sessionmaker(bind=self.engine, future=True)
 
+    def reset(self) -> None:
+        """Drop every table and recreate it empty. Used when the run
+        fingerprint changes (new target/config in a reused output_dir): the
+        stages' idempotent 'skip if a row already exists' inserts would
+        otherwise preserve the PREVIOUS run's rows and contaminate the
+        DB-backed evidence (audit P0 #4)."""
+        Base.metadata.drop_all(self.engine)
+        Base.metadata.create_all(self.engine)
+
     @contextmanager
     def session(self) -> Iterator[Session]:
         s = self._Session()

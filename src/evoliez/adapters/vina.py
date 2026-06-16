@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Sequence
 
 from evoliez.adapters.base import (
+    fail_unless_mock_allowed,
+    full_atom_receptor_pdb,
     lock_pose_to_reference,
     mock_redock,
     write_min_pdb,
@@ -54,7 +56,22 @@ def _redock_real(
     require("obabel")
     workdir.mkdir(parents=True, exist_ok=True)
     rec_pdb = workdir / f"{candidate_id}_rec.pdb"
-    write_min_pdb(rec_pdb, structure)
+    # Real docking needs the FULL-ATOM Boltz receptor, not a CA-only trace (no
+    # sidechains -> no pocket). Degrade honestly if none exists (mock upstream);
+    # in dry-run keep a CA-only placeholder just to preview the command set.
+    if not full_atom_receptor_pdb(structure, rec_pdb):
+        if dry_run:
+            write_min_pdb(rec_pdb, structure)
+        else:
+            fail_unless_mock_allowed(
+                f"vina: no full-atom receptor for {candidate_id} "
+                "(upstream s04/s08b emitted a CA-only/mock structure)")
+            log.warning(
+                "vina: no full-atom receptor for %s; mock fallback "
+                "(NOT a real dock)", candidate_id,
+            )
+            return mock_redock(candidate_id, METHOD, reference_atoms,
+                               instability=0.2)
     rec_q = workdir / f"{candidate_id}_rec.pdbqt"
     lig_pdb = workdir / f"{candidate_id}_lig.pdb"
     lig_q = workdir / f"{candidate_id}_lig.pdbqt"
@@ -86,6 +103,8 @@ def _redock_real(
     if dry_run:
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
     if not out.exists():
+        fail_unless_mock_allowed(
+            f"vina produced no output for {candidate_id} ({out})")
         log.warning(
             "vina produced no output for %s (%s); using mock fallback "
             "(NOT a real dock)", candidate_id, out,

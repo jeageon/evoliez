@@ -166,8 +166,31 @@ class RunContext:
                 self._state["completed_stages"] = []
                 self._state["meta"] = {}
                 self.invalidated = True
+                self._purge_stale_outputs()
         self._state["fingerprint"] = current
         self._save_state()
+
+    def _purge_stale_outputs(self) -> None:
+        """A CHANGED fingerprint means this output_dir now holds a DIFFERENT
+        run's DB rows + artifacts. Stale SQLite rows would survive the stages'
+        idempotent inserts (audit P0 #4) and stale globbed artifacts (e.g.
+        boltz_results_*, docked poses) could be mis-read as this run's. Purge
+        both so the re-run is a clean slate — preserving only the expensive,
+        content-pinned GNN checkpoint and the logs."""
+        if self.store is not None:
+            self.store.reset()
+        p = self.paths
+        stale = [p.inputs, p.homologs, p.msa, p.structures, p.complexes,
+                 p.docking, p.interaction_graphs, p.mutations, p.validation,
+                 p.md, p.ml_datasets, p.root / "datasets", p.reports]
+        for d in stale:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                d.mkdir(parents=True, exist_ok=True)
+        log.warning(
+            "reused output_dir with a changed fingerprint: purged stale DB rows "
+            "+ artifacts (kept checkpoints/, logs/)"
+        )
 
     def _save_state(self) -> None:
         # Atomic + DURABLE write: a crash / full-disk / power-loss mid-write

@@ -17,6 +17,7 @@ from typing import List, Optional
 import yaml
 
 from evoliez.adapters.base import (
+    fail_unless_mock_allowed,
     place_ligand_in_pocket,
     synthetic_structure,
     write_min_pdb,
@@ -272,6 +273,9 @@ def _predict_real(
         found += sorted(root.rglob("*.cif")) + sorted(root.rglob("*.pdb"))
     found = [p for p in found if not p.name.endswith("_complex.pdb")]
     if not found:
+        fail_unless_mock_allowed(
+            f"Boltz produced no prediction for {label} "
+            "(no boltz_results_*/.../*.cif|pdb)")
         log.warning(
             "Boltz produced no prediction for %s "
             "(no boltz_results_*/.../*.cif|pdb); mock fallback", label,

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from evoliez.adapters.base import mock_fallback_allowed
+from evoliez.config import Backend
 from evoliez.context import RunContext
 from evoliez.db.schema import Sequence
 from evoliez.features.ligand import parse_ligand
@@ -76,6 +78,17 @@ class InputPreprocessStage(Stage):
             f">{cfg.target_id}\n{seq}\n"
         )
         ligand = parse_ligand(cfg.ligand)
+        # Under backend=real a synthetic ligand (RDKit absent / SMILES
+        # unparseable) means EVERY downstream chemistry feature is fabricated.
+        # Hard-fail instead of silently shipping it (audit P0 #3).
+        if (ctx.config.backend is Backend.real and ligand.source != "rdkit"
+                and not mock_fallback_allowed()):
+            raise ValueError(
+                f"ligand parsed as {ligand.source!r} (not 'rdkit') under "
+                "backend=real: RDKit could not parse the ligand, so all "
+                "downstream chemistry would be synthetic. Fix the ligand "
+                "input / install RDKit, or set allow_mock_fallback=true."
+            )
         (ctx.paths.inputs / "ligand.smi").write_text(
             f"{ligand.smiles}\t{ligand.id}\n"
         )

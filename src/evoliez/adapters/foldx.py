@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Sequence
 
-from evoliez.adapters.base import write_min_pdb
+from evoliez.adapters.base import full_atom_receptor_pdb, write_min_pdb
 from evoliez.config import Backend, StabilityConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import Mutation, ProteinStructure
@@ -62,7 +62,19 @@ def _foldx_real(
     require("foldx")
     workdir.mkdir(parents=True, exist_ok=True)
     pdb = workdir / f"{candidate_id}.pdb"
-    write_min_pdb(pdb, structure)
+    # FoldX BuildModel builds the mutant from the WT structure + mutation list,
+    # so it needs the FULL-ATOM WT (sidechains), not a CA-only trace. No
+    # full-atom structure -> ddG genuinely unavailable (honest neutral, routed
+    # to MD by s09), never a fabricated 0.0. Dry-run keeps a placeholder.
+    if not full_atom_receptor_pdb(structure, pdb):
+        if dry_run:
+            write_min_pdb(pdb, structure)
+        else:
+            log.warning(
+                "foldx: no full-atom structure for %s (upstream CA-only/mock); "
+                "ddG unavailable", candidate_id,
+            )
+            return {"ddg_fold": None, "clash_score": 0.0}
     mut_file = workdir / "individual_list.txt"
     mut_file.write_text(
         ",".join(f"{m.wt}A{m.position}{m.mut}" for m in mutations) + ";\n"
