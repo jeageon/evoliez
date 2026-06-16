@@ -56,6 +56,11 @@ def _search_real(
     query.write_text(f">query\n{sequence}\n")
     out = workdir / "foldseek_hits.m8"
     tmp = workdir / "foldseek_tmp"
+    # Reuse a prior search (ProstT5 + DB search is minutes). A fingerprint
+    # change purges homologs/, so this only reuses within the SAME inputs.
+    if not preview and out.exists() and out.stat().st_size > 0:
+        log.info("reusing cached Foldseek hits (%s)", out)
+        return _parse_m8(out, cfg)
     # easy-search on a FASTA query predicts 3Di via ProstT5 (Foldseek >= 8) and
     # searches the 3Di structure DB. format mirrors the mmseqs m8 parser.
     cmd = [

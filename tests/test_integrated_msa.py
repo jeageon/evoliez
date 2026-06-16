@@ -66,6 +66,33 @@ def test_use_foldseek_legacy_alias_adds_structure(tmp_path):
     assert any(h.source == "structure" for h in merged)
 
 
+# --------------------- ColabFold result (tar.gz of a3m) extraction ----------
+def test_extract_a3m_from_targz():
+    import io
+    import tarfile
+
+    from evoliez.adapters.remote_msa import _extract_a3m
+
+    def _targz(members):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as t:
+            for name, txt in members.items():
+                b = txt.encode()
+                ti = tarfile.TarInfo(name)
+                ti.size = len(b)
+                t.addfile(ti, io.BytesIO(b))
+        return buf.getvalue()
+
+    big = ">query\nACDE\n" + "".join(f">u{i}\nACD{i % 9}\n" for i in range(40))
+    payload = _targz({"bfd.a3m": ">query\nACDE\n>h\nACDF\n",
+                      "uniref.a3m": big, "log.txt": "ignore"})
+    out = _extract_a3m(payload)
+    assert out is not None and "u39" in out          # the LARGEST a3m
+    # tolerate a raw (non-tar) a3m, reject junk
+    assert _extract_a3m(b">query\nACDE\n") is not None
+    assert _extract_a3m(b"\x00not-a-tar") is None
+
+
 # --------------------- ColabFold sequence homologs (mined from MSA) ---------
 def test_colabfold_homologs_mined_from_msa(tmp_path, monkeypatch):
     q = _SEQ
