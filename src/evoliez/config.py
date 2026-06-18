@@ -65,6 +65,9 @@ class InputConfig(_Base):
 class HomologConfig(_Base):
     method: str = "mmseqs2"  # blastp | jackhmmer | mmseqs2
     database: Optional[str] = None
+    # mmseqs GPU search: `database` must be a makepaddedseqdb-padded DB and a free
+    # GPU pinned via CUDA_VISIBLE_DEVICES -> fast local search, no 16h CPU index.
+    mmseqs_gpu: bool = False
     max_sequences: int = 5000
     identity_min: float = 0.20
     identity_max: float = 0.95

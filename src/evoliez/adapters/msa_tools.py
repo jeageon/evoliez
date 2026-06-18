@@ -223,6 +223,8 @@ def _search_real(
                           db],
         }.get(cfg.method, ["blastp", "-query", str(query), "-db", db,
                             "-out", str(out)])
+        if cfg.method == "mmseqs2" and cfg.mmseqs_gpu:
+            preview = preview + ["--gpu", "1"]
         run(preview, dry_run=True)
         if cfg.database is None:
             log.warning(
@@ -254,13 +256,13 @@ def _search_real(
     if cfg.method == "mmseqs2":
         require("mmseqs")
         tmp = workdir / "mmseqs_tmp"
-        run(
-            ["mmseqs", "easy-search", str(query), cfg.database, str(out), str(tmp),
-             "--max-seqs", str(cfg.max_sequences), "-e", str(cfg.evalue_max),
-             "--format-output",
-             "query,target,fident,alnlen,evalue,qstart,qaln,taln"],
-            dry_run=dry_run,
-        )
+        cmd = ["mmseqs", "easy-search", str(query), cfg.database, str(out), str(tmp),
+               "--max-seqs", str(cfg.max_sequences), "-e", str(cfg.evalue_max),
+               "--format-output",
+               "query,target,fident,alnlen,evalue,qstart,qaln,taln"]
+        if cfg.mmseqs_gpu:                  # GPU search needs a makepaddedseqdb DB
+            cmd += ["--gpu", "1"]           # (cfg.database) + a CVD-pinned free GPU
+        run(cmd, dry_run=dry_run)
     elif cfg.method == "jackhmmer":
         require("jackhmmer")
         # -A writes the hit MSA (Stockholm); --tblout alone has NO aligned

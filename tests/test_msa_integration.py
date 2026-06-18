@@ -200,3 +200,20 @@ def test_read_a3m_drops_corrupt_and_junk(tmp_path):
     assert msa["good"] == "ACDE-G"
     assert msa["ins"] == "ACGH"                   # lowercase insertions dropped
     assert all("\x00" not in s for s in msa.values())
+
+
+def test_mmseqs_gpu_flag(monkeypatch, tmp_path):
+    """homologs.mmseqs_gpu -> the local mmseqs easy-search runs with --gpu (against
+    a makepaddedseqdb-padded database) for fast GPU search with no 16h CPU index."""
+    import evoliez.adapters.msa_tools as mt
+    cap = {}
+    monkeypatch.setattr(mt, "require", lambda *a, **k: None)
+    monkeypatch.setattr(mt, "run", lambda cmd, **k: cap.__setitem__("cmd", cmd))
+    seq = "ACDEFGHIKLMNPQRSTVWY" * 3
+    mt._search_real(seq, HomologConfig(method="mmseqs2", database="pad_db",
+                                       mmseqs_gpu=True), tmp_path, dry_run=False)
+    assert "--gpu" in cap["cmd"], cap["cmd"]
+    cap.clear()
+    mt._search_real(seq, HomologConfig(method="mmseqs2", database="db"),
+                    tmp_path, dry_run=False)
+    assert "--gpu" not in cap["cmd"]               # off by default
