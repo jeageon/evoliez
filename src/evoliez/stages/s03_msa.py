@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from evoliez.adapters.msa_tools import build_msa
+from evoliez.adapters.msa_tools import build_msa, integrate_aligned_homologs
 from evoliez.adapters.remote_msa import cached_fetch_msa
 from evoliez.context import RunContext
 from evoliez.db.schema import MSAPosition
@@ -40,6 +40,19 @@ class MSAStage(Stage):
                 ctx.config.input.target_id, seq, homologs, mcfg,
                 ctx.paths.msa, backend=self.backend(ctx), dry_run=ctx.dry_run,
             )
+
+        # Integrate the STRUCTURE track (Foldseek) and any independent LOCAL
+        # sequence track (mmseqs) into the SAME target-column MSA, using each
+        # hit's native (structural / sequence) alignment instead of re-aligning
+        # (user §7). No-op unless those tracks produced target-anchored rows
+        # (real run on a ColabFold a3m base); dedupes the ColabFold-mined rows.
+        msa, n_integrated = integrate_aligned_homologs(msa, homologs, len(seq))
+        if n_integrated:
+            self.log.info(
+                "integrated %d structure/local homolog rows into the MSA "
+                "(target-anchored, native alignment)", n_integrated,
+            )
+        ctx.persist_meta("msa_integrated_homologs", n_integrated)
 
         (ctx.paths.msa / "alignment.fasta").write_text(
             "".join(f">{cid}\n{s}\n" for cid, s in msa)

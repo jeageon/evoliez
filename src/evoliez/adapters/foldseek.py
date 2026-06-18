@@ -60,13 +60,15 @@ def _search_real(
     # change purges homologs/, so this only reuses within the SAME inputs.
     if not preview and out.exists() and out.stat().st_size > 0:
         log.info("reusing cached Foldseek hits (%s)", out)
-        return _parse_m8(out, cfg)
+        return _parse_m8(out, cfg, len(sequence))
     # easy-search on a FASTA query predicts 3Di via ProstT5 (Foldseek >= 8) and
     # searches the 3Di structure DB. format mirrors the mmseqs m8 parser.
     cmd = [
         "foldseek", "easy-search", str(query), cfg.foldseek_database,
         str(out), str(tmp), "--format-output",
-        "query,target,fident,alnlen,evalue,tseq",
+        # qstart,qaln,taln carry Foldseek's STRUCTURAL alignment so each hit can
+        # be anchored into the target's columns for the integrated s03 MSA.
+        "query,target,fident,alnlen,evalue,qstart,qaln,taln",
         "--max-seqs", str(cfg.foldseek_max_seqs),
     ]
     # A FASTA (amino-acid) query needs ProstT5 to predict its 3Di before
@@ -92,8 +94,13 @@ def _search_real(
     return _parse_m8(out, cfg)
 
 
-def _parse_m8(out: Path, cfg: HomologConfig) -> List[Homolog]:
-    """format-output: query,target,fident,alnlen,evalue,tseq"""
+def _parse_m8(out: Path, cfg: HomologConfig, target_len: int = 0) -> List[Homolog]:
+    """Real-run format: query,target,fident,alnlen,evalue,qstart,qaln,taln
+    (8 cols; carries Foldseek's STRUCTURAL alignment so each hit is anchored into
+    the target's columns for the integrated MSA). Legacy 6-col output (…,tseq) is
+    still parsed (``aligned`` stays None)."""
+    from evoliez.adapters.msa_tools import _anchor_to_target
+
     hs: List[Homolog] = []
     for i, line in enumerate(out.read_text().splitlines()):
         p = line.rstrip("\n").split("\t")
@@ -104,12 +111,23 @@ def _parse_m8(out: Path, cfg: HomologConfig) -> List[Homolog]:
         except ValueError:
             continue
         ident = ident / 100.0 if ident > 1.0 else ident
-        seq = p[5].replace("-", "").replace(".", "").upper()
+        if len(p) >= 8:                       # new: qstart, qaln, taln
+            try:
+                qstart = int(p[5])
+            except ValueError:
+                continue
+            seq = p[7].replace("-", "").replace(".", "").upper()
+            aligned = (_anchor_to_target(qstart, p[6], p[7], target_len)
+                       if target_len else None)
+        else:                                 # legacy: tseq, no alignment
+            seq = p[5].replace("-", "").replace(".", "").upper()
+            aligned = None
         # structural hits can be very remote; keep them down to identity_min but
         # not above identity_max (those are better served by sequence search).
         if seq and ident <= cfg.identity_max:
             hs.append(Homolog(f"fs_{i}", seq, round(max(ident, 0.0), 4), 1.0,
-                              annotation="foldseek", source="structure"))
+                              annotation="foldseek", source="structure",
+                              aligned=aligned))
     return hs[: cfg.foldseek_max_seqs]
 
 

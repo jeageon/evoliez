@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from evoliez.config import Backend, HomologConfig, MSAConfig
 from evoliez.logging_utils import get_logger
@@ -29,6 +29,12 @@ class Homolog:
     annotation: str = ""
     cluster_id: int = 0
     source: str = "sequence"   # sequence | structure (which retriever found it)
+    # Target-column-anchored alignment row (length == target length): set by the
+    # Foldseek (structural) and local-mmseqs (sequence) parsers from each hit's
+    # NATIVE alignment, so s03 can stack the structure + local tracks onto the
+    # ColabFold a3m in ONE target-column MSA (user §7). None when no native
+    # alignment was captured (ColabFold-mined / mock / jackhmmer / blast).
+    aligned: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -252,7 +258,7 @@ def _search_real(
             ["mmseqs", "easy-search", str(query), cfg.database, str(out), str(tmp),
              "--max-seqs", str(cfg.max_sequences), "-e", str(cfg.evalue_max),
              "--format-output",
-             "query,target,fident,alnlen,evalue,tseq"],
+             "query,target,fident,alnlen,evalue,qstart,qaln,taln"],
             dry_run=dry_run,
         )
     elif cfg.method == "jackhmmer":
@@ -347,8 +353,13 @@ def _pairwise_identity(a: str, b: str) -> float:
     return same / cols if cols else 0.0
 
 
-def _parse_mmseqs_m8(out: Path, cfg: HomologConfig) -> List[Homolog]:
-    """format-output: query,target,fident,alnlen,evalue,tseq"""
+def _parse_mmseqs_m8(out: Path, cfg: HomologConfig,
+                     target_len: int = 0) -> List[Homolog]:
+    """Real-run format: query,target,fident,alnlen,evalue,qstart,qaln,taln
+    (8 cols, carries the alignment so the hit can be target-anchored for the
+    integrated MSA). Legacy 6-col output (query,target,fident,alnlen,evalue,
+    tseq) is still parsed (``aligned`` stays None) so old fixtures/callers keep
+    working."""
     hs: List[Homolog] = []
     for i, line in enumerate(out.read_text().splitlines()):
         p = line.rstrip("\n").split("\t")
@@ -359,9 +370,20 @@ def _parse_mmseqs_m8(out: Path, cfg: HomologConfig) -> List[Homolog]:
         except ValueError:
             continue
         ident = ident / 100.0 if ident > 1.0 else ident
-        seq = p[5].replace("-", "")
+        if len(p) >= 8:                       # new: qstart, qaln, taln
+            try:
+                qstart = int(p[5])
+            except ValueError:
+                continue
+            seq = p[7].replace("-", "").replace(".", "").upper()
+            aligned = (_anchor_to_target(qstart, p[6], p[7], target_len)
+                       if target_len else None)
+        else:                                 # legacy: tseq, no alignment
+            seq = p[5].replace("-", "").replace(".", "").upper()
+            aligned = None
         if seq and _band(cfg, ident):
-            hs.append(Homolog(f"mm_{i}", seq, round(ident, 4), 1.0))
+            hs.append(Homolog(f"mm_{i}", seq, round(ident, 4), 1.0,
+                              aligned=aligned))
     return hs[: cfg.max_sequences]
 
 
@@ -401,6 +423,28 @@ def _aligned_identity(a: str, b: str) -> float:
         if not ag and not bg and a[i].upper() == b[i].upper():
             same += 1
     return same / cols if cols else 0.0
+
+
+def _anchor_to_target(qstart: int, qaln: str, taln: str, target_len: int) -> str:
+    """Map a local pairwise alignment (query == our target) onto ONE row in
+    TARGET-column coordinates (length ``target_len``): the hit residue is placed
+    in every target column the alignment covers, '-' elsewhere. Insertions in
+    the hit relative to the target are dropped (a3m convention), so the row
+    stacks directly onto the ColabFold a3m MSA. ``qstart`` is 1-based.
+
+    This is what lets the STRUCTURE track (Foldseek's 3Di alignment) and an
+    independent LOCAL sequence track (mmseqs) be placed by their OWN native
+    alignment instead of re-aligned by MAFFT, so a remote structural homolog
+    lands in the correct columns rather than injecting alignment noise."""
+    row = ["-"] * target_len
+    qpos = qstart - 1
+    for qc, tc in zip(qaln, taln):
+        if qc in "-.":                       # hit insertion vs target -> drop
+            continue
+        if 0 <= qpos < target_len:
+            row[qpos] = tc.upper() if tc not in "-." else "-"
+        qpos += 1
+    return "".join(row)
 
 
 def _parse_stockholm(out: Path, cfg: HomologConfig,
@@ -453,7 +497,7 @@ def _parse_stockholm(out: Path, cfg: HomologConfig,
 def _parse_hits(out: Path, cfg: HomologConfig,
                 query_seq: str = "") -> List[Homolog]:
     if cfg.method == "mmseqs2":
-        hs = _parse_mmseqs_m8(out, cfg)
+        hs = _parse_mmseqs_m8(out, cfg, len(query_seq))
     elif cfg.method == "jackhmmer":
         hs = _parse_stockholm(out, cfg, query_seq)
     else:
@@ -561,3 +605,37 @@ def _read_fasta_aln(path: Path, target_id: str) -> List[Tuple[str, str]]:
         seqs.append((cid, "".join(buf)))
     seqs.sort(key=lambda kv: 0 if kv[0] == target_id else 1)
     return seqs
+
+
+def integrate_aligned_homologs(
+    msa: List[Tuple[str, str]], homologs: List[Homolog], target_len: int
+) -> Tuple[List[Tuple[str, str]], int]:
+    """Stack homologs that carry a TARGET-anchored ``aligned`` row (Foldseek
+    STRUCTURAL hits; independent local-mmseqs SEQUENCE hits) onto the base MSA,
+    so the structure + sequence tracks share ONE target-column matrix (user §7).
+
+    Each track is placed by its OWN native alignment (structural 3Di / sequence)
+    rather than re-aligned, so a remote structural homolog lands in the right
+    columns instead of injecting MAFFT noise. No-op unless the base MSA is in
+    target-column coordinates (ColabFold a3m / mock identity, ncol == target_len);
+    a de-novo MAFFT base already contains the homologs, so we skip it. Dedupe by
+    ungapped sequence (the ColabFold-mined rows are already in the a3m base).
+
+    Returns the (possibly extended) MSA and the number of rows added."""
+    if not msa:
+        return msa, 0
+    ncol = len(msa[0][1])
+    if ncol != target_len:                   # base not in target coords -> skip
+        return msa, 0
+    seen = {r.replace("-", "").replace(".", "").upper() for _, r in msa}
+    added = 0
+    for h in homologs:
+        a = getattr(h, "aligned", None)
+        if not a or len(a) != ncol:
+            continue
+        key = a.replace("-", "").replace(".", "").upper()
+        if key and key not in seen:
+            msa.append((h.id, a))
+            seen.add(key)
+            added += 1
+    return msa, added
