@@ -184,3 +184,19 @@ def test_search_real_passes_target_len_to_parser(tmp_path, monkeypatch):
     assert hs, "fresh foldseek path returned no homologs"
     assert hs[0].aligned is not None, "aligned None -> structure track vanishes from MSA"
     assert len(hs[0].aligned) == len(seq)         # anchored to TARGET length
+
+
+def test_read_a3m_drops_corrupt_and_junk(tmp_path):
+    """A malformed ColabFold a3m (a lone NUL byte as a 'sequence') must not reach
+    the MSA -- else Boltz's a3m parser dies with KeyError '\\x00' and silently
+    skips the structure prediction. Sanitize on read: keep aligned columns
+    (uppercase + gap), drop lowercase insertions + junk, drop emptied entries."""
+    from evoliez.adapters.remote_msa import _read_a3m
+    p = tmp_path / "x.a3m"
+    p.write_bytes(b">query\nACDEFG\n>good\nACDE-G\n>corrupt\n\x00\n>ins\nACdefGH\n")
+    msa = dict(_read_a3m(p))
+    assert "corrupt" not in msa                   # NUL-only entry dropped
+    assert msa["query"] == "ACDEFG"
+    assert msa["good"] == "ACDE-G"
+    assert msa["ins"] == "ACGH"                   # lowercase insertions dropped
+    assert all("\x00" not in s for s in msa.values())

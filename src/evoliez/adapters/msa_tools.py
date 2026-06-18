@@ -442,7 +442,7 @@ def _anchor_to_target(qstart: int, qaln: str, taln: str, target_len: int) -> str
         if qc in "-.":                       # hit insertion vs target -> drop
             continue
         if 0 <= qpos < target_len:
-            row[qpos] = tc.upper() if tc not in "-." else "-"
+            row[qpos] = tc.upper() if tc.isalpha() else "-"   # junk -> gap
         qpos += 1
     return "".join(row)
 

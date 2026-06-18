@@ -135,14 +135,22 @@ def cached_fetch_msa(
 def _read_a3m(path: Path) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     cid, buf = None, []
-    for line in path.read_text().splitlines():
+
+    def _flush() -> None:
+        if cid is not None:
+            seq = "".join(buf)
+            if seq:                       # drop corrupt/empty rows: a malformed
+                out.append((cid, seq))    # ColabFold a3m can carry a lone \x00
+
+    for line in path.read_text(errors="ignore").splitlines():
         if line.startswith(">"):
-            if cid is not None:
-                out.append((cid, "".join(buf)))
-            cid, buf = line[1:].strip().split()[0], []
+            _flush()
+            parts = line[1:].strip().split()
+            cid, buf = (parts[0] if parts else ""), []
         else:
-            # a3m: drop lowercase insertions to recover aligned columns
-            buf.append("".join(c for c in line.strip() if not c.islower()))
-    if cid is not None:
-        out.append((cid, "".join(buf)))
+            # keep aligned columns (uppercase + gap); drop lowercase insertions
+            # AND junk bytes. A stray NUL otherwise reaches Boltz's a3m parser ->
+            # KeyError '\x00', which silently kills the structure prediction.
+            buf.append("".join(c for c in line.strip() if c.isupper() or c == "-"))
+    _flush()
     return out
