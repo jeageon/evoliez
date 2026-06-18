@@ -7,14 +7,16 @@ are then stacked onto it using each hit's OWN native alignment (qstart/qaln/taln
 instead of being re-aligned by MAFFT (user §7). All deterministic, no tools.
 """
 
-from evoliez.adapters.foldseek import _parse_m8
+from pathlib import Path
+
+from evoliez.adapters.foldseek import _parse_m8, search_structural_homologs
 from evoliez.adapters.msa_tools import (
     Homolog,
     _anchor_to_target,
     _parse_mmseqs_m8,
     integrate_aligned_homologs,
 )
-from evoliez.config import HomologConfig
+from evoliez.config import Backend, HomologConfig
 from evoliez.features.evolutionary import compute_position_features
 
 
@@ -161,3 +163,24 @@ def test_structure_track_reaches_conservation(tmp_path):
     assert c0.target_position == 1                       # query-anchored map intact
     # col 1 now sees A,A,W -> both residues present (structure track counted)
     assert "A" in c0.amino_acid_frequencies and "W" in c0.amino_acid_frequencies
+
+
+def test_search_real_passes_target_len_to_parser(tmp_path, monkeypatch):
+    """Regression: BOTH foldseek return paths must pass target_len to the parser.
+    The FRESH path (after running the search) once dropped it, so real-run hits
+    came back with aligned=None and the structure track silently vanished from
+    the integrated MSA (the cached-reuse path was fine, hiding the bug)."""
+    import evoliez.adapters.foldseek as fsmod
+    seq = "ACDEFGHIKLMNPQRSTVWY" * 5             # 100 aa target
+    cfg = HomologConfig(foldseek_database="db", foldseek_prostt5="p5")
+    monkeypatch.setattr(fsmod, "require", lambda *a, **k: None)
+
+    def fake_run(cmd, **k):                       # emit an 8-col (qstart,qaln,taln) m8
+        out = next(str(c) for c in cmd if str(c).endswith("foldseek_hits.m8"))
+        Path(out).write_text("query\tt1\t0.2\t5\t1e-6\t1\tACDEF\tWYDEF\n")
+    monkeypatch.setattr(fsmod, "run", fake_run)
+
+    hs = search_structural_homologs(seq, cfg, tmp_path, backend=Backend.real)
+    assert hs, "fresh foldseek path returned no homologs"
+    assert hs[0].aligned is not None, "aligned None -> structure track vanishes from MSA"
+    assert len(hs[0].aligned) == len(seq)         # anchored to TARGET length

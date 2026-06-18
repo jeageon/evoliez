@@ -91,7 +91,7 @@ def _search_real(
     if not out.exists():
         log.warning("Foldseek produced no output (%s); no structural homologs", out)
         return []
-    return _parse_m8(out, cfg)
+    return _parse_m8(out, cfg, len(sequence))
 
 
 def _parse_m8(out: Path, cfg: HomologConfig, target_len: int = 0) -> List[Homolog]:
