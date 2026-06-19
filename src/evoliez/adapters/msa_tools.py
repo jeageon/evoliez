@@ -7,14 +7,19 @@ aligned (same length), so evolutionary features have realistic structure.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from evoliez.config import Backend, HomologConfig, MSAConfig
 from evoliez.logging_utils import get_logger
 from evoliez.utils.seeds import derive_seed
-from evoliez.utils.subprocess_utils import require, run
+from evoliez.utils.subprocess_utils import require, run, tool_env
 
 log = get_logger("evoliez.msa")
 AA = "ACDEFGHIKLMNPQRSTVWY"
@@ -55,6 +60,52 @@ def search_homologs(
     return _search_mock(sequence, cfg)
 
 
+# Concrete sequence-search tools that can each run as an INDEPENDENT first-class
+# source (its own DB via cfg.databases[tool]); hhblits has its own adapter.
+_SEQ_TOOLS = {"mmseqs2", "jackhmmer", "blastp"}
+
+
+def _db_for(cfg: HomologConfig, tool: str) -> Optional[str]:
+    """Per-tool DB (homologs.databases[tool]) else the shared homologs.database."""
+    return (cfg.databases or {}).get(tool) or cfg.database
+
+
+def _cache_key(sequence: str, source: str, cfg: HomologConfig) -> str:
+    """Content hash of the inputs that determine THIS track's homolog result
+    (query + its DB + its search params), so the cache is reused across runs and
+    unrelated config tweaks, and invalidated only when this track's inputs change."""
+    parts = [source, sequence, _db_for(cfg, source) or "", str(cfg.evalue_max),
+             str(cfg.identity_min), str(cfg.identity_max),
+             str(cfg.max_sequences), str(cfg.cluster_identity)]
+    if source == "mmseqs2":
+        parts.append(str(cfg.mmseqs_gpu))
+    elif source == "jackhmmer":
+        parts.append(str(cfg.jackhmmer_chunks))
+    elif source == "hhblits":
+        parts.append(str(cfg.hhblits_iterations))
+    return hashlib.sha1("\x00".join(parts).encode()).hexdigest()[:16]
+
+
+def _cache_path(workdir: Path, source: str, sequence: str = "",
+                cfg: Optional[HomologConfig] = None) -> Path:
+    """Where a source's homolog cache lives. With cfg.cache_dir set -> a
+    PERSISTENT, content-keyed file (survives run-dir purges); else the run-dir
+    file (lost when the run fingerprint changes)."""
+    if cfg is not None and cfg.cache_dir:
+        return (Path(cfg.cache_dir)
+                / f"{source}.{_cache_key(sequence, source, cfg)}.json")
+    return workdir / f"_cache_{source}.json"
+
+
+def _save_homologs(homologs: List[Homolog], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([asdict(h) for h in homologs]))
+
+
+def _load_homologs(path: Path) -> List[Homolog]:
+    return [Homolog(**d) for d in json.loads(path.read_text())]
+
+
 def gather_homologs(
     sequence: str,
     cfg: HomologConfig,
@@ -88,11 +139,24 @@ def gather_homologs(
                      "structure": "foldseek"}.get(s, s))
     norm = list(dict.fromkeys(norm))                 # dedupe, keep order
 
+    # Per-source result cache: each track is an INDEPENDENT retriever, so cache
+    # its homologs and REUSE them on re-run — the finished tracks stay put and
+    # only the missing/slow one is (re)computed (delete _cache_<source>.json to
+    # force a recompute). Lets us nail one track at a time (user §7) instead of
+    # re-running all five whenever one needs another attempt.
     per_source: List[Tuple[str, List[Homolog]]] = []
     for s in norm:
-        hs = _run_source(s, sequence, cfg, workdir, backend=backend,
-                         dry_run=dry_run, remote_server=remote_server,
-                         msa_dir=msa_dir)
+        cache = _cache_path(workdir, s, sequence, cfg)
+        if not dry_run and cache.exists():
+            hs = _load_homologs(cache)
+            log.info("reusing cached '%s' track: %d homologs (rm %s to recompute)",
+                     s, len(hs), cache.name)
+        else:
+            hs = _run_source(s, sequence, cfg, workdir, backend=backend,
+                             dry_run=dry_run, remote_server=remote_server,
+                             msa_dir=msa_dir)
+            if hs and not dry_run and backend is Backend.real:
+                _save_homologs(hs, cache)
         if hs:
             per_source.append((s, hs))
     if not per_source:                               # nothing enabled / found
@@ -117,6 +181,29 @@ def _run_source(
                 h.source = "sequence"
             return hs
         return []
+    if name in _SEQ_TOOLS:                       # mmseqs2 | jackhmmer | blastp
+        db = _db_for(cfg, name)
+        if backend is Backend.real and not dry_run and db is None:
+            log.warning(
+                "homolog source %r has no database (set homologs.databases.%s "
+                "or homologs.database); skipping", name, name,
+            )
+            return []
+        # Independent track: search this ONE tool against its OWN DB/format,
+        # reusing the full _search_real path via a per-tool config copy.
+        tcfg = cfg.model_copy(update={"method": name, "database": db})
+        hs = search_homologs(sequence, tcfg, workdir / name, backend=backend,
+                             dry_run=dry_run, remote_server=False)
+        tag = {"mmseqs2": "mmseqs"}.get(name, name)
+        for h in hs:
+            h.source = "sequence"
+            if not h.annotation:                 # tag the tool (keep 'synthetic')
+                h.annotation = tag
+        return hs
+    if name == "hhblits":
+        from evoliez.adapters.hhblits import search_hhblits_homologs
+        return search_hhblits_homologs(sequence, cfg, workdir / "hhblits",
+                                       backend=backend, dry_run=dry_run)
     if name == "local":
         if backend is Backend.real and cfg.database is None:
             log.warning(
@@ -258,26 +345,37 @@ def _search_real(
         tmp = workdir / "mmseqs_tmp"
         cmd = ["mmseqs", "easy-search", str(query), cfg.database, str(out), str(tmp),
                "--max-seqs", str(cfg.max_sequences), "-e", str(cfg.evalue_max),
+               "--threads", str(cfg.search_threads),
                "--format-output",
                "query,target,fident,alnlen,evalue,qstart,qaln,taln"]
         if cfg.mmseqs_gpu:                  # GPU search needs a makepaddedseqdb DB
             cmd += ["--gpu", "1"]           # (cfg.database) + a CVD-pinned free GPU
         run(cmd, dry_run=dry_run)
     elif cfg.method == "jackhmmer":
-        require("jackhmmer")
+        jh = cfg.jackhmmer_bin or "jackhmmer"
+        if cfg.jackhmmer_bin is None:
+            require("jackhmmer")
+        # HMMER's single DB-reader thread caps a lone jackhmmer at ~2 MB/s
+        # regardless of --cpu; split the DB into chunks and run one jackhmmer per
+        # chunk in PARALLEL to bypass it (the homolog union is what s02 needs).
+        if cfg.jackhmmer_chunks > 1 and not dry_run:
+            hs = _jackhmmer_parallel(sequence, jh, cfg, workdir)
+            return assign_clusters(hs, cfg)
         # -A writes the hit MSA (Stockholm); --tblout alone has NO aligned
         # sequences, so the old shared parser produced invalid homologs.
         run(
-            ["jackhmmer", "-N", "3", "-E", str(cfg.evalue_max),
+            [jh, "-N", "3", "-E", str(cfg.evalue_max),
+             "--cpu", str(cfg.search_threads),
              "-A", str(out), "--tblout", str(workdir / "hits.tbl"),
              str(query), cfg.database],
-            dry_run=dry_run,
+            env=tool_env(jh), dry_run=dry_run,
         )
     else:  # blastp
         require("blastp")
         run(
             ["blastp", "-query", str(query), "-db", cfg.database,
-             "-evalue", str(cfg.evalue_max), "-max_target_seqs",
+             "-evalue", str(cfg.evalue_max), "-num_threads",
+             str(cfg.search_threads), "-max_target_seqs",
              str(cfg.max_sequences), "-outfmt",
              "6 sseqid pident qcovs evalue sseq", "-out", str(out)],
             dry_run=dry_run,
@@ -321,21 +419,36 @@ def assign_clusters(homologs: List[Homolog], cfg: HomologConfig) -> List[Homolog
     kmer_cache = {i: _kmers(homologs[i].sequence, k) for i in order}
     centroids: List[set] = []
     cluster_of: dict = {}
+    # Inverted k-mer index (kmer -> centroid ids holding it). For each new
+    # sequence we TALLY shared k-mers per centroid by walking the index — no
+    # `km & cen` set is ever built, so the millions of throwaway intersection
+    # sets (and their GC churn that pinned the old loop at ~20% CPU) are gone.
+    # `counts[c]` is exactly |km ∩ centroid_c|, so the Jaccard + lowest-index
+    # tie-break are IDENTICAL to the naive O(n*centroids) scan, just CPU-bound.
+    centroid_len: List[int] = []
+    kmer_to_cen: dict = {}
     for i in order:
         km = kmer_cache[i]
+        lkm = len(km)
+        counts: dict = {}
+        for kk in km:
+            for c in kmer_to_cen.get(kk, ()):
+                counts[c] = counts.get(c, 0) + 1
         best_c, best_j = -1, 0.0
-        for c, cen in enumerate(centroids):
-            inter = len(km & cen)
-            if not inter:
-                continue
-            j = inter / (len(km) + len(cen) - inter)
+        for c in sorted(counts):
+            inter = counts[c]
+            j = inter / (lkm + centroid_len[c] - inter)
             if j > best_j:
                 best_c, best_j = c, j
         if best_c >= 0 and best_j >= jthr:
             cluster_of[i] = best_c
         else:
-            cluster_of[i] = len(centroids)
+            cid = len(centroids)
+            cluster_of[i] = cid
             centroids.append(km)
+            centroid_len.append(lkm)
+            for kk in km:
+                kmer_to_cen.setdefault(kk, []).append(cid)
     for i, h in enumerate(homologs):
         h.cluster_id = cluster_of[i]
     log.info(
@@ -450,7 +563,7 @@ def _anchor_to_target(qstart: int, qaln: str, taln: str, target_len: int) -> str
 
 
 def _parse_stockholm(out: Path, cfg: HomologConfig,
-                     query_seq: str) -> List[Homolog]:
+                     query_seq: str, target_len: int = 0) -> List[Homolog]:
     """jackhmmer -A Stockholm MSA: aggregate aligned rows per sequence,
     identity computed vs the query.
 
@@ -489,10 +602,17 @@ def _parse_stockholm(out: Path, cfg: HomologConfig,
             continue
         if query_aln is not None:
             ident = _aligned_identity(aln, query_aln)
+            # Target-anchor the hit against the seed (query) row, so the
+            # jackhmmer track stacks onto the SAME target-column MSA as
+            # mmseqs/Foldseek instead of being re-aligned by MAFFT (user §7).
+            aligned = (_anchor_to_target(1, query_aln, aln, target_len)
+                       if target_len else None)
         else:
             ident = _pairwise_identity(seq, q)
+            aligned = None
         if _band(cfg, ident):
-            hs.append(Homolog(f"jh_{i}", seq, round(ident, 4), 1.0))
+            hs.append(Homolog(f"jh_{i}", seq, round(ident, 4), 1.0,
+                              aligned=aligned))
     return hs[: cfg.max_sequences]
 
 
@@ -501,10 +621,84 @@ def _parse_hits(out: Path, cfg: HomologConfig,
     if cfg.method == "mmseqs2":
         hs = _parse_mmseqs_m8(out, cfg, len(query_seq))
     elif cfg.method == "jackhmmer":
-        hs = _parse_stockholm(out, cfg, query_seq)
+        hs = _parse_stockholm(out, cfg, query_seq, len(query_seq))
     else:
         hs = _parse_blast_m8(out, cfg)
     return assign_clusters(hs, cfg)
+
+
+def _split_fasta(path: Path, outdir: Path, n: int) -> List[Path]:
+    """Round-robin a FASTA into ``n`` chunk files (split on '>' record
+    boundaries) so N jackhmmer processes can search them in parallel."""
+    handles = [(outdir / f"c{i}.fasta").open("w") for i in range(n)]
+    cur, idx = 0, -1
+    try:
+        with path.open() as fh:
+            for line in fh:
+                if line.startswith(">"):
+                    idx += 1
+                    cur = idx % n
+                handles[cur].write(line)
+    finally:
+        for h in handles:
+            h.close()
+    return [outdir / f"c{i}.fasta" for i in range(n)]
+
+
+def _jackhmmer_parallel(
+    sequence: str, jh: str, cfg: HomologConfig, workdir: Path
+) -> List[Homolog]:
+    """Split the target DB into ``cfg.jackhmmer_chunks`` chunks (staged in
+    /dev/shm to dodge a fragmented HDD) and run one jackhmmer per chunk
+    concurrently, then merge + dedupe the per-chunk Stockholm hits. Sidesteps
+    HMMER's single DB-reader thread (the ~2 MB/s ceiling that makes a lone
+    jackhmmer ignore extra --cpu) for an ~N-fold speedup on N cores. The merged
+    homolog UNION is what s02 needs; per-chunk iterative profiles differ
+    slightly from a whole-DB run but still surface each chunk's homologs."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    query = workdir / "query.fasta"
+    query.write_text(f">query\n{sequence}\n")
+    n = max(2, cfg.jackhmmer_chunks)
+    cpu = max(1, cfg.search_threads // n)
+    scratch = Path("/dev/shm") if Path("/dev/shm").is_dir() else workdir
+    chunkdir = scratch / f"jh_chunks_{os.getpid()}"
+    chunkdir.mkdir(parents=True, exist_ok=True)
+    # The bioconda HMMER is an MPI build whose dynamic-linker library search
+    # thrashes a slow/HDD conda env, and OpenBLAS/OpenMP would each spawn a
+    # full thread pool per process -> N-way concurrency thrashes. Pin BLAS/OMP
+    # to 1 thread and disable the hwcap subdir search so the chunks actually run
+    # in parallel instead of serialising on startup/thread contention.
+    env = tool_env(jh) or dict(os.environ)
+    env["OMP_NUM_THREADS"] = "1"
+    env["OPENBLAS_NUM_THREADS"] = "1"
+    env["LD_HWCAP_MASK"] = "0"
+    homs: List[Homolog] = []
+    try:
+        chunks = _split_fasta(Path(cfg.database), chunkdir, n)
+        log.info("jackhmmer: %d-way parallel search (--cpu %d each) over %s",
+                 n, cpu, cfg.database)
+        procs = []
+        for i, ch in enumerate(chunks):
+            sto = workdir / f"aln_{i}.sto"
+            cmd = [str(jh), "-N", "3", "-E", str(cfg.evalue_max), "--cpu",
+                   str(cpu), "-A", str(sto), "--noali", str(query), str(ch)]
+            procs.append((subprocess.Popen(
+                cmd, env=env, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL), sto))
+        for p, sto in procs:
+            p.wait()
+            if sto.exists() and sto.stat().st_size:
+                homs += _parse_stockholm(sto, cfg, sequence, len(sequence))
+    finally:
+        shutil.rmtree(chunkdir, ignore_errors=True)
+    best: dict = {}
+    for h in homs:                              # dedupe, keep highest identity
+        if h.sequence not in best or h.identity > best[h.sequence].identity:
+            best[h.sequence] = h
+    merged = list(best.values())[: cfg.max_sequences]
+    log.info("jackhmmer (parallel) -> %d homologs across %d chunks",
+             len(merged), n)
+    return merged
 
 
 def _search_mock(sequence: str, cfg: HomologConfig) -> List[Homolog]:

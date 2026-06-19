@@ -35,6 +35,24 @@ def which(executable: str) -> Optional[str]:
     return shutil.which(executable)
 
 
+def tool_env(binexe) -> Optional[dict]:
+    """Env for running a binary that lives in a *different* conda env than the
+    one the pipeline runs in: prepend that env's ``lib`` to LD_LIBRARY_PATH so
+    its shared libs (libopenblas, …) load. Returns None for a bare name (on
+    PATH, same env) or when no sibling ``lib`` exists, so callers can pass the
+    result straight to ``run(env=...)`` (None -> inherit the current env)."""
+    p = Path(str(binexe))
+    if p.parent in (Path("."), Path("")):     # bare name -> on PATH, same env
+        return None
+    lib = p.parent.parent / "lib"
+    if not lib.is_dir():
+        return None
+    env = dict(os.environ)
+    prev = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = f"{lib}:{prev}" if prev else str(lib)
+    return env
+
+
 def require(executable: str) -> str:
     path = which(executable)
     if path is None:

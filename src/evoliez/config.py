@@ -68,6 +68,37 @@ class HomologConfig(_Base):
     # mmseqs GPU search: `database` must be a makepaddedseqdb-padded DB and a free
     # GPU pinned via CUDA_VISIBLE_DEVICES -> fast local search, no 16h CPU index.
     mmseqs_gpu: bool = False
+    # Per-tool database overrides for first-class multi-tool sources (s02
+    # gather_homologs). When `sources` names a CONCRETE tool (mmseqs2 / jackhmmer
+    # / blastp / hhblits), it searches databases[tool] (falling back to
+    # `database`), so several sequence tools run as INDEPENDENT tracks against
+    # their own DB format (mmseqs padded seqdb / FASTA / HH-suite ffindex) and
+    # merge — each tool finds a partly-distinct homolog pool (user §7).
+    databases: Dict[str, str] = Field(default_factory=dict)
+    # jackhmmer / HHblits binaries can live in a DEDICATED conda env (off the
+    # pipeline PATH — e.g. when the production env's HMMER is missing its BLAS
+    # dep): point *_bin at them and the runner prepends that env's lib to
+    # LD_LIBRARY_PATH so the tool's shared libs (libopenblas, …) load. HHblits
+    # (HH-suite profile–profile HMM) is the most sensitive remote-homolog track;
+    # hhblits_iterations = `hhblits -n`.
+    jackhmmer_bin: Optional[str] = None
+    hhblits_bin: Optional[str] = None
+    hhblits_iterations: int = 2
+    # jackhmmer is bottlenecked by a SINGLE DB-reader/dispatch thread (~2 MB/s),
+    # so --cpu barely helps. >1 here splits the target DB into N chunks and runs
+    # one jackhmmer per chunk IN PARALLEL (chunks staged in /dev/shm to dodge a
+    # fragmented HDD), bypassing that bottleneck for ~N-fold speedup on N cores.
+    jackhmmer_chunks: int = 1
+    # Thread cap for the CPU-only sequence tools (jackhmmer / hhblits): keep
+    # modest on the shared server so a homolog search never monopolises cores.
+    search_threads: int = 4
+    # Per-track homolog cache. When set, each source's result is cached HERE
+    # (outside the run dir) under a content key = hash(query + that track's DB +
+    # its search params), so a finished track is reused across runs even when an
+    # UNRELATED config field changes (which otherwise purges the run dir). Lets
+    # us nail one track at a time without re-running the others (user §7). Unset
+    # -> cache lives in the run dir (lost on a config-fingerprint purge).
+    cache_dir: Optional[str] = None
     max_sequences: int = 5000
     identity_min: float = 0.20
     identity_max: float = 0.95

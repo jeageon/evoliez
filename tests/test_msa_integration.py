@@ -13,7 +13,9 @@ from evoliez.adapters.foldseek import _parse_m8, search_structural_homologs
 from evoliez.adapters.msa_tools import (
     Homolog,
     _anchor_to_target,
+    _db_for,
     _parse_mmseqs_m8,
+    _parse_stockholm,
     integrate_aligned_homologs,
 )
 from evoliez.config import Backend, HomologConfig
@@ -217,3 +219,281 @@ def test_mmseqs_gpu_flag(monkeypatch, tmp_path):
     mt._search_real(seq, HomologConfig(method="mmseqs2", database="db"),
                     tmp_path, dry_run=False)
     assert "--gpu" not in cap["cmd"]               # off by default
+
+
+# ===================== 5-track multi-tool homology =========================
+def test_jackhmmer_stockholm_now_target_anchors(tmp_path):
+    """jackhmmer's -A Stockholm hits must carry a target-anchored `aligned`
+    row (against the seed/query row), or the jackhmmer track silently never
+    reaches the integrated MSA the way mmseqs/Foldseek do (user §7)."""
+    sto = tmp_path / "aln.sto"
+    # seed (query) + one hit with a deletion at target col 3.
+    sto.write_text("# STOCKHOLM 1.0\n\nquery  ACDEF\nhit1   AG-EF\n//\n")
+    hs = _parse_stockholm(sto, HomologConfig(identity_min=0.2, identity_max=0.95),
+                          "ACDEF", target_len=5)
+    assert len(hs) == 1                            # query (ident 1.0) band-filtered
+    assert hs[0].sequence == "AGEF"                # ungapped hit
+    assert hs[0].aligned == "AG-EF"                # anchored to the 5 target cols
+    out, n = integrate_aligned_homologs([("query", "ACDEF")], hs, 5)
+    assert n == 1                                  # reaches the integrated MSA
+    assert any(s == "AG-EF" for _, s in out)       # the anchored hit row is stacked
+
+
+def test_jackhmmer_legacy_no_target_len_keeps_aligned_none(tmp_path):
+    sto = tmp_path / "aln.sto"
+    sto.write_text("# STOCKHOLM 1.0\n\nquery  ACDEF\nhit1   AG-EF\n//\n")
+    hs = _parse_stockholm(sto, HomologConfig(), "ACDEF")   # no target_len
+    assert hs and hs[0].aligned is None
+
+
+def test_hhblits_parse_a3m_target_anchors(tmp_path):
+    """HHblits -oa3m is already in query-column coords: match states uppercase,
+    insertions lowercase (dropped). Each hit row IS its target-column alignment."""
+    from evoliez.adapters.hhblits import _parse_a3m
+
+    a3m = tmp_path / "hits.a3m"
+    # query + h1 (mismatch) + h2 (lowercase 'g' = insertion vs query -> dropped)
+    a3m.write_text(">query\nACDEFG\n>h1\nAGDEFG\n>h2\nACgDEFW\n")
+    hs = _parse_a3m(a3m, HomologConfig(identity_min=0.2, identity_max=0.95),
+                    "ACDEFG")
+    assert {h.sequence for h in hs} == {"AGDEFG", "ACDEFW"}
+    assert all(len(h.aligned) == 6 for h in hs)            # anchored to target len
+    assert all(h.source == "sequence" and h.annotation == "hhblits" for h in hs)
+    h2 = next(h for h in hs if h.sequence == "ACDEFW")
+    assert h2.aligned == "ACDEFW"                          # insertion 'g' gone
+
+
+def test_hhblits_parse_a3m_skips_query_only(tmp_path):
+    from evoliez.adapters.hhblits import _parse_a3m
+    a3m = tmp_path / "q.a3m"
+    a3m.write_text(">query\nACDEFG\n")
+    assert _parse_a3m(a3m, HomologConfig(), "ACDEFG") == []
+
+
+def test_db_for_per_tool_then_fallback():
+    cfg = HomologConfig(database="shared",
+                        databases={"mmseqs2": "padDB", "hhblits": "hhDB"})
+    assert _db_for(cfg, "mmseqs2") == "padDB"
+    assert _db_for(cfg, "hhblits") == "hhDB"
+    assert _db_for(cfg, "jackhmmer") == "shared"           # falls back to `database`
+
+
+def test_run_source_routes_each_tool_to_its_own_db(monkeypatch, tmp_path):
+    """Each concrete tool source (mmseqs2/jackhmmer/blastp) runs an INDEPENDENT
+    search against databases[tool] via a per-tool config copy."""
+    import evoliez.adapters.msa_tools as mt
+
+    captured: dict[str, str] = {}
+
+    def fake_search(seq, cfg, workdir, **k):
+        captured[cfg.method] = cfg.database
+        return [Homolog("x", "AAAAAA", 0.5, 1.0)]
+
+    monkeypatch.setattr(mt, "search_homologs", fake_search)
+    cfg = HomologConfig(databases={"mmseqs2": "padDB", "jackhmmer": "fastaDB"})
+    for tool in ("mmseqs2", "jackhmmer"):
+        hs = mt._run_source(tool, "ACDE", cfg, tmp_path, backend=Backend.real,
+                            dry_run=False, remote_server=False, msa_dir=None)
+        assert hs and hs[0].source == "sequence"
+    assert captured["mmseqs2"] == "padDB"
+    assert captured["jackhmmer"] == "fastaDB"
+
+
+def test_run_source_skips_tool_without_db(monkeypatch, tmp_path):
+    import evoliez.adapters.msa_tools as mt
+    monkeypatch.setattr(mt, "search_homologs",
+                        lambda *a, **k: [Homolog("x", "AA", 0.5, 1.0)])
+    cfg = HomologConfig(databases={"mmseqs2": "padDB"})    # jackhmmer has no DB
+    out = mt._run_source("jackhmmer", "ACDE", cfg, tmp_path, backend=Backend.real,
+                         dry_run=False, remote_server=False, msa_dir=None)
+    assert out == []                                       # no DB -> skipped
+
+
+def test_homolog_cache_roundtrip(tmp_path):
+    from evoliez.adapters.msa_tools import _load_homologs, _save_homologs
+
+    homs = [Homolog("a", "ACDE", 0.5, 1.0, annotation="mmseqs", cluster_id=2,
+                    source="sequence", aligned="ACDE------"),
+            Homolog("b", "WYWY", 0.3, 0.9)]
+    p = tmp_path / "c.json"
+    _save_homologs(homs, p)
+    back = _load_homologs(p)
+    assert len(back) == 2
+    assert back[0].aligned == "ACDE------" and back[0].cluster_id == 2
+    assert back[1].sequence == "WYWY"
+
+
+def test_gather_homologs_reuses_cached_track(monkeypatch, tmp_path):
+    """A computed track is cached; a second gather REUSES it without re-running
+    the search — finished tracks stay put while one is retried (user §7)."""
+    import evoliez.adapters.msa_tools as mt
+
+    calls = {"n": 0}
+
+    def fake_run_source(name, seq, cfg, wd, **k):
+        calls["n"] += 1
+        return [Homolog(f"{name}0", "ACDEFGHIKL", 0.5, 1.0, source="sequence")]
+
+    monkeypatch.setattr(mt, "_run_source", fake_run_source)
+    cfg = HomologConfig(sources=["mmseqs2"], databases={"mmseqs2": "db"})
+    h1 = mt.gather_homologs("ACDEFGHIKL" * 4, cfg, tmp_path, backend=Backend.real)
+    assert calls["n"] == 1 and h1
+    h2 = mt.gather_homologs("ACDEFGHIKL" * 4, cfg, tmp_path, backend=Backend.real)
+    assert calls["n"] == 1                       # reused cache, did NOT re-run
+    assert [x.sequence for x in h2] == [x.sequence for x in h1]
+
+
+def test_persistent_cache_survives_unrelated_config_change(monkeypatch, tmp_path):
+    """cache_dir -> content-keyed cache OUTSIDE the run dir: a finished track is
+    reused across runs (and run-dir purges) when an UNRELATED field changes, but
+    recomputed when ITS OWN input (DB) changes (user §7)."""
+    import evoliez.adapters.msa_tools as mt
+
+    cachedir = tmp_path / "persist"
+    calls = {"n": 0}
+
+    def fake_run_source(name, seq, cfg, wd, **k):
+        calls["n"] += 1
+        return [Homolog(f"{name}0", "ACDEFGHIKL", 0.5, 1.0, source="sequence")]
+
+    monkeypatch.setattr(mt, "_run_source", fake_run_source)
+    seq = "ACDEFGHIKL" * 4
+    base = dict(sources=["mmseqs2"], databases={"mmseqs2": "db"},
+                cache_dir=str(cachedir))
+    mt.gather_homologs(seq, HomologConfig(**base), tmp_path / "runA",
+                       backend=Backend.real)
+    assert calls["n"] == 1                       # first compute
+    # different run dir (old one "purged") + an UNRELATED field changed
+    mt.gather_homologs(seq, HomologConfig(jackhmmer_chunks=8, **base),
+                       tmp_path / "runB", backend=Backend.real)
+    assert calls["n"] == 1                       # reused — survives the change
+    # this track's OWN DB changes -> recompute
+    mt.gather_homologs(seq, HomologConfig(sources=["mmseqs2"],
+                                          databases={"mmseqs2": "db2"},
+                                          cache_dir=str(cachedir)),
+                       tmp_path / "runC", backend=Backend.real)
+    assert calls["n"] == 2                       # different DB -> new key -> rerun
+
+
+def test_assign_clusters_matches_bruteforce():
+    """The inverted-index speedup must yield the IDENTICAL clustering as the
+    naive O(n*centroids) scan, on deterministic synthetic homologs."""
+    import copy
+
+    from evoliez.adapters.msa_tools import _kmers, assign_clusters
+
+    def _bruteforce(homs, cfg):
+        k = 4
+        p = min(0.99, max(0.05, cfg.cluster_identity))
+        jthr = (p ** k) / (2.0 - p ** k)
+        order = sorted(range(len(homs)), key=lambda i: homs[i].identity,
+                       reverse=True)
+        kc = {i: _kmers(homs[i].sequence, k) for i in order}
+        cents, cof = [], {}
+        for i in order:
+            km = kc[i]
+            bc, bj = -1, 0.0
+            for c, cen in enumerate(cents):
+                inter = len(km & cen)
+                if not inter:
+                    continue
+                j = inter / (len(km) + len(cen) - inter)
+                if j > bj:
+                    bc, bj = c, j
+            if bc >= 0 and bj >= jthr:
+                cof[i] = bc
+            else:
+                cof[i] = len(cents)
+                cents.append(km)
+        return [cof[i] for i in range(len(homs))]
+
+    AA = "ACDEFGHIKLMNPQRSTVWY"
+    base = AA * 3
+    homs = []
+    for k in range(40):
+        seq = list(base)
+        s = (k * 2654435761) & 0xFFFFFFFF
+        for _ in range(k % 12):
+            s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+            seq[s % len(seq)] = AA[(s >> 8) % 20]
+        homs.append(Homolog(f"h{k}", "".join(seq), round(1 - (k % 12) / 60, 3), 1.0))
+    cfg = HomologConfig(cluster_identity=0.7)
+    ref = _bruteforce(copy.deepcopy(homs), cfg)
+    assign_clusters(homs, cfg)
+    assert [h.cluster_id for h in homs] == ref
+
+
+def test_split_fasta_round_robin(tmp_path):
+    """jackhmmer parallel-split: records distribute round-robin across N chunks,
+    every record preserved, sequences intact."""
+    from evoliez.adapters.msa_tools import _split_fasta
+
+    fa = tmp_path / "db.fasta"
+    fa.write_text(">a\nAAAA\n>b\nCCCC\n>c\nDDDD\n>d\nEEEE\n>e\nFFFF\n")
+    out = tmp_path / "chunks"
+    out.mkdir()
+    chunks = _split_fasta(fa, out, 2)
+    assert len(chunks) == 2
+    ids0 = [l[1:].strip() for l in chunks[0].read_text().splitlines()
+            if l.startswith(">")]
+    ids1 = [l[1:].strip() for l in chunks[1].read_text().splitlines()
+            if l.startswith(">")]
+    assert ids0 == ["a", "c", "e"] and ids1 == ["b", "d"]   # round-robin
+    both = chunks[0].read_text() + chunks[1].read_text()
+    assert "AAAA" in both and "FFFF" in both                # sequences intact
+    assert sorted(ids0 + ids1) == ["a", "b", "c", "d", "e"]  # nothing lost
+
+
+def test_jackhmmer_chunks_routes_to_parallel(monkeypatch, tmp_path):
+    """homologs.jackhmmer_chunks>1 -> _search_real dispatches to the parallel
+    split path (bypassing HMMER's single-thread DB-reader bottleneck)."""
+    import evoliez.adapters.msa_tools as mt
+
+    seen = {}
+
+    def fake_parallel(seq, jh, cfg, wd):
+        seen["chunks"] = cfg.jackhmmer_chunks
+        return [Homolog("p", "AAAACCCCDD", 0.5, 1.0)]
+
+    monkeypatch.setattr(mt, "require", lambda *a, **k: None)
+    monkeypatch.setattr(mt, "_jackhmmer_parallel", fake_parallel)
+    hs = mt._search_real("ACDEFGHIKL" * 4,
+                         HomologConfig(method="jackhmmer", database="db.fa",
+                                       jackhmmer_chunks=8),
+                         tmp_path, dry_run=False)
+    assert seen.get("chunks") == 8
+    assert hs and hs[0].id == "p"                # result flows through (clustered)
+
+
+def test_jackhmmer_chunks_one_is_single_process(monkeypatch, tmp_path):
+    """Default jackhmmer_chunks=1 keeps the original single-jackhmmer path."""
+    import evoliez.adapters.msa_tools as mt
+
+    cap = {"parallel": False}
+    monkeypatch.setattr(mt, "require", lambda *a, **k: None)
+    monkeypatch.setattr(mt, "run", lambda cmd, **k: cap.__setitem__("cmd", cmd))
+    monkeypatch.setattr(mt, "_jackhmmer_parallel",
+                        lambda *a, **k: cap.__setitem__("parallel", True) or [])
+    # no aln.sto produced -> falls back to mock, but the dispatch is what matters
+    mt._search_real("ACDEFGHIKL" * 4,
+                    HomologConfig(method="jackhmmer", database="db.fa"),
+                    tmp_path, dry_run=False)
+    assert cap["parallel"] is False
+    assert "-A" in [str(c) for c in cap["cmd"]]
+
+
+def test_tool_env_prepends_conda_env_lib(tmp_path):
+    """jackhmmer/hhblits living in another conda env need that env's lib on
+    LD_LIBRARY_PATH (their libopenblas etc.), or they die with 'error while
+    loading shared libraries' when called from the pipeline's env."""
+    from evoliez.utils.subprocess_utils import tool_env
+
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "lib").mkdir()
+    env = tool_env(str(tmp_path / "bin" / "jackhmmer"))
+    assert env is not None
+    assert env["LD_LIBRARY_PATH"].split(":")[0] == str(tmp_path / "lib")
+    assert tool_env("jackhmmer") is None                   # bare name -> on PATH
+    nolib = tmp_path / "other" / "bin"
+    nolib.mkdir(parents=True)
+    assert tool_env(str(nolib / "tool")) is None           # no sibling lib dir
