@@ -66,3 +66,40 @@ class ComplexPredictionStage(Stage):
             "WT complex: method=%s confidence=%.3f affinity=%s",
             cx.method, cx.confidence, cx.affinity_score,
         )
+
+        # s04 complex-prediction report (interactive 3D viewer + pLDDT / PAE /
+        # ipTM / affinity / diffusion-ensemble) — only when a REAL Boltz run
+        # left per-model confidence outputs (mock / dry-run produce none).
+        try:
+            import glob
+            from datetime import datetime
+
+            from evoliez.io.complex_report import (compute_complex_stats,
+                                                   write_complex_report)
+            preds = [p for p in glob.glob(str(
+                ctx.paths.complexes / "boltz" / "boltz_results_*"
+                / "predictions" / "*"))
+                if glob.glob(p + "/confidence_*model_*.json")]
+            if preds:
+                cp = ctx.config.complex_prediction
+                write_complex_report(
+                    ctx.paths.reports / "complex_report.html",
+                    target_id=ctx.config.input.target_id,
+                    stats=compute_complex_stats(preds[0]),
+                    ligand_names=[ligand.id] + [e.id for e in extra_ligands],
+                    generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    conditions=[
+                        ("model", f"{cp.primary_method}, "
+                                  f"{cp.diffusion_samples} diffusion samples"),
+                        ("ligands", ", ".join(
+                            [ligand.id] + [e.id for e in extra_ligands])),
+                        ("selected", "model_0 (top confidence_score)"),
+                        ("affinity",
+                         "Boltz-2 head: log10(IC50/uM) + P(binder)"),
+                        ("backend", self.backend(ctx).value),
+                    ],
+                )
+                self.log.info("complex prediction report: %s",
+                              ctx.paths.reports / "complex_report.html")
+        except Exception as exc:  # report is secondary — never fail the stage
+            self.log.warning("complex report failed: %s", exc)
