@@ -58,6 +58,18 @@ class MSAStage(Stage):
             "".join(f">{cid}\n{s}\n" for cid, s in msa)
         )
 
+        # Refresh the s02 homolog report so its MSA-depth headline reflects the
+        # FINAL integrated MSA (s02 only knew the ColabFold a3m base at its time;
+        # the integrated 5-track depth is only known here, after integration).
+        try:
+            from evoliez.stages.s02_homolog import write_homolog_analysis_report
+
+            write_homolog_analysis_report(
+                ctx, self.backend(ctx).value, seq, homologs, msa_depth=len(msa)
+            )
+        except Exception as exc:  # report is secondary — never fail the MSA stage
+            self.log.warning("homolog report refresh failed: %s", exc)
+
         feats = compute_position_features(msa)
 
         # subfamily-aware evolutionary prior (user §7)
@@ -114,6 +126,49 @@ class MSAStage(Stage):
             if f.target_position is not None
         }
         (ctx.paths.msa / "conservation.json").write_text(json.dumps(cons, indent=2))
+
+        # s03 MSA-analysis report (AF2/ColabFold-style coverage map, conservation
+        # + information-content tracks, identity-by-track distribution, sequence
+        # logo, methods) — the structural analogue of the s02 homolog report, for
+        # the FINAL integrated MSA. Secondary: never fail the stage on a hiccup.
+        try:
+            from datetime import datetime
+
+            from evoliez import __version__
+            from evoliez.io.msa_report import (compute_msa_stats, effective_neff,
+                                               write_msa_report)
+            if len(msa) >= 2:
+                aln_seqs = [a for _, a in msa]
+                mstats = compute_msa_stats([cid for cid, _ in msa], aln_seqs,
+                                           {str(k): v for k, v in cons.items()})
+                mstats["neff80"] = effective_neff(aln_seqs)
+                h = ctx.config.homologs
+                write_msa_report(
+                    ctx.paths.reports / "msa_report.html",
+                    target_id=ctx.config.input.target_id, target_len=len(seq),
+                    stats=mstats,
+                    generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    conditions=[
+                        ("retrieval tracks (independent, merged)",
+                         ", ".join(h.sources)),
+                        ("identity band",
+                         f"{h.identity_min:.2f} – {h.identity_max:.2f}"),
+                        ("subfamily clustering",
+                         f"k-mer Jaccard @ cluster_identity={h.cluster_identity:.2f}"),
+                        ("max sequences", f"{h.max_sequences:,}"),
+                        ("conservation metric",
+                         "per-column Shannon entropy (gaps excluded)"),
+                        ("Neff (effective)",
+                         "reweighted at 80% identity (AlphaFold2 convention)"),
+                        ("alignment",
+                         "target-anchored (native per-track alignment, de-duplicated)"),
+                        ("evoliez version", __version__),
+                    ],
+                )
+                self.log.info("MSA analysis report: %s",
+                              ctx.paths.reports / "msa_report.html")
+        except Exception as exc:  # report is secondary — never fail the MSA stage
+            self.log.warning("MSA report failed: %s", exc)
 
         ctx.put("msa", msa)
         ctx.put("position_features", feats)

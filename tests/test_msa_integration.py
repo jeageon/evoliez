@@ -375,6 +375,32 @@ def test_persistent_cache_survives_unrelated_config_change(monkeypatch, tmp_path
     assert calls["n"] == 2                       # different DB -> new key -> rerun
 
 
+def test_msa_report_builds_valid_html():
+    """compute_msa_stats + build_msa_report_html produce a self-contained report
+    (all template tokens filled, every viz section present) for a small MSA."""
+    from evoliez.io.msa_report import (build_msa_report_html, compute_msa_stats,
+                                       effective_neff)
+
+    ids = ["query", "mm_1", "fs_1", "hh_1", "UniRef100_X"]
+    seqs = ["ACDEFGHIKLMNPQRSTVWY", "ACDEFGHIKL-NPQRSTVWY",
+            "ACDQFGHIKLMNPQRST-WY", "-CDEFGAIKLMNPQRSTVWY",
+            "ACDEFGHIKLMNPQRSTVW-"]
+    stats = compute_msa_stats(ids, seqs, n_row_bins=4)
+    assert stats["n_seqs"] == 5 and stats["aln_len"] == 20
+    assert set(stats["tracks"]) <= {"mmseqs", "foldseek", "hhblits", "colabfold"}
+    assert len(stats["coverage"]) == 20 and len(stats["info_bits"]) == 20
+    assert len(stats["cov_rows"]) == 4
+    n = effective_neff(seqs)                          # numpy path (or None)
+    assert n is None or n >= 1
+    html = build_msa_report_html(
+        target_id="query", target_len=20, stats=stats,
+        conditions=[("backend", "mock")], generated="2026-01-01 00:00")
+    assert "%%" not in html                           # every token filled
+    for marker in ("covmap", "occChart", "consChart", "idChart", "genLogo",
+                   "Methods", "AlphaFold2", "Shannon"):
+        assert marker in html, marker
+
+
 def test_assign_clusters_matches_bruteforce():
     """The inverted-index speedup must yield the IDENTICAL clustering as the
     naive O(n*centroids) scan, on deterministic synthetic homologs."""

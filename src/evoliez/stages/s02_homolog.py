@@ -73,50 +73,66 @@ class HomologStage(Stage):
         self._write_report(ctx, seq, homologs)
 
     def _write_report(self, ctx, seq, homologs) -> None:
-        """Auto-generate the self-contained HTML homolog-analysis report. Every
-        axis / table / colour is derived from the data, so it works for any
-        target; the footer documents the exact analysis conditions."""
-        from datetime import datetime
-
-        from evoliez import __version__
-        from evoliez.io.homolog_report import write_homolog_report
-
-        h, m = ctx.config.homologs, ctx.config.msa
-        a3m = ctx.paths.msa / "remote.a3m"
-        depth = (sum(1 for ln in a3m.open() if ln.startswith(">"))
-                 if a3m.exists() else None)
-        raw = list(h.sources) + (["structure"] if h.use_foldseek
-                                 and not ({"structure", "foldseek"} & set(h.sources))
-                                 else [])
-        norm = []
-        for s in raw:
-            norm.append({"sequence": "colabfold" if m.remote_server else "local",
-                         "structure": "foldseek"}.get(s, s))
-        norm = list(dict.fromkeys(norm))
-        conditions = [
-            ("backend", self.backend(ctx).value),
-            ("homolog retrievers (independent, merged)", ", ".join(norm)),
-            ("local sequence search",
-             f"{h.method} vs {h.database}" if ("local" in norm and h.database)
-             else ("DB unset — skipped" if "local" in norm else "off")),
-            ("ColabFold remote MSA (sequence)",
-             "on (remote MMseqs2 vs UniRef30+env)" if "colabfold" in norm else "off"),
-            ("Foldseek (structure)",
-             f"ProstT5 seq→3Di vs {h.foldseek_database}"
-             if ("foldseek" in norm and h.foldseek_database)
-             else ("DB unset — skipped" if "foldseek" in norm else "off")),
-            ("identity band", f"{h.identity_min:.2f} – {h.identity_max:.2f}"),
-            ("subfamily clustering",
-             f"k-mer Jaccard @ cluster_identity={h.cluster_identity:.2f}"),
-            ("max sequences", f"{h.max_sequences:,}"),
-            ("MSA alignment", "ColabFold remote" if m.remote_server else m.method),
-            ("ESM2 prior (s03)", m.esm_model if m.esm_enabled else "off"),
-            ("evoliez version", __version__),
-        ]
-        out = ctx.paths.reports / "homolog_report.html"
-        write_homolog_report(
-            out, target_id=ctx.config.input.target_id, target_len=len(seq),
-            homologs=homologs, msa_depth=depth, conditions=conditions,
-            generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        """Auto-generate the self-contained HTML homolog-analysis report (the
+        s02 preview; s03 refreshes it with the final integrated MSA depth)."""
+        out = write_homolog_analysis_report(
+            ctx, self.backend(ctx).value, seq, homologs
         )
         self.log.info("homolog analysis report: %s", out)
+
+
+def write_homolog_analysis_report(ctx, backend_value, seq, homologs,
+                                  msa_depth=None):
+    """Self-contained HTML homolog-analysis report. Every axis / table / colour
+    is derived from the data, so it works for any target; the footer documents
+    the exact conditions. ``msa_depth`` defaults to the FINAL integrated MSA
+    (``alignment.fasta``) if present, else the ColabFold remote a3m — s03 passes
+    the final depth explicitly so the headline reflects the full integrated MSA,
+    not just the ColabFold base it was built on."""
+    from datetime import datetime
+
+    from evoliez import __version__
+    from evoliez.io.homolog_report import write_homolog_report
+
+    h, m = ctx.config.homologs, ctx.config.msa
+    if msa_depth is None:
+        aln = ctx.paths.msa / "alignment.fasta"
+        a3m = ctx.paths.msa / "remote.a3m"
+        src = aln if aln.exists() else a3m
+        msa_depth = (sum(1 for ln in src.open() if ln.startswith(">"))
+                     if src.exists() else None)
+    raw = list(h.sources) + (["structure"] if h.use_foldseek
+                             and not ({"structure", "foldseek"} & set(h.sources))
+                             else [])
+    norm = []
+    for s in raw:
+        norm.append({"sequence": "colabfold" if m.remote_server else "local",
+                     "structure": "foldseek"}.get(s, s))
+    norm = list(dict.fromkeys(norm))
+    conditions = [
+        ("backend", backend_value),
+        ("homolog retrievers (independent, merged)", ", ".join(norm)),
+        ("local sequence search",
+         f"{h.method} vs {h.database}" if ("local" in norm and h.database)
+         else ("DB unset — skipped" if "local" in norm else "off")),
+        ("ColabFold remote MSA (sequence)",
+         "on (remote MMseqs2 vs UniRef30+env)" if "colabfold" in norm else "off"),
+        ("Foldseek (structure)",
+         f"ProstT5 seq→3Di vs {h.foldseek_database}"
+         if ("foldseek" in norm and h.foldseek_database)
+         else ("DB unset — skipped" if "foldseek" in norm else "off")),
+        ("identity band", f"{h.identity_min:.2f} – {h.identity_max:.2f}"),
+        ("subfamily clustering",
+         f"k-mer Jaccard @ cluster_identity={h.cluster_identity:.2f}"),
+        ("max sequences", f"{h.max_sequences:,}"),
+        ("MSA alignment", "ColabFold remote" if m.remote_server else m.method),
+        ("ESM2 prior (s03)", m.esm_model if m.esm_enabled else "off"),
+        ("evoliez version", __version__),
+    ]
+    out = ctx.paths.reports / "homolog_report.html"
+    write_homolog_report(
+        out, target_id=ctx.config.input.target_id, target_len=len(seq),
+        homologs=homologs, msa_depth=msa_depth, conditions=conditions,
+        generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+    )
+    return out
