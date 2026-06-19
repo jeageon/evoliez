@@ -40,6 +40,11 @@ class InputConfig(_Base):
     target_fasta: Optional[str] = None
     target_sequence: Optional[str] = None
     ligand: LigandInput
+    # Additional ligands (cofactors / substrates) co-modelled in the s04 Boltz
+    # complex as their OWN entities, for a complete active site. The design
+    # objective still targets `ligand` (the affinity binder); these are
+    # structural context, not the optimisation target.
+    extra_ligands: List[LigandInput] = Field(default_factory=list)
 
     # Optional structural / biochemical context (spec 4.2).
     target_structure: Optional[str] = None

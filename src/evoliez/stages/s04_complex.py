@@ -14,6 +14,7 @@ class ComplexPredictionStage(Stage):
     def run(self, ctx: RunContext) -> None:
         seq = ctx.require("target_sequence")
         ligand = ctx.require("ligand")
+        extra_ligands = ctx.get("extra_ligands", [])
         msa_path = ctx.paths.msa / "alignment.fasta"
 
         cx = predict_complex(
@@ -26,6 +27,7 @@ class ComplexPredictionStage(Stage):
             dry_run=ctx.dry_run,
             msa_path=msa_path if msa_path.exists() else None,
             seed=ctx.config.seed,
+            extra_ligands=extra_ligands,
         )
         ctx.put("wt_complex", cx)
         ctx.persist_meta("complex_confidence", cx.confidence)

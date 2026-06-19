@@ -93,6 +93,24 @@ class InputPreprocessStage(Stage):
             f"{ligand.smiles}\t{ligand.id}\n"
         )
 
+        # Additional cofactors/substrates (co-modelled in the s04 complex as
+        # their own entities). Same RDKit-or-fail gate as the primary ligand so
+        # a bad SMILES can't silently ship synthetic chemistry under real.
+        extra_ligands = []
+        for el in cfg.extra_ligands:
+            elig = parse_ligand(el)
+            if (ctx.config.backend is Backend.real and elig.source != "rdkit"
+                    and not mock_fallback_allowed()):
+                raise ValueError(
+                    f"extra ligand {el.id!r} parsed as {elig.source!r} (not "
+                    "'rdkit') under backend=real; fix the SMILES / install RDKit."
+                )
+            extra_ligands.append(elig)
+        if extra_ligands:
+            (ctx.paths.inputs / "extra_ligands.smi").write_text(
+                "".join(f"{e.smiles}\t{e.id}\n" for e in extra_ligands)
+            )
+
         validate_residue_tokens(cfg.catalytic_residues, seq, "catalytic",
                                  self.log)
         validate_residue_tokens(cfg.fixed_residues, seq, "fixed", self.log)
@@ -104,6 +122,7 @@ class InputPreprocessStage(Stage):
 
         ctx.put("target_sequence", seq)
         ctx.put("ligand", ligand)
+        ctx.put("extra_ligands", extra_ligands)
         ctx.put("catalytic_positions", catalytic)
         ctx.put("fixed_positions", sorted(set(fixed) | set(catalytic)))
         ctx.put("known_binding_site", known_site)
@@ -112,6 +131,10 @@ class InputPreprocessStage(Stage):
         ctx.persist_meta("ligand_n_heavy", ligand.n_heavy)
         # canonical atom-id list (atom-index lock reference, expert review #5)
         ctx.persist_meta("ligand_atom_ids", [a.id for a in ligand.atoms])
+        if extra_ligands:
+            ctx.persist_meta("extra_ligand_ids", [e.id for e in extra_ligands])
+            self.log.info("extra ligands (co-modelled in s04): %s",
+                          ", ".join(f"{e.id}={e.smiles}" for e in extra_ligands))
         ctx.persist_meta("catalytic_positions", catalytic)
 
         assert ctx.store is not None

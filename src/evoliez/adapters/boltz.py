@@ -51,12 +51,13 @@ def predict_complex(
     dry_run: bool = False,
     msa_path: Optional[Path] = None,
     seed: int = 1234,
+    extra_ligands: Optional[List[Ligand]] = None,
 ) -> Complex:
     outdir.mkdir(parents=True, exist_ok=True)
     if backend is Backend.real:
         return _predict_real(
             label, sequence, ligand, cfg, outdir, dry_run=dry_run,
-            msa_path=msa_path, seed=seed,
+            msa_path=msa_path, seed=seed, extra_ligands=extra_ligands,
         )
     return _predict_mock(label, sequence, ligand, cfg, outdir)
 
@@ -202,6 +203,7 @@ def _predict_real(
     dry_run: bool,
     msa_path: Optional[Path],
     seed: int = 1234,
+    extra_ligands: Optional[List[Ligand]] = None,
 ) -> Complex:
     # dry-run previews the FULL command set (like Vina) without the tool
     # installed, writes the exact Boltz input YAML so the contract can be
@@ -219,6 +221,11 @@ def _predict_real(
             {"ligand": {"id": "B", "smiles": ligand.smiles}},
         ],
     }
+    # Co-modelled cofactors/substrates as their OWN ligand entities (chains C,
+    # D, …) so Boltz sees the complete active site. The affinity binder stays
+    # "B" (the design-target ligand); the extras are structural context.
+    for cid, el in zip("CDEFGHIJKLMNOPQRSTUVWXYZ", extra_ligands or []):
+        spec["sequences"].append({"ligand": {"id": cid, "smiles": el.smiles}})
     if cfg.predict_affinity:
         spec["properties"] = [{"affinity": {"binder": "B"}}]
     if msa_path is not None:
