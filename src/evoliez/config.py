@@ -187,7 +187,10 @@ class MDConfig(_Base):
     enabled: bool = True
     engine: str = "openmm"
     protocol_level: int = Field(1, ge=0, le=3)  # spec 15.2
-    solvent: str = "implicit"  # implicit | explicit
+    # implicit (GBSA/obc2) is what the OpenMM path actually runs today. "explicit"
+    # is NOT yet wired (no addSolvent/PME) — it is accepted but the engine warns
+    # and runs+reports implicit. Real explicit-solvent replicas = final-tier TODO.
+    solvent: str = "implicit"  # implicit | explicit (explicit -> falls back to implicit)
     temperature_K: float = 300.0
     timestep_fs: float = 2.0
     minimize_steps: int = 5000

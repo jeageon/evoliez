@@ -33,6 +33,8 @@ _LITE_MAX_STEPS = 25_000
 # POCKET backbone is left FREE so pocket_rmsd measures the binding-site
 # response, the active-site SHELL is held weakly, distant backbone strongly.
 _POCKET_NM = 0.8   # 8 Å
+_CONTACT_NM = 0.45  # 4.5 Å heavy-atom ligand contact (occupancy)
+_HBOND_NM = 0.35    # 3.5 Å donor-acceptor H-bond proxy (distance-only, no angle)
 _SHELL_NM = 1.2    # 12 Å
 
 
@@ -386,6 +388,20 @@ def _run_real(
     import openmm.app as app
     from openmm import unit
 
+    # Solvent honesty (paper integrity): this path builds an IMPLICIT GBSA system
+    # (implicit/obc2.xml in the SystemGenerator below) — there is NO addSolvent /
+    # PME / periodic box yet. So we run AND report implicit regardless of the
+    # requested mode, warning if explicit was asked, rather than mislabelling a
+    # GBSA run as explicit-solvent. Real explicit-solvent replicas are a
+    # final-tier TODO (top candidates), not the per-candidate screening path.
+    actual_solvent = "implicit"
+    if cfg.solvent == "explicit":
+        log.warning(
+            "MD solvent='explicit' requested for %s, but the OpenMM path runs "
+            "implicit GBSA only (no PME/periodic box); running + reporting "
+            "IMPLICIT, not explicit", candidate_id,
+        )
+
     apply_gpu_selection()
     src = getattr(cx.structure, "pdb_path", None)
     if src and Path(src).exists() and is_full_atom_pdb(Path(src)):
@@ -629,6 +645,67 @@ def _run_real(
         d = cur[idx] - ref[idx]
         return float(np.sqrt((d * d).sum(axis=1).mean())) * 10.0  # nm->Å
 
+    # ---- (#2) real-trajectory geometry: catalytic<->ligand distances, pocket
+    # contact occupancy, and a distance-only H-bond proxy (protein N/O within
+    # _HBOND_NM of a ligand N/O; no angle term -- a screening proxy, not a full
+    # H-bond definition). All are ligand-relative (populated only when a ligand
+    # is present) and use HEAVY atoms only. catalytic_positions = 1-based PDB
+    # residue numbers (match by residue id, ordinal fallback).
+    _res_of_atom, _elem = {}, {}
+    for _a in modeller.topology.atoms():
+        _res_of_atom[_a.index] = _a.residue
+        _elem[_a.index] = _a.element.symbol if _a.element is not None else ""
+    _heavy = {i for i, s in _elem.items() if s and s != "H"}
+    _lig_set = set(lig_idx)
+    lig_heavy = np.array([i for i in lig_idx if i in _heavy], dtype=int)
+    lig_polar = np.array([i for i in lig_idx if _elem.get(i) in ("N", "O")],
+                         dtype=int)
+    prot_polar = np.array(
+        [i for i, s in _elem.items()
+         if s in ("N", "O") and i not in _lig_set
+         and _res_of_atom[i].name in _STD_RES
+         and _res_of_atom[i].name not in ("HOH", "WAT")], dtype=int)
+
+    def _prot_res_name(name):
+        return name in _STD_RES and name not in ("HOH", "WAT")
+
+    def _res_heavy_idx(res):
+        return np.array([a.index for a in res.atoms() if a.index in _heavy],
+                        dtype=int)
+
+    def _min_dist(cur, a_idx, b_idx):
+        d = cur[a_idx][:, None, :] - cur[b_idx][None, :, :]
+        return float(np.sqrt((d * d).sum(-1)).min())
+
+    geom_on = lig_heavy.size > 0
+    cat_idx, contact_res = {}, {}
+    if geom_on:
+        _prot_res = [r for r in modeller.topology.residues()
+                     if _prot_res_name(r.name)]
+        _res_by_num = {}
+        for _r in _prot_res:
+            try:
+                _res_by_num.setdefault(int(_r.id), _r)
+            except (TypeError, ValueError):
+                pass
+        for _p in catalytic_positions:
+            _r = _res_by_num.get(int(_p))
+            if _r is None and 1 <= int(_p) <= len(_prot_res):
+                _r = _prot_res[int(_p) - 1]        # ordinal fallback
+            if _r is not None:
+                _ai = _res_heavy_idx(_r)
+                if _ai.size:
+                    cat_idx[int(_p)] = _ai
+        for _ca in pkt_idx:
+            _r = _res_of_atom.get(_ca)
+            if _r is not None and _prot_res_name(_r.name):
+                _ai = _res_heavy_idx(_r)
+                if _ai.size:
+                    contact_res[_r] = _ai
+    cat_series = {p: [] for p in cat_idx}
+    contact_hits = {r: 0 for r in contact_res}
+    hbond_hits = 0
+
     lig_series: List[float] = []
     pkt_series: List[float] = []
     e_start = e_last = None
@@ -644,6 +721,16 @@ def _run_real(
             cur = np.array([[p.x, p.y, p.z] for p in st.getPositions()])
             lig_series.append(round(_rmsd(cur, lig_idx, init), 3))
             pkt_series.append(round(_rmsd(cur, pkt_idx, init), 3))
+            if geom_on:
+                for _p, _ai in cat_idx.items():
+                    cat_series[_p].append(
+                        round(_min_dist(cur, _ai, lig_heavy) * 10.0, 3))
+                for _r, _ai in contact_res.items():
+                    if _min_dist(cur, _ai, lig_heavy) <= _CONTACT_NM:
+                        contact_hits[_r] += 1
+                if (prot_polar.size and lig_polar.size
+                        and _min_dist(cur, prot_polar, lig_polar) <= _HBOND_NM):
+                    hbond_hits += 1
             e = st.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
             e_start = e if e_start is None else e_start
             e_last = e
@@ -651,20 +738,29 @@ def _run_real(
     else:
         trajectory_path = None
 
+    if geom_on and lig_series:
+        _nfr = len(lig_series)
+        key_distances = {f"cat_{p}": s for p, s in cat_series.items() if s}
+        contact_occupancy = {f"R{r.id}": round(h / _nfr, 3)
+                             for r, h in contact_hits.items()}
+        hbond_occupancy = round(hbond_hits / _nfr, 3)
+    else:
+        key_distances, contact_occupancy, hbond_occupancy = {}, {}, 0.0
+
     drift = abs((e_last - e_start) / e_start) if e_start else 0.0
     status = "unstable" if (lig_series and lig_series[-1] > 5.0) else "ok"
     return MDResult(
         candidate_id=candidate_id,
         status=status,
         protocol_level=cfg.protocol_level,
-        solvent_mode=cfg.solvent,
+        solvent_mode=actual_solvent,
         simulation_time_ns=round(actual_ns, 6),
         minimized_pdb=str(minpdb),
         trajectory_path=trajectory_path,
         ligand_rmsd_series=lig_series or [0.0],
         pocket_rmsd_series=pkt_series or [0.0],
-        key_distances={},
-        contact_occupancy={},
-        hbond_occupancy=0.5,
+        key_distances=key_distances,
+        contact_occupancy=contact_occupancy,
+        hbond_occupancy=hbond_occupancy,
         energy_drift=round(float(drift), 4),
     )
