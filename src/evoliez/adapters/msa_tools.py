@@ -144,21 +144,57 @@ def gather_homologs(
     # only the missing/slow one is (re)computed (delete _cache_<source>.json to
     # force a recompute). Lets us nail one track at a time (user §7) instead of
     # re-running all five whenever one needs another attempt.
-    per_source: List[Tuple[str, List[Homolog]]] = []
-    for s in norm:
+    def _gather_one(s: str) -> List[Homolog]:
+        """Acquire ONE track's homologs (cache hit OR run+save). Each track
+        writes to its OWN workdir/<name> subdir and OWN cache file (norm is
+        deduped above), so this is safe to run on a worker thread with no
+        shared-state hazard."""
         cache = _cache_path(workdir, s, sequence, cfg)
         if not dry_run and cache.exists():
             hs = _load_homologs(cache)
             log.info("reusing cached '%s' track: %d homologs (rm %s to recompute)",
                      s, len(hs), cache.name)
-        else:
-            hs = _run_source(s, sequence, cfg, workdir, backend=backend,
-                             dry_run=dry_run, remote_server=remote_server,
-                             msa_dir=msa_dir)
-            if hs and not dry_run and backend is Backend.real:
-                _save_homologs(hs, cache)
-        if hs:
-            per_source.append((s, hs))
+            return hs
+        hs = _run_source(s, sequence, cfg, workdir, backend=backend,
+                         dry_run=dry_run, remote_server=remote_server,
+                         msa_dir=msa_dir)
+        if hs and not dry_run and backend is Backend.real:
+            _save_homologs(hs, cache)
+        return hs
+
+    # The 5 tracks are fully independent subprocess searches (no data dependency;
+    # _merge_sources runs only after all complete), so run them on a thread pool
+    # — each track blocks in subprocess.run/Popen, which releases the GIL, so
+    # cold-cache wall time becomes ~MAX(tracks) instead of SUM(tracks).
+    #
+    # SHARED-SERVER CPU WATCHDOG: the box throttles a job to ~0.2 core if it
+    # pins ~48 cores for 10+ min, and several tracks fan OUT internally — a
+    # heavy track (mmseqs2/jackhmmer/hhblits/blastp/local) each consumes up to
+    # cfg.search_threads cores (jackhmmer_chunks + hhblits EACH spawn
+    # search_threads workers). Running all 5 concurrently would multiply that.
+    # So bound total worker threads to <= ~16 cores (project memory: keep heavy
+    # jobs <= 16-24 cores) by capping concurrency at 16 // search_threads, i.e.
+    # max_workers * search_threads <= 16 regardless of the search_threads knob
+    # (default 4 -> 4 concurrent tracks). Hardcoded cap (no config field).
+    _WATCHDOG_CORE_CAP = 16
+    threads = max(1, getattr(cfg, "search_threads", 4) or 1)
+    max_workers = max(1, min(len(norm), _WATCHDOG_CORE_CAP // threads))
+
+    results: dict[str, List[Homolog]] = {}
+    if max_workers <= 1 or len(norm) <= 1:
+        for s in norm:
+            results[s] = _gather_one(s)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            for s, hs in zip(norm, ex.map(_gather_one, norm)):
+                results[s] = hs
+
+    # Re-assemble in norm order, then drop empties — IDENTICAL ordering/merge
+    # semantics to the old serial `for s in norm` loop (only wall-time differs).
+    per_source: List[Tuple[str, List[Homolog]]] = [
+        (s, results[s]) for s in norm if results[s]
+    ]
     if not per_source:                               # nothing enabled / found
         return search_homologs(sequence, cfg, workdir, backend=backend,
                                dry_run=dry_run, remote_server=remote_server)

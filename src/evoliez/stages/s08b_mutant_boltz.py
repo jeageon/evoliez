@@ -11,6 +11,8 @@ Inserted between s08 (fast rerank) and s09 (non-MD validation).
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import List
 
 from evoliez.adapters.boltz import predict_complex
@@ -29,6 +31,30 @@ def _mutant_sequence(wt_seq: str, cand: Candidate) -> str:
         if 0 < m.position <= len(seq):
             seq[m.position - 1] = m.mut
     return "".join(seq)
+
+
+def _mutant_predict_worker(payload, gpu):
+    """Predict ONE mutant complex with Boltz, pinned to ``gpu``. Module-level +
+    picklable so it runs in a ProcessPool worker (GIL-free). Each mutant writes
+    to its OWN outdir subdir so the result globbing is scoped per mutant. The WT
+    MSA + co-modelled extra ligands are passed so the mutant is predicted under
+    the SAME conditions as the WT (s04) -- otherwise the Δ confounds the mutation
+    effect with an input-condition difference (no MSA / missing cofactor)."""
+    (cand_id, mut_seq, ligand, cp_cfg, outdir, backend, seed, dry_run,
+     msa_path, extra_ligands) = payload
+    mut_outdir = Path(outdir) / cand_id
+    mut_outdir.mkdir(parents=True, exist_ok=True)
+    mut_cx = predict_complex(
+        cand_id, mut_seq, ligand, cp_cfg, mut_outdir,
+        backend=backend, dry_run=dry_run, seed=seed, gpu_device=gpu,
+        msa_path=msa_path, extra_ligands=extra_ligands,
+    )
+    return cand_id, mut_cx
+
+
+def _run_mutant_chunk(gpu, payloads):
+    """Round-robin chunk of mutants on ONE pinned GPU (one process per GPU)."""
+    return [_mutant_predict_worker(p, gpu) for p in payloads]
 
 
 class MutantBoltzStage(Stage):
@@ -52,27 +78,53 @@ class MutantBoltzStage(Stage):
         top = candidates[: rcfg.mutant_boltz_top_n]
         outdir = ctx.paths.complexes / "mutant_boltz"
 
+        # GPU fan-out: re-predicting N mutant complexes is the same independent-
+        # per-item GPU work as the s06b ensemble. A serial loop pins all of it to
+        # ONE GPU (leaving the others idle); instead use the same GIL-free
+        # ProcessPool across the pinned GPUs (each mutant scoped to its own
+        # outdir). The Δ computation is cheap CPU work, done serially afterward.
+        gpu_list = [g for g in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if g]
+        # SAME inputs as the WT (s04): the family MSA + co-modelled extra ligands,
+        # so ΔBoltz reflects the mutation, not an input-condition difference.
+        msa_file = ctx.paths.msa / "alignment.fasta"
+        msa_path = str(msa_file) if msa_file.exists() else None
+        extra_ligands = ctx.get("extra_ligands", []) or None
+        payloads = [
+            (c.candidate_id, _mutant_sequence(seq, c), ligand, cp_cfg, outdir,
+             backend, ctx.config.seed, ctx.dry_run, msa_path, extra_ligands)
+            for c in top
+        ]
+        predicted = {}  # candidate_id -> mutant Complex
+        if len(gpu_list) > 1 and not ctx.dry_run:
+            import multiprocessing as mp
+            import sys
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+            chunks = [(g, payloads[i::len(gpu_list)]) for i, g in enumerate(gpu_list)]
+            mpctx = mp.get_context("spawn" if sys.platform == "darwin" else "fork")
+            self.log.info("mutant Boltz fan-out: %d mutants across %d GPUs %s",
+                          len(top), len(gpu_list), gpu_list)
+            with ProcessPoolExecutor(max_workers=len(gpu_list), mp_context=mpctx) as ex:
+                futs = [ex.submit(_run_mutant_chunk, g, ch) for g, ch in chunks]
+                for fut in as_completed(futs):
+                    for cand_id, mut_cx in fut.result():
+                        predicted[cand_id] = mut_cx
+        else:
+            gpu = gpu_list[0] if gpu_list else None
+            for p in payloads:
+                cand_id, mut_cx = _mutant_predict_worker(p, gpu)
+                predicted[cand_id] = mut_cx
+
         n_done = 0
-        # Per-mutant predicted complex -> consumed by s10_md so REAL MD runs
-        # on the actual mutant structure (the sequence guard otherwise
-        # skips, since _mutant_complex(WT) is not the mutant). In-memory
-        # context map (Complex isn't JSON-persisted); MD-candidates not in
-        # this top-N fall back to the WT-derived proxy and honestly skip.
+        # Per-mutant predicted complex -> consumed by s10_md so REAL MD runs on
+        # the actual mutant structure. In-memory map (Complex isn't JSON-persisted).
         mut_complexes = ctx.get("mutant_complexes", {}) or {}
         for cand in top:
-            mut_cx = predict_complex(
-                cand.candidate_id, _mutant_sequence(seq, cand), ligand,
-                cp_cfg, outdir, backend=backend, dry_run=ctx.dry_run,
-                seed=ctx.config.seed,
-            )
+            mut_cx = predicted[cand.candidate_id]
             mut_complexes[cand.candidate_id] = mut_cx
-            delta = boltz_delta_features(
-                mut_cx, wt, catalytic_positions=catalytic
-            )
+            delta = boltz_delta_features(mut_cx, wt, catalytic_positions=catalytic)
             cand.details["delta"] = delta
             # dry-run + backend=real returns a MOCK contract; label it honestly
-            # ('dry-run') instead of 'real' so provenance matches the stage-level
-            # mutant_boltz_backend meta (which already special-cases dry-run).
+            # ('dry-run') instead of 'real' so provenance matches stage meta.
             cand.details["boltz_delta_source"] = (
                 "dry-run" if ctx.dry_run else backend.value  # dry-run | mock | real
             )

@@ -40,3 +40,6 @@ databases/
 .idea/
 .vscode/
 *.swp
+
+# generated run reports (regenerable from io/*_report.py)
+reports/

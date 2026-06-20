@@ -27,7 +27,9 @@ HETATM 5 P P1 LIG B 1 7.500 8.500 9.500
 
 
 def test_boltz_forces_pdb_output_format():
-    src = inspect.getsource(boltz._predict_real)
+    # the cmd (incl. --output_format pdb) is built in the shared
+    # _build_predict_cmd, used by both the per-rep and the GPU-batched paths.
+    src = inspect.getsource(boltz._build_predict_cmd)
     assert '"--output_format", "pdb"' in src
 
 

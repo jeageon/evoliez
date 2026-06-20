@@ -65,6 +65,45 @@ def _parse_pdb_chains(pdb_text: str) -> List[dict]:
     return chains
 
 
+def _contacts(pdb_text: str, cutoff: float = 4.0, hbond: float = 3.5):
+    """Per-ligand-atom NEAREST protein contact within `cutoff` Å, from the model
+    PDB. Generic (any protein/ligand): protein = ATOM, ligand = HETATM. Type is a
+    coarse heuristic (polar/H-bond if both donor/acceptor elements within
+    `hbond`; else vdw) — NOT a full interaction-fingerprint."""
+    prot, lig = [], []
+    for ln in pdb_text.splitlines():
+        rec = ln[:6].strip()
+        if rec not in ("ATOM", "HETATM"):
+            continue
+        try:
+            x, y, z = float(ln[30:38]), float(ln[38:46]), float(ln[46:54])
+        except ValueError:
+            continue
+        elem = (ln[76:78].strip() or ln[12:14].strip().lstrip("0123456789")[:1]).upper()
+        if rec == "ATOM":
+            prot.append((x, y, z, elem, ln[17:20].strip(), ln[22:26].strip(),
+                         ln[21], ln[12:16].strip()))
+        else:
+            lig.append((x, y, z, elem, ln[12:16].strip(), ln[21]))
+    out = []
+    c2 = cutoff * cutoff
+    for lx, ly, lz, le, lname, lchain in lig:
+        best = None
+        for px, py, pz, pe, rn, ri, pch, _pa in prot:
+            d2 = (px - lx) ** 2 + (py - ly) ** 2 + (pz - lz) ** 2
+            if d2 < c2 and (best is None or d2 < best[0]):
+                best = (d2, rn, ri, pch, pe)
+        if best:
+            d = best[0] ** 0.5
+            typ = ("H-bond/polar" if le in ("N", "O") and best[4] in ("N", "O")
+                   and d <= hbond else "vdw")
+            out.append({"res": f"{best[1]}{best[2]}", "chain": best[3],
+                        "lig_atom": lname, "lig_chain": lchain,
+                        "dist": round(d, 2), "type": typ})
+    out.sort(key=lambda c: c["dist"])
+    return out
+
+
 def _downsample(mat, max_dim: int = 220):
     """Block-mean a square matrix down to <= max_dim per side (keeps the PAE
     chain-block structure while shrinking the embed)."""
@@ -134,7 +173,26 @@ def compute_complex_stats(pred_dir: str, name: Optional[str] = None) -> dict:
     band_counts = [sum(1 for v in plddt[:protein] if lo <= v < hi or
                        (hi == 100 and v >= 90))
                    for lo, hi, _, _ in PLDDT_BANDS]
+    # Per-chain-pair PAE block stats from the FULL matrix. The downsampled
+    # heatmap is too coarse to read the small ligand blocks, so report the
+    # numbers: an OFF-diagonal (inter-chain) block's mean/min PAE is how
+    # confidently that ligand is placed RELATIVE to the protein / other ligands.
+    pae_blocks = []
+    for ci in chains:
+        for cj in chains:
+            blk = pae[ci["start"]:ci["start"] + ci["n"],
+                      cj["start"]:cj["start"] + cj["n"]]
+            if blk.size:
+                pae_blocks.append({
+                    "a": ci["id"], "b": cj["id"], "a_kind": ci["kind"],
+                    "b_kind": cj["kind"], "same": ci["id"] == cj["id"],
+                    "mean": round(float(blk.mean()), 1),
+                    "min": round(float(blk.min()), 1),
+                })
+    contacts = _contacts(pdb_text)
     return {
+        "pae_blocks": pae_blocks,
+        "contacts": contacts,
         "name": name, "best_model": best, "n_models": len(ens),
         "metrics": {k: round(float(bc[k]), 4) for k in (
             "confidence_score", "ptm", "iptm", "ligand_iptm", "complex_plddt",
@@ -225,6 +283,37 @@ def build_complex_report_html(*, target_id: str, stats: dict,
         for c in s["chains"])
     cond_rows = "".join(f"<tr><td class=ck>{g(k)}</td><td>{g(str(v))}</td></tr>"
                         for k, v in conditions)
+
+    # inter-chain PAE block table (numeric — the heatmap is too coarse for the
+    # small ligand blocks). Dedupe symmetric pairs, keep the lower-mean view.
+    inter = {}
+    for b in s.get("pae_blocks", []):
+        if b["same"]:
+            continue
+        key = tuple(sorted([b["a"], b["b"]]))
+        if key not in inter or b["mean"] < inter[key]["mean"]:
+            inter[key] = b
+    pae_rows = ""
+    for b in inter.values():
+        verdict = ("confident" if b["mean"] < 5 else
+                   "moderate" if b["mean"] < 12 else "low")
+        pae_rows += (f"<tr><td>chain {g(b['a'])} ({g(b['a_kind'][:4])}) ↔ "
+                     f"{g(b['b'])} ({g(b['b_kind'][:4])})</td>"
+                     f"<td><b>{b['mean']} Å</b></td><td>{b['min']} Å</td>"
+                     f"<td>{verdict}</td></tr>")
+    if not pae_rows:
+        pae_rows = "<tr><td colspan=4 class=ck>single chain — no inter-chain block</td></tr>"
+
+    contacts = s.get("contacts", [])
+    nhb = sum(1 for c in contacts if c["type"].startswith("H-bond"))
+    crows = "".join(
+        f"<tr><td>{g(c['res'])} ({g(c['chain'])})</td>"
+        f"<td>{g(c['lig_atom'])} ({g(c['lig_chain'])})</td>"
+        f"<td>{c['dist']} Å</td><td>{g(c['type'])}</td></tr>"
+        for c in contacts[:18])
+    if not crows:
+        crows = "<tr><td colspan=4 class=ck>no protein–ligand contact &lt;4 Å</td></tr>"
+
     blob = _json.dumps({k: s[k] for k in (
         "plddt", "pae", "pae_max", "chain_bounds", "pair_iptm", "chain_keys",
         "chains", "ensemble", "protein_len", "plddt_bands", "metrics")},
@@ -243,6 +332,10 @@ def build_complex_report_html(*, target_id: str, stats: dict,
             .replace("%%AFFDG%%", "—" if dg is None else f"{dg}")
             .replace("%%AFFPBIND%%", "—" if pbind is None else f"{pbind:.2f}")
             .replace("%%CONDROWS%%", cond_rows)
+            .replace("%%PAEBLOCKS%%", pae_rows)
+            .replace("%%CONTACTS%%", crows)
+            .replace("%%NHB%%", str(nhb))
+            .replace("%%NCONTACT%%", str(len(contacts)))
             .replace("%%BINDER%%", g(binder_lbl))
             .replace("%%LIGDESCR%%", g(lig_descr))
             .replace("%%NMODELS%%", str(s["n_models"]))
@@ -309,6 +402,14 @@ footer p{font-size:13.5px}.cite{font-size:12px;color:var(--mut);line-height:1.7}
 
 <div class="cards">%%CARDS%%</div>
 
+<div class="warn" style="border-left-color:#378ADD">This is a <b>high-confidence
+computational model requiring experimental validation</b>, not a solved
+structure. High pLDDT / ipTM mean the model is internally confident and the
+ligand is confidently <i>placed</i> — they do NOT by themselves establish correct
+catalytic geometry, protonation, ligand strain, or that binding actually occurs.
+Affinity is a triage signal; verify the pose against a known structure (QC at the
+bottom).</div>
+
 <h2>3D structure — predicted complex</h2>
 <div class="legend">pLDDT: %%BANDLEGEND%%</div>
 <div class="vctrl">
@@ -367,6 +468,16 @@ AlphaFold2 (Jumper 2021).</p>
 </div>
 </div>
 
+<h2>Inter-chain PAE — numeric block statistics</h2>
+<table><thead><tr><th>chain pair</th><th>mean PAE</th><th>min PAE</th><th>relative placement</th></tr></thead>
+<tbody>%%PAEBLOCKS%%</tbody></table>
+<p class="note">Mean / min PAE of each inter-chain block, computed from the
+<b>full-resolution</b> matrix (the heatmap above is downsampled and too coarse to
+read the small ligand blocks). A protein↔ligand block with low mean PAE
+(&lt;5 Å confident, &lt;12 Å moderate) ⇒ the ligand is confidently placed relative
+to the protein. A tiny co-modelled ligand (a few atoms) carries no meaningful
+per-chain pTM by construction, so judge it by THIS block PAE, not its pTM.</p>
+
 <h2>Inter-chain interface (ipTM) &amp; binding affinity</h2>
 <div class="row2">
 <div>
@@ -392,6 +503,19 @@ required.</div>
 <div class="chartbox" style="height:180px"><canvas id="ensChart"></canvas></div>
 <p class="note">confidence_score across all diffusion samples (sorted). A tight
 high cluster = a robust prediction; a wide/bimodal spread = competing poses.</p>
+
+<h2>Protein–ligand contacts</h2>
+<p class="note" style="margin:.1rem 0 .5rem">%%NCONTACT%% ligand atoms contact a
+protein residue within 4 Å (%%NHB%% in H-bond/polar range). Nearest contact per
+ligand atom, closest first:</p>
+<table><thead><tr><th>residue</th><th>ligand atom</th><th>distance</th><th>type</th></tr></thead>
+<tbody>%%CONTACTS%%</tbody></table>
+<div class="warn">Geometric proximity only — "type" is a coarse element/distance
+heuristic, NOT a validated interaction fingerprint (no charge / aromatic / salt-
+bridge / strain analysis). High ligand-ipTM + short contacts do <b>not</b> by
+themselves prove correct catalytic geometry; that requires comparison to a known
+structure of the target (or a close homolog) and an interaction/strain check —
+a QC step before mutant design (s06+).</div>
 
 <footer>
 <h2>Methods</h2>

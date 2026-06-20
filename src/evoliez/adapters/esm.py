@@ -14,6 +14,8 @@ so the feature has reproducible structure on the dev box / CI.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from pathlib import Path
 from typing import List, Optional
@@ -35,13 +37,62 @@ def esm_position_priors(
     dry_run: bool = False,
     workdir: Optional[Path] = None,
 ) -> List[float]:
-    """Per-residue substitution variability in [0,1], length == len(sequence)."""
+    """Per-residue substitution variability in [0,1], length == len(sequence).
+
+    The result is content-keyed on ``sha1(sequence + model)`` and cached as JSON
+    under ``workdir`` (when given). A resume with byte-identical inputs then skips
+    reloading the 650M model + the forward pass entirely — it just reads the JSON.
+    Caching applies to the mock path too, so the behaviour is identical with or
+    without torch.
+    """
     seq = "".join(c for c in sequence.upper() if not c.isspace())
+
+    cache = _cache_path(workdir, seq, model)
+    if cache is not None:
+        hit = _cache_read(cache, len(seq))
+        if hit is not None:
+            log.info("ESM prior cache hit (%s)", cache.name)
+            return hit
+
     if backend is Backend.real and not dry_run:
         out = _esm_real(seq, model)
         if out is not None:
+            _cache_write(cache, out)
             return out
-    return _esm_mock(seq)
+    out = _esm_mock(seq)
+    _cache_write(cache, out)
+    return out
+
+
+def _cache_path(workdir: Optional[Path], seq: str, model: str) -> Optional[Path]:
+    if workdir is None:
+        return None
+    key = hashlib.sha1(f"{seq}\0{model}".encode()).hexdigest()
+    return Path(workdir) / f"esm_prior.{key}.json"
+
+
+def _cache_read(path: Path, expected_len: int) -> Optional[List[float]]:
+    """Return the cached priors iff present, well-formed and the right length."""
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        if (isinstance(data, list) and len(data) == expected_len
+                and all(isinstance(x, (int, float)) for x in data)):
+            return [float(x) for x in data]
+    except (json.JSONDecodeError, OSError, ValueError):
+        pass
+    return None  # corrupt / stale -> recompute
+
+
+def _cache_write(path: Optional[Path], priors: List[float]) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(priors))
+    except OSError as exc:  # caching is best-effort; never fail the prior
+        log.warning("could not cache ESM prior (%s)", exc)
 
 
 def _esm_real(sequence: str, model: str) -> Optional[List[float]]:

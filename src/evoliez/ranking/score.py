@@ -37,6 +37,11 @@ def compute_final_score(cand: Candidate, w: ScoreWeights) -> ScoreBreakdown:
         "md_lite": w.md_lite * s.get("md_lite_score", 0.0),
         "family_interaction": w.family_interaction
         * s.get("family_interaction_score", 0.0),
+        # real per-mutant ΔBoltz: positive d_ligand_iptm = mutant binds the
+        # design-target ligand better than WT. Set by s08b for the top-N; 0 for
+        # candidates that only carry the proxy Δ -- so the expensive real Boltz
+        # re-prediction now actually moves the final ranking.
+        "mutant_boltz_gain": w.mutant_boltz_gain * s.get("d_ligand_iptm", 0.0),
         "gnn": w.gnn * s.get("gnn_score", 0.0),
         "catalytic_geometry_preservation": w.catalytic_geometry_preservation
         * s.get("ts_geometry_score", 0.0),

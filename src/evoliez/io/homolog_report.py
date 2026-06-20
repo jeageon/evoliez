@@ -62,11 +62,12 @@ def _identity_histogram(homologs, groups) -> Tuple[List[str], Dict[str, List[int
     return labels, hist
 
 
-def _cluster_buckets(homologs) -> Tuple[List[str], List[int], int]:
+def _cluster_buckets(homologs) -> Tuple[List[str], List[int], int, int]:
     sizes = list(Counter(h.cluster_id for h in homologs).values())
     if not sizes:
-        return [], [], 0
+        return [], [], 0, 0
     largest = max(sizes)
+    n_singletons = sum(1 for s in sizes if s == 1)
     ranges = [(1, 1), (2, 2), (3, 5), (6, 15), (16, 50), (51, 200),
               (201, 1000), (1001, 10 ** 12)]
     labels, counts = [], []
@@ -76,7 +77,7 @@ def _cluster_buckets(homologs) -> Tuple[List[str], List[int], int]:
             continue
         labels.append(str(a) if a == b else (f"{a}+" if b >= 10 ** 12 else f"{a}-{b}"))
         counts.append(c)
-    return labels, counts, largest
+    return labels, counts, largest, n_singletons
 
 
 def _group_of(h) -> str:
@@ -86,7 +87,7 @@ def _group_of(h) -> str:
 def _chart_data(homologs, msa_depth) -> dict:
     groups = sorted({_group_of(h) for h in homologs})
     labels, idh = _identity_histogram(homologs, groups)
-    cl_labels, cl_counts, largest = _cluster_buckets(homologs)
+    cl_labels, cl_counts, largest, n_singletons = _cluster_buckets(homologs)
     n_clusters = len(set(h.cluster_id for h in homologs))
     return {
         "n": len(homologs),
@@ -100,6 +101,7 @@ def _chart_data(homologs, msa_depth) -> dict:
         "cluster_counts": cl_counts,
         "n_clusters": n_clusters,
         "largest_cluster": largest,
+        "n_singletons": n_singletons,
     }
 
 
@@ -157,11 +159,23 @@ def build_homolog_report_html(
                        ("groups", "colors", "id_labels", "id_hist",
                         "cluster_labels", "cluster_counts")})
 
+    nclu, nsing = data["n_clusters"], data.get("n_singletons", 0)
+    spct = round(100 * nsing / nclu) if nclu else 0
+    caveat = (
+        f"{nsing:,} of {nclu:,} subfamily clusters are SINGLETONS ({spct}%) while "
+        f"the largest holds {data['largest_cluster']:,}. This is a singleton-"
+        "DOMINATED distribution (one big bucket + a long singleton tail), NOT a "
+        "balanced family decomposition — so 'n clusters' over-states the effective "
+        "family diversity, and s06b takes the LARGEST subfamilies first. "
+        "Pool note: this homolog count = deduplicated RETRIEVED sequences across "
+        "the 5 tracks; the s03 “MSA depth” additionally includes the "
+        "ColabFold remote-MSA base rows, so the two counts are not the same set.")
+
     return _TEMPLATE.format(
         title=g_esc(f"{target_id} — integrated homolog analysis"),
         target=g_esc(target_id), tlen=target_len, generated=g_esc(generated),
         cards=cards_html, summary_rows=srows, legend=legend,
-        cond_rows=cond_rows, blob=blob,
+        cond_rows=cond_rows, blob=blob, cluster_caveat=g_esc(caveat),
     )
 
 
@@ -221,6 +235,7 @@ footer{{margin-top:2.5rem;border-top:.5px solid var(--line);padding-top:1rem}}
  aria-label="Distribution of subfamily cluster sizes (log count)."></canvas></div>
 <p class="note">how many clusters contain N members (log count). A single very
 large bucket means that source was not sub-clustered.</p>
+<div class="note" style="border-left:3px solid #BA7517;padding:.5rem .75rem;background:var(--surf);border-radius:4px;margin:.6rem 0">{cluster_caveat}</div>
 
 <footer>
 <h2>Analysis conditions</h2>

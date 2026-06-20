@@ -160,7 +160,8 @@ def is_full_atom_pdb(path: Path) -> bool:
     return False
 
 
-def full_atom_receptor_pdb(structure: ProteinStructure, out_path: Path) -> bool:
+def full_atom_receptor_pdb(structure: ProteinStructure, out_path: Path,
+                           keep_het_chains=None) -> bool:
     """Write a FULL-ATOM, protein-only receptor PDB for REAL docking/stability.
 
     Real Boltz writes a full-atom complex to ``structure.pdb_path``; our
@@ -181,13 +182,48 @@ def full_atom_receptor_pdb(structure: ProteinStructure, out_path: Path) -> bool:
     src = Path(src)
     if not src.exists() or not is_full_atom_pdb(src):
         return False
+    # Protein ATOM/TER always; HETATM only for chains in `keep_het_chains` — used
+    # to keep CO-MODELLED cofactors/substrates as FIXED context when docking one
+    # ligand in the presence of the others (multi-ligand co-docking).
+    keep_het = set(keep_het_chains or ())
     kept = [ln for ln in src.read_text().splitlines()
-            if ln.startswith(("ATOM", "TER"))]
+            if ln.startswith(("ATOM", "TER"))
+            or (ln.startswith("HETATM") and ln[21:22] in keep_het)]
     if not any(ln.startswith("ATOM") for ln in kept):
         return False
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(kept) + "\nEND\n")
     return True
+
+
+def het_chains_in_pdb(pdb_path) -> List[str]:
+    """Sorted distinct HETATM (ligand) chain IDs in a complex PDB."""
+    try:
+        lines = Path(pdb_path).read_text().splitlines()
+    except OSError:
+        return []
+    return sorted({ln[21:22] for ln in lines if ln.startswith("HETATM")})
+
+
+def parse_pdb_het_chain(pdb_path, chain: str) -> List[LigandAtom]:
+    """LigandAtoms (placed coords) of ONE HETATM chain in a complex PDB — a
+    co-modelled ligand's actual pose, used as the redock reference for that
+    ligand and as fixed context when docking the others."""
+    atoms: List[LigandAtom] = []
+    try:
+        lines = Path(pdb_path).read_text().splitlines()
+    except OSError:
+        return atoms
+    for ln in lines:
+        if ln.startswith("HETATM") and ln[21:22] == chain:
+            try:
+                x, y, z = float(ln[30:38]), float(ln[38:46]), float(ln[46:54])
+            except ValueError:
+                continue
+            elem = ln[76:78].strip() or ln[12:14].strip().lstrip("0123456789")[:1]
+            atoms.append(LigandAtom(id=ln[12:16].strip() or f"{elem}{len(atoms)}",
+                                    element=elem, coord=(x, y, z)))
+    return atoms
 
 
 def parse_sdf_first_pose(path: Path) -> List[LigandAtom]:
@@ -218,6 +254,118 @@ def parse_sdf_first_pose(path: Path) -> List[LigandAtom]:
         atoms.append(LigandAtom(id=f"{elem}{len(atoms)}", element=elem,
                                 coord=(x, y, z)))
     return atoms
+
+
+def parse_sdf_all_poses(path: Path) -> List[List[LigandAtom]]:
+    """Atom coords + elements of EVERY molecule in a multi-record V2000 SDF,
+    in file order (``$$$$``-separated). gnina writes its N docked modes as N
+    molecules in ONE output SDF and DiffDock can write several ranks per file;
+    this returns one atom list per record (the rank-i pose for record i).
+
+    Returns ``[]`` (not ``[[]]``) when nothing parses, so a caller can fall back
+    to the reference. Mirrors ``parse_sdf_first_pose`` per record."""
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return []
+    poses: List[List[LigandAtom]] = []
+    # Trailing "$$$$\n" yields an empty final chunk; skip blocks with no header.
+    for chunk in text.split("$$$$"):
+        block = chunk.splitlines()
+        # Drop leading blank lines so a record after a "$$$$" delimiter still has
+        # its title/counts line at the expected offset.
+        while block and not block[0].strip():
+            block.pop(0)
+        if len(block) < 4:
+            continue
+        try:
+            natoms = int(block[3][0:3])
+        except ValueError:
+            continue
+        atoms: List[LigandAtom] = []
+        for ln in block[4:4 + natoms]:
+            tok = ln.split()
+            if len(tok) < 4:
+                continue
+            try:
+                x, y, z = float(tok[0]), float(tok[1]), float(tok[2])
+            except ValueError:
+                continue
+            elem = tok[3]
+            atoms.append(LigandAtom(id=f"{elem}{len(atoms)}", element=elem,
+                                    coord=(x, y, z)))
+        if atoms:
+            poses.append(atoms)
+    return poses
+
+
+def tool_version(executable: str, *args: str) -> str:
+    """Best-effort one-line version string for a real tool (``<exe> --version``
+    by default). Recorded into ``Pose.engine_version`` for the audit trail; on
+    any failure (tool missing, non-zero exit, dry-run) returns "" rather than
+    raising — provenance is a nice-to-have, never a run-blocker."""
+    from evoliez.utils.subprocess_utils import run, which
+
+    if which(executable) is None:
+        return ""
+    flag = list(args) or ["--version"]
+    try:
+        res = run([executable, *flag], check=False)
+    except Exception:
+        return ""
+    out = (res.stdout or res.stderr or "").strip()
+    return out.splitlines()[0].strip() if out else ""
+
+
+def mock_redock_modes(
+    candidate_id: str,
+    method: str,
+    reference_atoms: Sequence[LigandAtom],
+    *,
+    n_modes: int,
+    score_type: str = "",
+    higher_is_better: bool = False,
+    with_cnn: bool = False,
+    base_instability: float = 0.1,
+    score_offset: float = 0.0,
+) -> List[Pose]:
+    """Deterministic N-mode ranked ensemble for the mock backend, descending in
+    plausibility: rank 1 sits closest to the reference with the best score, later
+    ranks drift further with monotonically worse scores. Lets ``redock_all`` /
+    ``redock_batch`` tests exercise multi-pose parsing without real gnina/diffdock.
+
+    ``higher_is_better`` flips the score ordering (diffdock confidence: rank 1 is
+    the HIGHEST). ``with_cnn`` populates the gnina CNN provenance fields. Each
+    pose carries its ``rank`` (1-based) and ``score_type``; the score still flows
+    through the same ``mock_redock`` jitter model so coords/RMSD stay realistic."""
+    poses: List[Pose] = []
+    for r in range(n_modes):
+        # rank 1 -> smallest instability; later ranks drift further out.
+        inst = base_instability + 0.18 * r
+        h = derive_seed(0xA11, candidate_id, method, str(r))
+        pose = mock_redock(
+            candidate_id, method, reference_atoms,
+            instability=inst, score_offset=score_offset,
+        )
+        # Re-key the score so ranks are MONOTONIC (mock_redock's raw score is a
+        # function of instability, but we want a clean, strictly-ordered ladder
+        # for assertions). Best magnitude at rank 1, degrading by rank.
+        base = -9.0 + score_offset
+        if higher_is_better:
+            # diffdock confidence: rank 1 highest (least negative), descending.
+            pose.score = round(-0.4 - 0.6 * r, 4)
+        else:
+            # affinity-like: rank 1 most negative (best), ascending toward 0.
+            pose.score = round(base + 1.2 * r, 4)
+        pose.rank = r + 1
+        pose.cluster = r
+        pose.score_type = score_type
+        if with_cnn:
+            # plausible CNN provenance: CNNscore in (0,1], CNNaffinity ~ pK.
+            pose.cnn_score = round(max(0.0, 0.85 - 0.07 * r), 4)
+            pose.cnn_affinity = round(6.5 - 0.5 * r, 4)
+        poses.append(pose)
+    return poses
 
 
 def lock_pose_to_reference(

@@ -59,10 +59,15 @@ def _col_info_bits(column_counts: Counter) -> Tuple[float, str]:
 
 def compute_msa_stats(ids: Sequence[str], seqs: Sequence[str],
                       conservation: Optional[Dict] = None,
-                      n_row_bins: int = 300) -> dict:
+                      n_row_bins: int = 300, *,
+                      marked: Optional[Dict] = None,
+                      occ_mask: float = 0.5) -> dict:
     """All numbers the report needs, derived from the target-anchored MSA
     (ids[0]/seqs[0] = query). `conservation` is the optional s03 conservation
-    .json (per target-position conservation/entropy/gap); recomputed if absent."""
+    .json (per target-position conservation/entropy/gap); recomputed if absent.
+    `marked` = {role: [1-based target positions]} (catalytic/binding/design) to
+    overlay; `occ_mask` = occupancy below which conservation is hidden as
+    unreliable (gaps-excluded conservation over-estimates at low occupancy)."""
     n, L = len(seqs), len(seqs[0]) if seqs else 0
     target = seqs[0]
 
@@ -151,6 +156,16 @@ def compute_msa_stats(ids: Sequence[str], seqs: Sequence[str],
     logo = _logo_window(col_counts, info_bits, coverage, consensus)
 
     well = sum(1 for c in coverage if c > 0.5 * n)
+    # Per-column OCCUPANCY (fraction of rows that are not a gap). Conservation /
+    # info-content here are computed gaps-EXCLUDED, so they OVER-estimate at low
+    # occupancy (1-2 sequences can look "conserved"). Expose occupancy + mask the
+    # conservation track where occupancy is too low to trust it.
+    occ = [round(coverage[j] / n, 3) if n else 0.0 for j in range(L)]
+    occ_min = max(0.0, min(1.0, occ_mask))
+    n_low10 = sum(1 for o in occ if o < 0.10)
+    n_low50 = sum(1 for o in occ if o < 0.50)
+    cons_reliable = [round(c, 3) if o >= occ_min else None
+                     for c, o in zip(cons_track, occ)]
     return {
         "n_seqs": n, "aln_len": L, "neff": neff,
         "mean_info": round(sum(info_bits) / L, 3) if L else 0.0,
@@ -160,6 +175,9 @@ def compute_msa_stats(ids: Sequence[str], seqs: Sequence[str],
         "positions": list(range(1, L + 1)),
         "coverage": coverage, "info_bits": info_bits, "consensus": "".join(consensus),
         "conservation": [round(x, 3) for x in cons_track],
+        "occupancy": occ, "occ_mask": occ_min, "n_low_occ_10": n_low10,
+        "n_low_occ_50": n_low50, "cons_reliable": cons_reliable,
+        "marked": marked or {},
         "gap_freq": [round(x, 3) for x in gap_freq],
         "id_labels": labels, "overall_hist": overall_hist, "id_hist": id_hist,
         "tracks": tracks, "track_summary": track_summary,
@@ -243,6 +261,8 @@ def build_msa_report_html(*, target_id: str, target_len: int, stats: dict,
         ("Neff (HH-suite)", f"{s['neff']}", "column diversity"),
         ("mean conservation", f"{s['mean_cons']:.2f}", "1 − H/Hₘₐₓ"),
         ("well-aligned cols", f"{s['well_aligned']}", ">50% occupancy"),
+        ("low-occupancy cols", f"{s.get('n_low_occ_50', 0)}",
+         f"<50% ({s.get('n_low_occ_10', 0)} <10%)"),
         ("highly conserved", f"{s['n_highly_conserved']}", ">2 bits"),
     ]
     cards_html = "".join(
@@ -264,6 +284,9 @@ def build_msa_report_html(*, target_id: str, target_len: int, stats: dict,
         "n_seqs": s["n_seqs"], "aln_len": s["aln_len"],
         "coverage": s["coverage"], "conservation": s["conservation"],
         "info_bits": s["info_bits"], "gap_freq": s["gap_freq"],
+        "occupancy": s.get("occupancy", []),
+        "cons_reliable": s.get("cons_reliable", []),
+        "occ_mask": s.get("occ_mask", 0.5), "marked": s.get("marked", {}),
         "id_labels": s["id_labels"], "id_hist": s["id_hist"],
         "tracks": s["tracks"], "track_colors": track_colors,
         "cov_rows": s["cov_rows"], "logo": s["logo"],
@@ -354,6 +377,18 @@ fraction); dashed line = 50% threshold below which a column is gap-dominated.</p
 <p class="note">Conservation = 1 − H/H<sub>max</sub> from per-column Shannon entropy
 H = −Σ p<sub>a</sub> log₂ p<sub>a</sub> (gaps excluded); information content in bits
 (right axis, max log₂20 ≈ 4.32). Conserved peaks = catalytic/structural cores.</p>
+<div class="warn"><b>Occupancy mask.</b> Conservation/information are computed
+<b>gaps-excluded</b>, so they OVER-estimate where few sequences are aligned
+(1–2 rows can look "conserved"). The <b>green</b> line is shown only where
+column occupancy ≥ the threshold; the faded <b>grey</b> line is the raw value at
+<b>low-occupancy</b> columns — do NOT read mutation-permissiveness from the grey
+regions. Use occupancy (above) + the residue's structural position together, not
+conservation alone.</div>
+<p class="note"><b>Pool definitions.</b> "homolog pool" (s02) = the deduplicated
+RETRIEVED sequences across the 5 tracks; "MSA rows" (here) = those homologs
+ANCHORED onto the target columns PLUS the ColabFold remote-MSA rows used as the
+alignment base. The two counts differ because the remote-MSA base contributes
+rows that are not in the local homolog pool — they are not the same set.</p>
 
 <h2>Sequence identity to query, by track</h2>
 <div class="chartbox"><canvas id="idChart"></canvas></div>
@@ -454,10 +489,15 @@ function mkLine(){
       {label:'50%',data:pos.map(function(){return 0.5;}),borderColor:MUT,borderDash:[5,4],
        pointRadius:0,borderWidth:1}]},
     options:Object.assign(baseOpts('occupancy (fraction aligned)'),{scales:Object.assign(baseOpts('occupancy (fraction aligned)').scales,{y:{min:0,max:1,title:{display:true,text:'occupancy',color:MUT},ticks:{color:MUT},grid:{color:GRID}}})})});
+  var occm=Math.round((R.occ_mask||0.5)*100);
+  var consMasked=(R.cons_reliable&&R.cons_reliable.length)?R.cons_reliable:R.conservation;
   new Chart(document.getElementById('consChart'),{type:'line',
     data:{labels:pos,datasets:[
-      {label:'conservation',data:R.conservation,borderColor:'#1D9E75',
-       backgroundColor:'rgba(29,158,117,.12)',fill:true,pointRadius:0,borderWidth:1.2,yAxisID:'y'},
+      {label:'conservation (low-occupancy, unreliable)',data:R.conservation,
+       borderColor:'rgba(150,150,150,.45)',pointRadius:0,borderWidth:0.8,yAxisID:'y',order:5},
+      {label:'conservation (occ ≥ '+occm+'%)',data:consMasked,spanGaps:false,
+       borderColor:'#1D9E75',backgroundColor:'rgba(29,158,117,.12)',fill:true,
+       pointRadius:0,borderWidth:1.4,yAxisID:'y'},
       {label:'information (bits)',data:R.info_bits,borderColor:'#BA7517',
        pointRadius:0,borderWidth:1,yAxisID:'y1'}]},
     options:Object.assign(baseOpts('conservation (1 − H/Hmax)','information (bits)'),

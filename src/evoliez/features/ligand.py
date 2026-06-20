@@ -8,6 +8,7 @@ SMILES string so the rest of the pipeline has a well-formed object to work on.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import List
 
 from evoliez.config import LigandInput
@@ -38,6 +39,51 @@ def parse_ligand(spec: LigandInput) -> Ligand:
         except Exception as exc:  # fall back rather than crash the pipeline
             log.warning("RDKit ligand parse failed (%s); using synthetic model", exc)
     return _parse_synthetic(spec)
+
+
+@dataclass(frozen=True)
+class LigandSpec:
+    """A ligand resolved into its docking ROLE (generic — no identity hardcoding).
+
+    ``ligand`` is the parsed :class:`Ligand`; ``role`` is free-form
+    (design_ligand | cofactor | substrate | product | ion | ...). ``dock`` selects
+    the docking targets, ``keep_as_context`` the chains kept as fixed receptor
+    context. ``is_primary`` flags the entry from ``InputConfig.ligand``.
+    """
+
+    id: str
+    role: str
+    dock: bool
+    keep_as_context: bool
+    ligand: Ligand
+    type: str
+    value: str
+    is_primary: bool
+
+
+def resolve_ligand_manifest(primary: LigandInput,
+                            extras: List[LigandInput]) -> List["LigandSpec"]:
+    """Resolve the primary ligand + extras into role-tagged :class:`LigandSpec`s.
+
+    Generic + role-driven, never keyed on a ligand name/SMILES:
+      * ``role`` None -> positional default (primary = design_ligand, extra = cofactor)
+      * ``dock`` None -> True iff resolved role == "design_ligand"
+      * ``keep_as_context`` None -> True iff resolved role != "design_ligand"
+    Explicit ``dock`` / ``keep_as_context`` always win, so any ligand can be made a
+    docking target and/or a context chain regardless of its role label.
+    """
+    specs: List[LigandSpec] = []
+    for li, is_primary in [(primary, True)] + [(e, False) for e in extras]:
+        role = li.role or ("design_ligand" if is_primary else "cofactor")
+        dock = li.dock if li.dock is not None else (role == "design_ligand")
+        keep = (li.keep_as_context if li.keep_as_context is not None
+                else (role != "design_ligand"))
+        specs.append(LigandSpec(
+            id=li.id, role=role, dock=bool(dock), keep_as_context=bool(keep),
+            ligand=parse_ligand(li), type=li.type, value=li.value,
+            is_primary=is_primary,
+        ))
+    return specs
 
 
 # --------------------------------------------------------------------------- #

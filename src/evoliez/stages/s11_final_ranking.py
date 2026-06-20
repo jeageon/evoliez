@@ -249,6 +249,31 @@ class FinalRankingStage(Stage):
 
         ctx.put("ranked_candidates", ranked)
         ctx.persist_meta("n_ranked", len(ranked))
+
+        # Funnel-provenance report (paper methods): attrition through the
+        # generate→rerank→Boltz→validate→MD funnel, per-generator survival, and a
+        # per-candidate evidence-class audit. Reads the durable per-stage meta
+        # counts + s07's generated-provenance table; generic for any target.
+        from evoliez.io.provenance_report import (
+            attach_generated_counts,
+            build_funnel_report,
+            write_funnel_report,
+        )
+
+        funnel = build_funnel_report(
+            ranked=ranked,
+            meta=ctx.meta,
+            md_candidate_ids=[c.candidate_id for c in ctx.get("md_candidates", [])],
+            top_n=ctx.config.output.final_library_size,
+        )
+        prov_dir = ctx.paths.reports / "provenance"
+        attach_generated_counts(funnel, prov_dir / "generated_candidates.json")
+        funnel_written = write_funnel_report(prov_dir, funnel)
+        ctx.persist_meta("funnel_evidence_class_counts",
+                         funnel["summary"]["evidence_class_counts"])
+        self.log.info("funnel provenance: %s",
+                      [p.name for p in funnel_written])
+
         ctx.persist_meta(
             "top_candidate",
             {

@@ -8,7 +8,7 @@ from evoliez.adapters.msa_tools import build_msa, integrate_aligned_homologs
 from evoliez.adapters.remote_msa import cached_fetch_msa
 from evoliez.context import RunContext
 from evoliez.db.schema import MSAPosition
-from evoliez.features.evolutionary import compute_position_features
+from evoliez.features.evolutionary import PositionFeature, compute_position_features
 from evoliez.stages.base import Stage
 
 
@@ -121,6 +121,10 @@ class MSAStage(Stage):
                 "gap_frequency": f.gap_frequency,
                 "allowed_aa": f.allowed_aa,
                 "esm_variability": f.esm_variability,
+                # subfamily signal (set only when advanced.subfamily_msa) — persist
+                # it so load() can restore it; downstream s07/s08 scoring depends
+                # on it, so a resume that dropped it would change final scores.
+                "specificity_divergence": f.specificity_divergence,
             }
             for f in feats
             if f.target_position is not None
@@ -196,3 +200,107 @@ class MSAStage(Stage):
             "MSA depth=%d, mean conservation=%.3f",
             neff, ctx.meta("mean_conservation"),
         )
+
+    def load(self, ctx: RunContext) -> bool:
+        """Resume without re-running the (expensive) MSA stage.
+
+        s03 reloads ESM2-650M, re-aligns (MAFFT), recomputes per-position
+        features and re-renders two HTML reports on every call — pure waste when
+        the inputs are byte-identical. The two artifacts run() puts on the bus and
+        that downstream stages consume are ``msa`` and ``position_features``;
+        rebuild both from disk:
+
+          - ``msa``                from the persisted ``alignment.fasta``
+          - ``position_features``  from the ``MSAPosition`` DB rows, with the
+            non-columnar fields (``allowed_aa``, ``esm_variability``,
+            ``specificity_divergence``) restored from ``conservation.json``
+
+        Return False (force a real re-run) if any required artifact is missing,
+        so the pipeline never hands downstream stages partial / empty features.
+
+        ``residue_class`` is intentionally left as persisted (None unless s06 has
+        run): s06 recomputes it in place from the live structure/pocket geometry,
+        so it never needs to be reconstructed here.
+        """
+        aln_path = ctx.paths.msa / "alignment.fasta"
+        cons_path = ctx.paths.msa / "conservation.json"
+        if not aln_path.exists() or not cons_path.exists():
+            return False
+        if ctx.store is None:
+            return False
+
+        # 1) rebuild the MSA from the persisted FASTA (id, aligned-seq) pairs
+        msa = _read_fasta_pairs(aln_path)
+        if not msa:
+            return False
+
+        # 2) per-position conservation extras keyed by 1-based target position
+        try:
+            cons = json.loads(cons_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return False
+        extras = {int(k): v for k, v in cons.items()}
+        # A conservation.json written before specificity_divergence was persisted
+        # lacks that field; loading it would silently zero the subfamily-
+        # specificity signal that s07/s08 scoring uses. Force a real s03 re-run
+        # for those (pre-fix) checkpoints rather than degrade the result.
+        if extras and not any("specificity_divergence" in v for v in extras.values()):
+            return False
+
+        # 3) rebuild position_features from the DB rows (the columnar features),
+        #    layering in allowed_aa / esm_variability from conservation.json.
+        with ctx.store.session() as s:
+            rows = (
+                s.query(MSAPosition)
+                .filter_by(project_id=ctx.project_id)
+                .order_by(MSAPosition.alignment_position)
+                .all()
+            )
+            if not rows:
+                return False  # no persisted features -> real re-run
+            feats = []
+            for r in rows:
+                ex = extras.get(r.target_position, {}) if r.target_position else {}
+                feats.append(
+                    PositionFeature(
+                        alignment_position=r.alignment_position,
+                        target_position=r.target_position,
+                        conservation_score=r.conservation_score,
+                        entropy=r.entropy,
+                        gap_frequency=r.gap_frequency,
+                        amino_acid_frequencies=dict(r.amino_acid_frequencies or {}),
+                        pssm_vector=dict(r.pssm_vector or {}),
+                        allowed_aa=list(ex.get("allowed_aa", [])),
+                        residue_class=r.residue_class,
+                        esm_variability=float(ex.get("esm_variability", 0.0)),
+                        specificity_divergence=float(
+                            ex.get("specificity_divergence", 0.0)
+                        ),
+                    )
+                )
+
+        ctx.put("msa", msa)
+        ctx.put("position_features", feats)
+        self.log.info(
+            "restored MSA (depth=%d) + %d position features from disk",
+            len(msa), len(feats),
+        )
+        return True
+
+
+def _read_fasta_pairs(path) -> list[tuple[str, str]]:
+    """Parse a simple (no-wrap) FASTA into [(id, sequence), ...]."""
+    pairs: list[tuple[str, str]] = []
+    cid: str | None = None
+    chunks: list[str] = []
+    for line in path.read_text().splitlines():
+        if line.startswith(">"):
+            if cid is not None:
+                pairs.append((cid, "".join(chunks)))
+            cid = line[1:].strip()
+            chunks = []
+        elif cid is not None:
+            chunks.append(line.strip())
+    if cid is not None:
+        pairs.append((cid, "".join(chunks)))
+    return pairs

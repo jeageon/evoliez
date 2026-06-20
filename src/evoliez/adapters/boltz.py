@@ -11,6 +11,7 @@ filters - never supervised labels (see ml/labels.py, docs/ML_DATA_POLICY.md).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -52,12 +53,14 @@ def predict_complex(
     msa_path: Optional[Path] = None,
     seed: int = 1234,
     extra_ligands: Optional[List[Ligand]] = None,
+    gpu_device: Optional[str] = None,
 ) -> Complex:
     outdir.mkdir(parents=True, exist_ok=True)
     if backend is Backend.real:
         return _predict_real(
             label, sequence, ligand, cfg, outdir, dry_run=dry_run,
             msa_path=msa_path, seed=seed, extra_ligands=extra_ligands,
+            gpu_device=gpu_device,
         )
     return _predict_mock(label, sequence, ligand, cfg, outdir)
 
@@ -193,27 +196,23 @@ def _to_a3m(src: Path, dst: Path) -> Optional[Path]:
     return dst
 
 
-def _predict_real(
+def _build_spec(
     label: str,
     sequence: str,
     ligand: Ligand,
     cfg: ComplexPredictionConfig,
     outdir: Path,
-    *,
-    dry_run: bool,
     msa_path: Optional[Path],
-    seed: int = 1234,
     extra_ligands: Optional[List[Ligand]] = None,
-) -> Complex:
-    # dry-run previews the FULL command set (like Vina) without the tool
-    # installed, writes the exact Boltz input YAML so the contract can be
-    # eyeballed, and returns the same structured mock contract as a real run.
-    if dry_run:
-        log.info("[dry-run] boltz predict (diffusion_samples=%d) for %s",
-                 cfg.diffusion_samples, label)
-    else:
-        require("boltz")
-        apply_gpu_selection()
+):
+    """Build a single rep's Boltz input spec (protein A + primary ligand B +
+    co-modelled extra ligands C+ + the MSA/affinity wiring). Returns
+    (spec_dict, resolved_msa_path) — the resolved MSA path may differ from the
+    input (FASTA→a3m rewrite, or None if the file was unusable) and the caller
+    uses it to keep the `--use_msa_server` guard correct. Shared verbatim by the
+    per-rep (`_predict_real`) and the GPU-batched (`predict_batch`) paths so both
+    emit the IDENTICAL spec.
+    """
     spec = {
         "version": 1,
         "sequences": [
@@ -240,6 +239,86 @@ def _predict_real(
         else:
             log.warning("MSA %s unusable; falling back to MSA server", mp)
             msa_path = None
+    # No MSA file AND no MSA server -> explicit single-sequence mode. Boltz needs
+    # the `msa: empty` sentinel; omitting `msa` entirely makes it error out.
+    if msa_path is None and not cfg.use_msa_server:
+        spec["sequences"][0]["protein"]["msa"] = "empty"
+    return spec, msa_path
+
+
+def _build_predict_cmd(
+    in_path: Path,
+    out_dir: Path,
+    cfg: ComplexPredictionConfig,
+    seed: int,
+    *,
+    any_msa_server: bool,
+) -> list:
+    """Build the `boltz predict <in_path> --out_dir <out_dir>` command.
+    `in_path` is one YAML (per-rep path) or a directory of YAMLs (batch path) —
+    Boltz handles both. `any_msa_server` adds `--use_msa_server` (true only when
+    at least one input needs the remote server). Shared so the per-rep and the
+    batched paths carry the SAME perf flags + `--no_kernels` logic."""
+    cmd = [
+        "boltz", "predict", str(in_path), "--out_dir", str(out_dir),
+        "--diffusion_samples", str(max(1, cfg.diffusion_samples)),
+        "--seed", str(seed),
+        # Boltz defaults to mmCIF; force PDB so the structure parser works
+        # (a CIF backstop parser also exists below).
+        "--output_format", "pdb",
+    ]
+    if any_msa_server:
+        cmd.append("--use_msa_server")
+    if not getattr(cfg, "use_kernels", False):
+        # Boltz-2 hard-fails (ModuleNotFoundError cuequivariance_torch) if the
+        # optimized kernels' optional dep is missing; --no_kernels uses the
+        # pure-torch path. Stock `pip install boltz` has no cuequivariance.
+        cmd.append("--no_kernels")
+    # SPEED-ONLY Boltz flags from the environment (do NOT affect the output, so
+    # they are NOT in the config/run-fingerprint): how many diffusion samples to
+    # run in parallel on the GPU (memory-bound), dataloader workers, and the
+    # preprocessing thread count (Boltz default 1). The launch sets these to
+    # match the box (e.g. MAX_PARALLEL_SAMPLES=10, NUM_WORKERS=2, threads=4) so
+    # multiple Boltz processes don't oversubscribe the CPU.
+    for env_key, flag in (
+        ("EVOLIEZ_BOLTZ_MAX_PARALLEL_SAMPLES", "--max_parallel_samples"),
+        ("EVOLIEZ_BOLTZ_NUM_WORKERS", "--num_workers"),
+        ("EVOLIEZ_BOLTZ_PREPROCESSING_THREADS", "--preprocessing-threads"),
+    ):
+        val = os.environ.get(env_key)
+        if val and val.strip().isdigit():
+            cmd += [flag, val.strip()]
+    return cmd
+
+
+def _predict_real(
+    label: str,
+    sequence: str,
+    ligand: Ligand,
+    cfg: ComplexPredictionConfig,
+    outdir: Path,
+    *,
+    dry_run: bool,
+    msa_path: Optional[Path],
+    seed: int = 1234,
+    extra_ligands: Optional[List[Ligand]] = None,
+    gpu_device: Optional[str] = None,
+) -> Complex:
+    # dry-run previews the FULL command set (like Vina) without the tool
+    # installed, writes the exact Boltz input YAML so the contract can be
+    # eyeballed, and returns the same structured mock contract as a real run.
+    if dry_run:
+        log.info("[dry-run] boltz predict (diffusion_samples=%d) for %s",
+                 cfg.diffusion_samples, label)
+    else:
+        require("boltz")
+        # gpu_device pins THIS subprocess (parallel ensemble across GPUs); the
+        # global apply_gpu_selection would race + put every worker on one GPU.
+        if gpu_device is None:
+            apply_gpu_selection()
+    spec, msa_path = _build_spec(
+        label, sequence, ligand, cfg, outdir, msa_path, extra_ligands
+    )
 
     yml = outdir / f"{label}_boltz_input.yaml"
     yml.write_text(yaml.safe_dump(spec, sort_keys=False))
@@ -250,22 +329,27 @@ def _predict_real(
     # mixes two RNG draws and provenance can't reconstruct the result. Distinct
     # per label so WT / each homolog / each mutant don't share an identical draw.
     boltz_seed = derive_seed(seed, "boltz", label) % (2 ** 31 - 1)
-    cmd = [
-        "boltz", "predict", str(yml), "--out_dir", str(outdir),
-        "--diffusion_samples", str(max(1, cfg.diffusion_samples)),
-        "--seed", str(boltz_seed),
-        # Boltz defaults to mmCIF; force PDB so the structure parser works
-        # (a CIF backstop parser also exists below).
-        "--output_format", "pdb",
-    ]
-    if cfg.use_msa_server and msa_path is None:
-        cmd.append("--use_msa_server")
-    if not getattr(cfg, "use_kernels", False):
-        # Boltz-2 hard-fails (ModuleNotFoundError cuequivariance_torch) if the
-        # optimized kernels' optional dep is missing; --no_kernels uses the
-        # pure-torch path. Stock `pip install boltz` has no cuequivariance.
-        cmd.append("--no_kernels")
-    run(cmd, dry_run=dry_run, timeout=None)
+    cmd = _build_predict_cmd(
+        yml, outdir, cfg, boltz_seed,
+        any_msa_server=cfg.use_msa_server and msa_path is None,
+    )
+    boltz_env = (
+        {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu_device)}
+        if gpu_device is not None else None
+    )
+    # Resume: if a COMPLETE Boltz output already exists in this outdir (>= the
+    # requested diffusion samples), reuse it instead of recomputing. This is
+    # scoped to `outdir`, so a caller that batches many predictions (the s06b
+    # ensemble) MUST give each its OWN outdir, otherwise this — and the result
+    # discovery below — would pick up a different prediction's files.
+    want = max(1, cfg.diffusion_samples)
+    done = [p for r in sorted(outdir.glob("boltz_results_*"))
+            for p in r.rglob("*.pdb") if not p.name.endswith("_complex.pdb")]
+    if dry_run or len(done) < want:
+        run(cmd, dry_run=dry_run, timeout=None, env=boltz_env)
+    else:
+        log.info("reusing %d existing Boltz model(s) for %s (skip recompute)",
+                 len(done), label)
 
     if dry_run:
         return _predict_mock(label, sequence, ligand, cfg, outdir)
@@ -326,6 +410,130 @@ def _assemble_real_complex(outdir, found, sequence, ligand, primary_method) -> C
     # index 0, aligned with plddt index 0).
     _assign_residue_plddt(cx.structure.residues, _load_plddt(outdir, 0))
     return _finalize(cx)
+
+
+# --------------------------------------------------------------------------- #
+# GPU-batched ensemble (s06b): ONE `boltz predict <dir>` per GPU, then a
+# per-stem-SCOPED parse of each rep's prediction. One model load per GPU
+# instead of one per rep. Quality-neutral: same model, same diffusion_samples,
+# same per-rep spec (protein+ligand+MSA) — only the launch topology changes.
+# --------------------------------------------------------------------------- #
+def parse_prediction_dir(
+    stem_dir: Path, sequence: str, ligand: Ligand, primary_method: str
+) -> Optional[Complex]:
+    """Parse ONE rep's Boltz prediction, SCOPED to a single
+    ``predictions/<stem>/`` directory, into a finalized Complex.
+
+    CRITICAL: a GPU-batched run writes EVERY rep in the chunk under one shared
+    ``boltz_results_<chunkdir>/predictions/`` tree, one ``<stem>/`` subdir per
+    rep. ``_parse_real_samples`` / ``_load_plddt`` discover samples by
+    ``rglob('confidence*model_*.json')`` / ``rglob('plddt*.npz')``, so they MUST
+    be rooted at the ONE stem's subdir — never the shared parent. If they were
+    pointed at the parent they would mix every rep's confidence/plddt/pdb files
+    into a single prediction (the exact unscoped-glob cross-contamination defect
+    fixed once before). Here ``stem_dir`` IS that single subdir, so reusing
+    ``_assemble_real_complex(stem_dir, <stem_dir's own pdbs>, …)`` is scoped by
+    construction. Returns None if the subdir holds no structure file."""
+    found = sorted(stem_dir.glob("*.cif")) + sorted(stem_dir.glob("*.pdb"))
+    found = [p for p in found if not p.name.endswith("_complex.pdb")]
+    if not found:
+        return None
+    return _assemble_real_complex(stem_dir, found, sequence, ligand, primary_method)
+
+
+def write_batch_input(
+    in_dir: Path,
+    label: str,
+    sequence: str,
+    ligand: Ligand,
+    cfg: ComplexPredictionConfig,
+    *,
+    msa_path: Optional[Path] = None,
+    extra_ligands: Optional[List[Ligand]] = None,
+) -> bool:
+    """Write ONE rep's ``<label>_boltz_input.yaml`` into the shared chunk
+    ``in_dir`` using the SAME spec as the per-rep path (`_build_spec`). MSA a3m
+    rewrites land in ``in_dir`` too. Returns True if this rep needs the remote
+    MSA server (the caller ORs these to decide ``--use_msa_server`` for the
+    whole chunk). The yaml stem is ``<label>_boltz_input``; Boltz emits its
+    prediction under ``predictions/<label>_boltz_input/``."""
+    in_dir.mkdir(parents=True, exist_ok=True)
+    spec, resolved_msa = _build_spec(
+        label, sequence, ligand, cfg, in_dir, msa_path, extra_ligands
+    )
+    (in_dir / f"{label}_boltz_input.yaml").write_text(
+        yaml.safe_dump(spec, sort_keys=False)
+    )
+    return cfg.use_msa_server and resolved_msa is None
+
+
+def predict_batch(
+    in_dir: Path,
+    out_dir: Path,
+    cfg: ComplexPredictionConfig,
+    *,
+    seed: int,
+    gpu_device: Optional[str] = None,
+    any_msa_server: bool = False,
+    dry_run: bool = False,
+) -> Path:
+    """Run ONE ``boltz predict <in_dir> --out_dir <out_dir>`` over a whole chunk
+    of rep YAMLs = ONE model load for the whole chunk (vs one per rep). Pinned to
+    ``gpu_device`` via CUDA_VISIBLE_DEVICES. ``in_dir`` and ``out_dir`` MUST be
+    distinct dirs — Boltz rescans ``in_dir`` and errors if ``out_dir`` is nested
+    inside it. Reuses the per-rep cmd builder so the chunk carries the identical
+    EVOLIEZ_BOLTZ_* perf flags + ``--no_kernels`` logic.
+
+    SEED: the per-rep ``derive_seed(seed,'boltz',label)`` can't apply to a single
+    batched process (one process, one ``--seed``). We use a deterministic
+    per-CHUNK seed ``derive_seed(seed,'boltz_batch',gpu)``. This changes WHICH
+    diffusion samples are drawn versus the per-rep path, but it is quality-neutral
+    (same model, same sample count, same spec) and reproducible (fixed function of
+    the run seed + GPU), so a crash-resume reproduces the same chunk.
+
+    Returns the ``boltz_results_<in_dirname>`` directory that holds the chunk's
+    ``predictions/<stem>/`` subdirs (so the caller can scoped-parse each rep).
+    Resume-skip: if that results dir already has >= diffusion_samples models for
+    every input stem, the Boltz run is skipped (mirrors the per-rep skip)."""
+    if not dry_run:
+        require("boltz")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = out_dir / f"boltz_results_{in_dir.name}"
+
+    batch_seed = derive_seed(seed, "boltz_batch", str(gpu_device)) % (2 ** 31 - 1)
+    cmd = _build_predict_cmd(
+        in_dir, out_dir, cfg, batch_seed, any_msa_server=any_msa_server
+    )
+    boltz_env = (
+        {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu_device)}
+        if gpu_device is not None else None
+    )
+
+    # Resume-skip: a chunk is complete iff EVERY input stem already has >=
+    # diffusion_samples model PDBs in its predictions/<stem>/ subdir. Scoped per
+    # stem (not a flat count) so a half-finished chunk re-runs rather than being
+    # mistaken for done.
+    want = max(1, cfg.diffusion_samples)
+    stems = sorted(p.stem for p in in_dir.glob("*.yaml"))
+    preds_root = results_dir / "predictions"
+
+    def _complete() -> bool:
+        if not stems or not preds_root.is_dir():
+            return False
+        for stem in stems:
+            sub = preds_root / stem
+            models = [p for p in sub.glob("*.pdb")
+                      if not p.name.endswith("_complex.pdb")] if sub.is_dir() else []
+            if len(models) < want:
+                return False
+        return True
+
+    if dry_run or not _complete():
+        run(cmd, dry_run=dry_run, timeout=None, env=boltz_env)
+    else:
+        log.info("reusing complete batched Boltz chunk %s (%d stems, skip "
+                 "recompute)", results_dir.name, len(stems))
+    return results_dir
 
 
 def _parse_real_samples(outdir: Path, lig_atoms, structure_files=None) -> List[BoltzSample]:
@@ -415,6 +623,7 @@ def _parse_cif_atoms(path: Path):
     cols: list[str] = []
     residues: list[Residue] = []
     lig: list[LigandAtom] = []
+    primary_chain: Optional[str] = None   # first ligand chain = primary (chain B)
     i = 0
     while i < len(lines):
         if lines[i].strip() == "loop_":
@@ -451,10 +660,19 @@ def _parse_cif_atoms(path: Path):
                                             sidechain_centroid=(x, y, z))
                                 )
                             elif grp == "HETATM":
-                                el = p[idx["type_symbol"]]
-                                lig.append(LigandAtom(
-                                    id=f"{el}{len(lig)}", element=el or "C",
-                                    coord=(x, y, z)))
+                                # primary ligand only (first ligand chain);
+                                # co-modelled extra ligands are other chains.
+                                ck = ("label_asym_id" if "label_asym_id" in idx
+                                      else "auth_asym_id" if "auth_asym_id" in idx
+                                      else None)
+                                ch = p[idx[ck]] if ck else None
+                                if primary_chain is None:
+                                    primary_chain = ch
+                                if ch is None or ch == primary_chain:
+                                    el = p[idx["type_symbol"]]
+                                    lig.append(LigandAtom(
+                                        id=f"{el}{len(lig)}", element=el or "C",
+                                        coord=(x, y, z)))
                         j += 1
                 i = j
                 continue
@@ -470,6 +688,7 @@ def _parse_pdb_atoms(path: Path):
 
     residues: list[Residue] = []
     lig: list[LigandAtom] = []
+    primary_chain: Optional[str] = None
     for line in path.read_text().splitlines():
         if line.startswith("ATOM") and line[12:16].strip() == "CA":
             idx = int(line[22:26])
@@ -480,6 +699,17 @@ def _parse_pdb_atoms(path: Path):
                         sidechain_centroid=(x, y, z))
             )
         elif line.startswith("HETATM"):
+            # Keep ONLY the primary (design-target) ligand = the FIRST ligand
+            # chain (chain B). Co-modelled cofactors/substrates are separate
+            # chains (C, D, …); merging them into one atom list pollutes the
+            # primary ligand's contacts, docking reference and canonical relabel
+            # (e.g. NADP 48 atoms + formate 3 -> a 51-atom mismatch vs the 48-atom
+            # template). The PDB chain id is column 22 (0-based index 21).
+            chain = line[21] if len(line) > 21 else " "
+            if primary_chain is None:
+                primary_chain = chain
+            elif chain != primary_chain:
+                continue
             x, y, z = (float(line[30:38]), float(line[38:46]),
                        float(line[46:54]))
             el = line[76:78].strip() or line[12:14].strip()

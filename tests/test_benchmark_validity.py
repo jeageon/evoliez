@@ -54,8 +54,13 @@ def test_example_benchmark_overlaps_mock_run(tmp_path):
         {"project.output_dir": str(tmp_path / "run"),
          "input.target_fasta": str(ROOT / "examples" / "fdh"
                                    / "target.fasta"),
+         # single-mutation recall benchmark: disable the multipoint (FuncLib)
+         # generator so the 40-candidate budget isn't shared with multi-mutation
+         # combos (which can't match a single-mutation benchmark row). At a real
+         # run's budget both fit; at 40 they compete.
          "mutation_generation": {"methods": ["chemistry_rules"],
                                  "max_candidates": 40,
+                                 "multipoint": False,
                                  "design_radius_angstrom": 9.0},
          "reranking": {"top_for_redocking": 20, "top_for_md": 4},
          "validation": {"md": {"top_candidates": 4}},

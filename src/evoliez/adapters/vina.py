@@ -35,10 +35,12 @@ def redock(
     instability: float,
     backend: Backend,
     dry_run: bool = False,
+    context_chains=None,
 ) -> Pose:
     if backend is Backend.real:
         return _redock_real(
-            candidate_id, structure, reference_atoms, cfg, workdir, dry_run=dry_run
+            candidate_id, structure, reference_atoms, cfg, workdir,
+            dry_run=dry_run, context_chains=context_chains,
         )
     return mock_redock(candidate_id, METHOD, reference_atoms, instability=instability)
 
@@ -51,15 +53,16 @@ def _redock_real(
     workdir: Path,
     *,
     dry_run: bool,
+    context_chains=None,
 ) -> Pose:
     require("vina")
     require("obabel")
     workdir.mkdir(parents=True, exist_ok=True)
     rec_pdb = workdir / f"{candidate_id}_rec.pdb"
-    # Real docking needs the FULL-ATOM Boltz receptor, not a CA-only trace (no
-    # sidechains -> no pocket). Degrade honestly if none exists (mock upstream);
-    # in dry-run keep a CA-only placeholder just to preview the command set.
-    if not full_atom_receptor_pdb(structure, rec_pdb):
+    # Real docking needs the FULL-ATOM Boltz receptor (+ other co-modelled ligands
+    # as fixed context). Degrade honestly if none exists (mock upstream); in
+    # dry-run keep a CA-only placeholder just to preview the command set.
+    if not full_atom_receptor_pdb(structure, rec_pdb, keep_het_chains=context_chains):
         if dry_run:
             write_min_pdb(rec_pdb, structure)
         else:

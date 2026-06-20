@@ -37,6 +37,14 @@ class MDStage(Stage):
         # so real MD runs the ACTUAL mutant, not the WT-derived proxy that
         # the openmm sequence guard correctly skips.
         mut_complexes = ctx.get("mutant_complexes", {}) or {}
+        # Shared, stable per-run ligand force-field cache. The ligand
+        # (cofactor + substrate) is identical across every candidate, so the
+        # slow AM1-BCC/antechamber charge derivation is cached HERE once and
+        # reused, rather than re-derived under each per-candidate workdir
+        # (~md.top_candidates times). Lives under the run root, so it survives
+        # --resume; ligand-keyed inside the engine so it self-invalidates if
+        # the ligand changes.
+        ligand_cache_dir = ctx.paths.md / "_ligand_ff_cache"
         n_ran = n_skipped = n_failed = 0
         for cand in candidates:
             mc = mut_complexes.get(cand.candidate_id) or _mutant_complex(
@@ -48,6 +56,7 @@ class MDStage(Stage):
                 ctx.paths.md_candidate(cand.candidate_id),
                 instability=inst, catalytic_positions=catalytic,
                 backend=backend, dry_run=ctx.dry_run,
+                ligand_cache_dir=ligand_cache_dir,
             )
             _st = str(result.status)
             if result.integration_failed or _st == "failed":

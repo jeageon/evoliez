@@ -192,15 +192,45 @@ class _LigandParamUnsupported(Exception):
     skip)."""
 
 
-def _ligand_system_generator(off_lig, workdir: Path):
+def _ligand_cache_key(off_lig) -> str:
+    """Short, stable key identifying THIS ligand, for the shared FF cache
+    filename. AM1-BCC/antechamber charge derivation is keyed on the ligand,
+    not the candidate, so the cache file is named by the ligand's isomeric
+    SMILES (covers connectivity AND stereo). Changing the ligand changes the
+    key, so a shared cache is never silently reused for a different molecule."""
+    import hashlib
+
+    try:
+        smi = off_lig.to_smiles(isomeric=True, explicit_hydrogens=False)
+    except Exception:
+        # Fall back to a repr-based key; still ligand-specific, just opaque.
+        smi = repr(off_lig)
+    return hashlib.sha1(smi.encode("utf-8")).hexdigest()[:16]
+
+
+def _ligand_system_generator(off_lig, workdir: Path, cache_dir: "Path | None" = None):
     """A SystemGenerator whose small-molecule FF can ACTUALLY parameterize
     this ligand. Probe ligand-only create_system per FF: gaff-2.11, then
     espaloma-0.3.2 if the `espaloma` package is installed (a graph-net FF,
     no antechamber, that handles cofactors GAFF/AM1-BCC cannot). Raise
     _LigandParamUnsupported if none can - decisive, since the probe IS the
-    exact ligand-only parameterization that failed for NADP on the server."""
+    exact ligand-only parameterization that failed for NADP on the server.
+
+    The openmmforcefields ``cache`` (where AM1-BCC charges land) is the slow,
+    ligand-identical part - re-deriving it per candidate re-runs antechamber
+    ~md.top_candidates times for the SAME cofactor. When ``cache_dir`` is
+    given (a SHARED, stable per-run dir), the cache is written there keyed on
+    the ligand, so every candidate after the first HITS the cache and skips
+    re-parameterization. ``cache_dir`` defaults to ``workdir`` (the legacy
+    per-candidate behaviour) for callers that don't supply a shared dir."""
     import openmm.app as app
     from openmmforcefields.generators import SystemGenerator
+
+    cache_root = cache_dir if cache_dir is not None else workdir
+    cache_root.mkdir(parents=True, exist_ok=True)
+    # Ligand-keyed cache file: shared across candidates (same ligand -> same
+    # file -> antechamber runs ONCE per run), invalidated if the ligand changes.
+    lig_key = _ligand_cache_key(off_lig)
 
     ffs = ["gaff-2.11"]
     try:
@@ -216,7 +246,7 @@ def _ligand_system_generator(off_lig, workdir: Path):
                 forcefields=["amber14-all.xml", "implicit/obc2.xml"],
                 small_molecule_forcefield=ff,
                 molecules=[off_lig],
-                cache=str(workdir / f"ff_cache_{ff}.json"),
+                cache=str(cache_root / f"ligff_{lig_key}_{ff}.json"),
                 forcefield_kwargs={"constraints": app.HBonds},
                 nonperiodic_forcefield_kwargs={
                     "nonbondedMethod": app.CutoffNonPeriodic,
@@ -246,13 +276,20 @@ def run_md(
     catalytic_positions: Sequence[int],
     backend: Backend,
     dry_run: bool = False,
+    ligand_cache_dir: "Path | None" = None,
 ) -> MDResult:
+    """``ligand_cache_dir``: shared, stable per-run directory for the ligand
+    force-field cache. The ligand is identical across all candidates in a run,
+    so AM1-BCC charge derivation (the slow part) is cached here ONCE instead of
+    per-candidate under ``workdir``. Defaults to ``workdir`` (legacy behaviour)
+    when not supplied."""
     workdir.mkdir(parents=True, exist_ok=True)
     if backend is Backend.real:
         try:
             return _run_real(
                 cx, candidate_id, cfg, workdir,
                 catalytic_positions=catalytic_positions, dry_run=dry_run,
+                ligand_cache_dir=ligand_cache_dir,
             )
         except Exception as exc:  # spec 23 Risk 4: fail gracefully per candidate
             log.warning("MD failed for %s (%s); recording failure", candidate_id, exc)
@@ -336,6 +373,7 @@ def _run_real(
     *,
     catalytic_positions: Sequence[int],
     dry_run: bool,
+    ligand_cache_dir: "Path | None" = None,
 ) -> MDResult:
     if dry_run:
         log.info("[dry-run] would run OpenMM L%d (%s) for %s",
@@ -443,7 +481,13 @@ def _run_real(
     # skipped_parameterization (candidate judged on the other layers), NOT
     # a hard failure. Only protein/assembly failures below are `failed`.
     try:
-        system_generator, _ff = _ligand_system_generator(off_lig, workdir)
+        # Ligand FF cache lives in the SHARED per-run dir (ligand-keyed), so
+        # AM1-BCC/antechamber charge derivation runs ONCE for the run's
+        # (identical) ligand instead of re-running under each candidate's
+        # workdir. Falls back to workdir when no shared dir was threaded in.
+        system_generator, _ff = _ligand_system_generator(
+            off_lig, workdir, cache_dir=ligand_cache_dir,
+        )
     except _LigandParamUnsupported as exc:
         log.warning(
             "no small-molecule FF can parameterize the ligand for %s "

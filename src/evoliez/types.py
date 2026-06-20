@@ -97,6 +97,19 @@ class Pose:
     ligand_atoms: List[LigandAtom] = field(default_factory=list)
     rmsd_to_reference: Optional[float] = None
     cluster: int = 0
+    # --- score provenance (paper-grade audit; defaults keep old construction) ---
+    # ``rank`` is 1-based within the engine's own output ordering (gnina SDF mode
+    # order / diffdock rankN). ``score_type`` names what ``score`` IS, e.g.
+    # "minimizedAffinity" (gnina, lower=better) | "diffdock_confidence" (higher=
+    # better). ``cnn_score``/``cnn_affinity`` are gnina's CNN tags (None for
+    # diffdock/mock). ``engine_version`` / ``command_args`` record exactly how the
+    # pose was produced so a reviewer can reconstruct the run.
+    rank: int = 1
+    score_type: str = ""
+    cnn_score: Optional[float] = None
+    cnn_affinity: Optional[float] = None
+    engine_version: str = ""
+    command_args: str = ""
 
 
 @dataclass

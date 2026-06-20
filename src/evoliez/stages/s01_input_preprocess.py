@@ -8,7 +8,7 @@ from evoliez.adapters.base import mock_fallback_allowed
 from evoliez.config import Backend
 from evoliez.context import RunContext
 from evoliez.db.schema import Sequence
-from evoliez.features.ligand import parse_ligand
+from evoliez.features.ligand import parse_ligand, resolve_ligand_manifest
 from evoliez.stages.base import Stage
 
 _VALID_AA = set("ACDEFGHIKLMNPQRSTVWYX")
@@ -123,6 +123,13 @@ class InputPreprocessStage(Stage):
         ctx.put("target_sequence", seq)
         ctx.put("ligand", ligand)
         ctx.put("extra_ligands", extra_ligands)
+        # Role-based ligand manifest (GENERIC): resolve roles -> docking targets +
+        # context chains. Additive — the positional ligand/extra_ligands above stay
+        # for back-compat; multi-engine docking consumes dock_ligands/context_ligands.
+        manifest = resolve_ligand_manifest(cfg.ligand, cfg.extra_ligands)
+        ctx.put("ligand_manifest", manifest)
+        ctx.put("dock_ligands", [m for m in manifest if m.dock])
+        ctx.put("context_ligands", [m for m in manifest if m.keep_as_context])
         ctx.put("catalytic_positions", catalytic)
         ctx.put("fixed_positions", sorted(set(fixed) | set(catalytic)))
         ctx.put("known_binding_site", known_site)
@@ -154,6 +161,45 @@ class InputPreprocessStage(Stage):
             "target=%d aa, ligand=%s (%d heavy atoms), catalytic=%s",
             len(seq), ligand.id, ligand.n_heavy, catalytic,
         )
+        self._write_report(ctx)
+
+    def _write_report(self, ctx: RunContext) -> None:
+        """s01 input/ligand provenance + chemistry report. Secondary — never
+        fail the stage. Re-derives from config so it also works on --resume."""
+        try:
+            from datetime import datetime
+
+            from evoliez.io.input_report import (compute_input_stats,
+                                                 write_input_report)
+            cfg = ctx.config.input
+            seq = ctx.get("target_sequence") or ""
+            ligand = ctx.get("ligand") or parse_ligand(cfg.ligand)
+            extras = []
+            for el in cfg.extra_ligands:
+                try:
+                    extras.append((el.id, el.type, parse_ligand(el).smiles))
+                except Exception:
+                    extras.append((el.id, el.type, el.value))
+            src = (f"FASTA file: {cfg.target_fasta}" if cfg.target_fasta
+                   else "inline target_sequence (config)")
+            stats = compute_input_stats(
+                target_id=cfg.target_id, sequence=seq, sequence_source=src,
+                ligand=(ligand.id, cfg.ligand.type, ligand.smiles),
+                extra_ligands=extras,
+                residues={"catalytic": list(cfg.catalytic_residues),
+                          "fixed": list(cfg.fixed_residues),
+                          "binding": list(cfg.known_binding_site)},
+                organism=cfg.organism, ec_number=cfg.ec_number,
+                target_ph=cfg.target_ph,
+                ligand_atom_ids=[a.id for a in ligand.atoms],
+            )
+            write_input_report(
+                ctx.paths.reports / "input_report.html", stats=stats,
+                generated=datetime.now().strftime("%Y-%m-%d %H:%M"))
+            self.log.info("input report: %s",
+                          ctx.paths.reports / "input_report.html")
+        except Exception as exc:  # report is secondary
+            self.log.warning("input report failed: %s", exc)
 
     def load(self, ctx: RunContext) -> bool:
         fa = ctx.paths.inputs / "target.fasta"
@@ -162,6 +208,20 @@ class InputPreprocessStage(Stage):
         seq = _read_fasta(str(fa))
         ctx.put("target_sequence", seq)
         ctx.put("ligand", parse_ligand(ctx.config.input.ligand))
+        # Extra cofactors/substrates co-modelled in s04 and docked as separate
+        # context in s05 MUST be restored on resume too. run() puts these; if
+        # load() omits them, a resumed s04/s05 silently regresses to
+        # single-ligand (drops formate etc.). Re-parse from config — the same
+        # source run() uses, and RDKit is present so the result matches.
+        ctx.put("extra_ligands",
+                [parse_ligand(el) for el in ctx.config.input.extra_ligands])
+        # Role manifest must be restored on resume too (parity with run()), else a
+        # resumed multi-engine docking sees no dock_ligands/context_ligands.
+        manifest = resolve_ligand_manifest(ctx.config.input.ligand,
+                                           ctx.config.input.extra_ligands)
+        ctx.put("ligand_manifest", manifest)
+        ctx.put("dock_ligands", [m for m in manifest if m.dock])
+        ctx.put("context_ligands", [m for m in manifest if m.keep_as_context])
         ctx.put("catalytic_positions", ctx.meta("catalytic_positions", []))
         ctx.put(
             "fixed_positions",
@@ -174,6 +234,7 @@ class InputPreprocessStage(Stage):
             "known_binding_site",
             parse_residue_tokens(ctx.config.input.known_binding_site),
         )
+        self._write_report(ctx)
         return True
 
 

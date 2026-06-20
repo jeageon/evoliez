@@ -7,6 +7,7 @@ proxy, and per-mutant redocking consistency vs the WT reference pose.
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 from evoliez.adapters import foldx, rosetta
@@ -76,8 +77,35 @@ class NonMDValidationStage(Stage):
         # (audit P1 #2). Stability stays on the proxy: FoldX/Rosetta build the
         # mutant from the WT structure + mutation list, so they want WT coords.
         mutant_complexes = ctx.get("mutant_complexes", {}) or {}
-        kept: List[Candidate] = []
-        for cand in candidates:
+
+        # --- shared-server CPU bound for the fan-out below -------------------
+        # The watchdog throttles us to 0.2 core if ~48 cores stay busy 10+ min,
+        # and vina/gnina/FoldX each grab cores. So BOUND total concurrency:
+        #   peak cores <= MAX_WORKERS x CPU_PER_DOCK = 4 x 4 = 16  (<= ~16-24).
+        # MAX_WORKERS is a small hardcoded constant (no config field, by design).
+        # CPU_PER_DOCK is pushed into vina via `--cpu` (DockingConfig.cpu): the
+        # stock default is 0 = "all cores", which 4-wide would oversubscribe the
+        # box, so we cap it. Each worker runs its dockers SEQUENTIALLY (the
+        # methods dict-comp redocks one method at a time) and FoldX/Rosetta
+        # before them, so a single worker draws at most CPU_PER_DOCK cores at
+        # once -> 4 workers x 4 = 16 peak, safely under the 24/48 thresholds.
+        # If the user already configured a SMALLER positive cpu cap, keep it
+        # (min); never raise their cap.
+        MAX_WORKERS = 4
+        CPU_PER_DOCK = 4
+        user_cpu = getattr(dcfg, "cpu", 0) or 0
+        capped_cpu = (min(user_cpu, CPU_PER_DOCK) if user_cpu > 0 else CPU_PER_DOCK)
+        dcfg = dcfg.model_copy(update={"cpu": capped_cpu})
+
+        def _process_candidate(cand: Candidate) -> Candidate:
+            """Validate ONE candidate (stability + redocking + geometry). Run by
+            the ThreadPoolExecutor below. Thread-safe: each call mutates only its
+            own ``cand.scores``/``cand.details`` (distinct objects) and writes to
+            a candidate_id-scoped workdir, while reading ctx/wt/catalytic/wt_cat
+            read-only. The heavy work (FoldX/Rosetta/gnina/vina) is in
+            subprocesses, so this is I/O-bound (GIL released in subprocess.run) —
+            a thread pool is the right tool, not a process pool. Returns ``cand``;
+            the caller applies the kept-filter + MD selection deterministically."""
             mc = _mutant_complex(wt, cand)
             redock_cx = mutant_complexes.get(cand.candidate_id)
             redock_structure = (redock_cx.structure if redock_cx is not None
@@ -123,23 +151,59 @@ class NonMDValidationStage(Stage):
                 )
 
             inst = _instability(cand)
-            pose = redock_with(
-                dcfg.methods[0], ctx, cand.candidate_id, redock_structure,
-                ref_atoms, dcfg, ctx.paths.validation / "redock", inst,
-                wt.ligand.smiles, stage_name=self.name,
-            )
-            cand.scores["docking_score"] = pose.score
-            consistency, uncertainty, ligand_escape = _redock_metrics(
-                pose.rmsd_to_reference
-            )
+            # Run ALL configured dockers (not just methods[0]) so multi-docker
+            # AGREEMENT is real: a candidate counts as a consistent redock only
+            # if EVERY method reproduces the reference pose. Per-method score +
+            # RMSD are recorded for the validation table; the cross-method spread
+            # surfaces disagreement.
+            poses = {
+                method: redock_with(
+                    method, ctx, cand.candidate_id, redock_structure,
+                    ref_atoms, dcfg, ctx.paths.validation / "redock", inst,
+                    wt.ligand.smiles, stage_name=self.name,
+                )
+                for method in dcfg.methods
+            }
+            cand.details["redock"] = {
+                m: {"score": round(p.score, 3),
+                    "rmsd_to_reference": (round(p.rmsd_to_reference, 3)
+                                          if p.rmsd_to_reference is not None else None)}
+                for m, p in poses.items()
+            }
+            cand.scores["docking_score"] = poses[dcfg.methods[0]].score
+            rmsds = [p.rmsd_to_reference for p in poses.values()]
+            # worst (largest) RMSD across methods; an unverifiable pose (None)
+            # propagates as unknown -> neutral consistency, never a free pass.
+            worst = None if any(r is None for r in rmsds) else max(rmsds)
+            consistency, uncertainty, ligand_escape = _redock_metrics(worst)
             cand.scores["redocking_consistency"] = consistency
             cand.scores["docking_uncertainty"] = uncertainty
+            verified = [r for r in rmsds if r is not None]
+            if len(verified) > 1:                    # multi-docker disagreement
+                cand.scores["docking_method_spread"] = round(
+                    max(verified) - min(verified), 3)
 
-            mut_cat = catalytic_distances(mc.structure, ref_atoms, catalytic)
+            # Catalytic-geometry penalty (audit P1 #5): measure it on the REAL
+            # mutant pose when s08b produced one. ``_mutant_complex`` is just WT
+            # coords + a residue-identity swap, so catalytic_distances on it ~=
+            # WT -> penalty ~= 0 (it can't see backbone/pose change). The s08b
+            # Boltz mutant has its OWN backbone AND its OWN ligand pose, so using
+            # its structure + its ligand atoms makes the penalty actually capture
+            # how the mutation moved the active site. Fall back to the proxy (WT
+            # coords + WT reference ligand) when no real mutant complex exists.
+            if redock_cx is not None:
+                geom_structure = redock_cx.structure
+                geom_ligand = redock_cx.ligand.atoms
+            else:
+                geom_structure = mc.structure
+                geom_ligand = ref_atoms
+            mut_cat = catalytic_distances(geom_structure, geom_ligand, catalytic)
             geom_pen = 0.0
             for k, v in mut_cat.items():
                 geom_pen += abs(v - wt_cat.get(k, v)) / 4.0
             cand.scores["catalytic_geometry_penalty"] = round(geom_pen, 4)
+            cand.details["catalytic_geometry_source"] = (
+                "mutant_boltz" if redock_cx is not None else "wt_proxy")
             cand.scores["key_contact_preservation"] = round(consistency, 4)
             cand.scores["complex_confidence"] = wt.confidence
             cand.scores["instability"] = round(inst, 4)
@@ -161,22 +225,45 @@ class NonMDValidationStage(Stage):
                     catalytic_positions=catalytic,
                     buried_fraction=cand.details.get("features", {}).get(
                         "buried_fraction", 0.5),
-                    docking_score=pose.score,
+                    docking_score=cand.scores["docking_score"],
                     redocking_consistency=consistency,
                 )
                 cand.scores.update(negp)
 
-            # filters (spec 14.3)
+            # filters (spec 14.3). Record the reject reason on the candidate; the
+            # serial KEPT list is rebuilt deterministically after the fan-out so
+            # completion order never leaks into the result.
             reasons = []
             if cand.scores["ddg_fold"] > scfg.max_ddg_allowed:
                 reasons.append(f"ddG {cand.scores['ddg_fold']:.2f} > "
                                f"{scfg.max_ddg_allowed}")
             if ligand_escape:
                 reasons.append("ligand displaced on redocking")
+            cand.details.pop("nonmd_rejected", None)  # clear stale flag on resume
             if reasons:
                 cand.details["nonmd_rejected"] = "; ".join(reasons)
-            else:
-                kept.append(cand)
+            return cand
+
+        # Fan the per-candidate work out across a BOUNDED thread pool. Each
+        # candidate is independent (own scores/details + own scoped workdir) and
+        # blocks in subprocesses, so threads overlap the I/O wait without GIL
+        # contention. We do NOT consume results in completion order: we wait for
+        # ALL of them, then rebuild `kept` by iterating `candidates` in their
+        # original order, so the kept set + MD selection are byte-identical to the
+        # serial version for a given input.
+        workers = max(1, min(MAX_WORKERS, len(candidates)))
+        if workers == 1:
+            for cand in candidates:
+                _process_candidate(cand)
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                # list() forces every future to complete (and re-raises any
+                # worker exception) before we proceed to selection.
+                list(pool.map(_process_candidate, candidates))
+
+        kept: List[Candidate] = [
+            c for c in candidates if "nonmd_rejected" not in c.details
+        ]
 
         # advance the best survivors to MD
         kept.sort(

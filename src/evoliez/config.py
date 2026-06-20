@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -33,6 +33,16 @@ class LigandInput(_Base):
     id: str = "ligand_X"
     type: str = Field("smiles", description="smiles | sdf | mol2 | pdb | inchi | ccd")
     value: str = Field(..., description="SMILES string or path to a structure file")
+    # Role-based docking manifest (GENERIC — never hardcode a ligand's identity).
+    # `role` is free-form (e.g. design_ligand | cofactor | substrate | product |
+    # ion | other). `role=None` means the POSITIONAL default: the primary
+    # `InputConfig.ligand` is the design ligand, each `extra_ligand` a cofactor.
+    # `dock` / `keep_as_context` override the role-derived defaults when set:
+    #   dock            None -> True iff resolved role == "design_ligand"
+    #   keep_as_context None -> True iff resolved role != "design_ligand"
+    role: Optional[str] = None
+    dock: Optional[bool] = None
+    keep_as_context: Optional[bool] = None
 
 
 class InputConfig(_Base):
@@ -88,6 +98,9 @@ class HomologConfig(_Base):
     # hhblits_iterations = `hhblits -n`.
     jackhmmer_bin: Optional[str] = None
     hhblits_bin: Optional[str] = None
+    # Full path to the mmseqs binary when it isn't on PATH (e.g. it lives in a
+    # different conda env than the pipeline). Used by the local-MSA path too.
+    mmseqs_bin: Optional[str] = None
     hhblits_iterations: int = 2
     # jackhmmer is bottlenecked by a SINGLE DB-reader/dispatch thread (~2 MB/s),
     # so --cpu barely helps. >1 here splits the target DB into N chunks and runs
@@ -202,6 +215,26 @@ class MutationGenConfig(_Base):
     conservation_fix_threshold: float = 0.9
     ligandmpnn_samples: int = 32
     ligandmpnn_temperature: float = 0.1
+    # --- generation strategy (s07) ------------------------------------------ #
+    # Per-generator share of max_candidates so the FIRST generator can't fill the
+    # cap and starve the rest. Empty -> a sensible default that favours
+    # LigandMPNN + the multipoint library. Keys: chemistry_rules | msa_sampler |
+    # ligandmpnn | multipoint.
+    generator_quota: Dict[str, float] = Field(default_factory=dict)
+    # FuncLib-style multi-point active-site library: combine the allowed single
+    # substitutions (from all generators) into 2..N-point combinations on
+    # spatially-central (closest-to-ligand) designable positions, where active-
+    # site epistasis lives. Sampled (bounded), not exhaustively enumerated.
+    multipoint: bool = True
+    multipoint_order: int = 3            # max simultaneous substitutions
+    multipoint_max: int = 0             # cap (0 -> ~30% of max_candidates)
+    # MSA-sampler generation GATES (not just a downstream score): drop columns
+    # gappier than msa_gap_max; require the family actually tolerates the residue.
+    msa_gap_max: float = 0.5
+    msa_top_k: int = 4
+    # Safety re-check on LigandMPNN designs (designable-only; never catalytic /
+    # fixed; cap mutations per design so it stays a focused active-site edit).
+    ligandmpnn_max_mut_per_design: int = 8
 
 
 class RerankConfig(_Base):
@@ -227,11 +260,34 @@ class InteractionModelConfig(_Base):
     """
 
     enabled: bool = True
-    representative_homologs: int = 24  # clustered representatives; "all" via -1
+    # How many subfamily representatives seed the Boltz family ensemble.
+    #   <int> -> exactly that many (one per LARGEST cluster, topped up by
+    #            identity); -1 -> every cluster.
+    #   "auto" -> size it from the MSA itself: take the largest subfamily
+    #            clusters until they cover `representative_coverage` of the
+    #            homolog pool, clamped to [representative_min, representative_max].
+    #            A deeper / more diverse MSA then trains on MORE representatives
+    #            and a shallow one on fewer, instead of a hard-coded count.
+    representative_homologs: Union[int, Literal["auto"]] = 24
+    representative_coverage: float = Field(
+        0.9, gt=0.0, le=1.0,
+        description="auto: fraction of homologs to cover by descending cluster size",
+    )
+    representative_min: int = Field(20, ge=1)   # auto floor (data-size guard)
+    representative_max: int = Field(150, ge=1)  # auto ceiling (compute cap)
     poses_per_homolog: int = 12
     docking_method: str = "vina"  # vina | gnina | diffdock
     contact_cutoff: float = 6.0  # ligand-atom -> residue interaction distance
     k_nearest_residues: int = 6  # per-ligand-atom nearest enzyme points
+    # Where each representative's Boltz MSA comes from:
+    #   "server" -> remote ColabFold (--use_msa_server): accurate but ~minutes/seq
+    #               and N external requests (infeasible for a large ensemble).
+    #   "local"  -> ONE batched mmseqs GPU search vs the local UniRef30 DB
+    #               (homologs.databases["mmseqs2"] / homologs.database), split into
+    #               per-rep a3m. Deep MSA, no external load — best for many reps.
+    #   "single" -> single-sequence Boltz (msa: empty): fastest, lowest accuracy.
+    rep_msa: Literal["server", "local", "single"] = "server"
+    rep_msa_max_seqs: int = 2000  # local: per-rep MSA depth cap (mmseqs --max-seqs)
     # statistical pose selection
     pose_select_mad_z: float = 2.5  # keep poses within this robust z of consensus
     pose_outlier_mad_z: float = 4.0  # beyond this -> negative example
@@ -243,8 +299,36 @@ class InteractionModelConfig(_Base):
     alternative_weight: float = 0.3
     hard_decoys_per_homolog: int = 2
     subfamily_holdout: bool = True
+    # --- multi-engine pose consensus (GNINA / DiffDock augmentation) --------- #
+    # The Boltz family consensus is the POSITIVE TEACHER. Docking poses augment
+    # the training data ONLY relative to that consensus: a docking pose that
+    # AGREES (close RMSD + high contact-fingerprint overlap + no clash + key/
+    # catalytic contacts preserved) is a WEAK POSITIVE; one that scores well yet
+    # DISAGREES is a HARD NEGATIVE (the valuable signal); a clashing / ligand-
+    # inverted / catalytic-broken pose is EXCLUDED. Default OFF -> behaviour is
+    # byte-identical to a Boltz-only run.
+    multi_engine: bool = False
+    multi_engine_methods: List[str] = Field(default_factory=list)  # gnina|diffdock
+    # Per-rep docking augmentation scope: 0 = ALL representatives (WT + every rep,
+    # ~2xN docking jobs); N>0 = cap to an identity-stratified sample of N reps (the
+    # WT is always docked). Keeps the augmentation from becoming a large standalone
+    # docking stage when the representative count is big.
+    multi_engine_max_reps: int = 0
+    consensus_overlap_rmsd: float = 2.0   # RMSD-to-consensus-pose AGREE threshold (Å)
+    consensus_overlap_fp: float = 0.6     # contact-fingerprint overlap AGREE threshold
+    hard_negative_weight: float = 1.0     # sample weight for discordant-high-score rows
+    weak_positive_weight: float = 0.3     # sample weight for agreeing docking rows
     # model
     model: str = "xgboost"  # xgboost | logistic | heuristic (auto-fallback)
+
+    @model_validator(mode="after")
+    def _check_representative_bounds(self) -> "InteractionModelConfig":
+        if self.representative_min > self.representative_max:
+            raise ValueError(
+                f"representative_min ({self.representative_min}) must be <= "
+                f"representative_max ({self.representative_max})"
+            )
+        return self
 
 
 class AdvancedConfig(_Base):
@@ -314,6 +398,7 @@ class ScoreWeights(_Base):
     stability: float = 0.75
     md_lite: float = 1.0
     family_interaction: float = 1.0  # learned family-geometry consistency
+    mutant_boltz_gain: float = 1.0  # real per-mutant ΔBoltz ligand-binding gain (s08b)
     gnn: float = 0.0  # EvoLigand-GNN score (0 unless a model is trained)
     # penalties
     conservation_penalty: float = 1.0

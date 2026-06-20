@@ -2,19 +2,25 @@
 
 real: DiffDock inference CLI.
 mock: deterministic perturbed pose (shared helper).
+
+The s06b multi-engine redesign adds GPU-BATCH inference (:func:`redock_batch`:
+ONE model load per GPU for many targets) and parses ALL ranks (every
+``rankN_confidence*.sdf``) with confidence provenance, not just rank-1.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from evoliez.adapters.base import (
     fail_unless_mock_allowed,
     full_atom_receptor_pdb,
     lock_pose_to_reference,
-    mock_redock,
+    mock_redock_modes,
     parse_sdf_first_pose,
+    tool_version,
     write_min_pdb,
 )
 from evoliez.config import Backend, DockingConfig
@@ -25,6 +31,10 @@ from evoliez.utils.subprocess_utils import require, run
 
 log = get_logger("evoliez.diffdock")
 METHOD = "diffdock"
+SCORE_TYPE = "diffdock_confidence"
+
+# One batch task: (complex_id, receptor_structure, reference_atoms, smiles).
+BatchTask = Tuple[str, ProteinStructure, Sequence[LigandAtom], str]
 
 
 def redock(
@@ -38,19 +48,175 @@ def redock(
     smiles: str,
     backend: Backend,
     dry_run: bool = False,
+    context_chains=None,  # accepted for a uniform call signature but IGNORED:
+                          # DiffDock's learned model takes a protein receptor +
+                          # one ligand, with no cofactor-context input.
 ) -> Pose:
+    """Back-compat single-pose entry point: the rank-1 (best) DiffDock pose.
+
+    Kept verbatim for existing callers; internally returns ``redock_all(...)[0]``
+    so the rank-parsing/provenance path is shared with the batch entry point."""
+    return redock_all(
+        candidate_id, structure, reference_atoms, cfg, workdir,
+        instability=instability, smiles=smiles, backend=backend,
+        dry_run=dry_run,
+    )[0]
+
+
+def redock_all(
+    candidate_id: str,
+    structure: ProteinStructure,
+    reference_atoms: Sequence[LigandAtom],
+    cfg: DockingConfig,
+    workdir: Path,
+    *,
+    instability: float,
+    smiles: str,
+    backend: Backend,
+    dry_run: bool = False,
+) -> List[Pose]:
+    """ALL DiffDock ranks (best first) for a SINGLE target, fully provenanced.
+    Always non-empty (rank-1 at index 0). The batch path (:func:`redock_batch`)
+    is preferred on the server (one model load for many targets); this stays for
+    one-off / per-target callers."""
     if backend is Backend.real:
-        return _redock_real(
+        return _redock_real_all(
             candidate_id, structure, smiles, cfg, workdir,
             reference_atoms, dry_run=dry_run,
         )
-    return mock_redock(
-        candidate_id, METHOD, reference_atoms, instability=instability,
-        score_offset=-0.2,
+    return mock_redock_modes(
+        candidate_id, METHOD, reference_atoms,
+        n_modes=max(1, int(cfg.poses_per_candidate)),
+        score_type=SCORE_TYPE, higher_is_better=True, with_cnn=False,
+        base_instability=max(0.02, instability), score_offset=-0.2,
     )
 
 
-def _redock_real(
+def redock_batch(
+    tasks: Sequence[BatchTask],
+    out_root: Path,
+    cfg: DockingConfig,
+    *,
+    backend: Backend,
+    dry_run: bool = False,
+    gpu_device: Optional[int] = None,
+) -> Dict[str, List[Pose]]:
+    """GPU-BATCH DiffDock: ONE model load for MANY targets.
+
+    ``tasks`` is a sequence of ``(complex_id, receptor_structure,
+    reference_atoms, smiles)``. The real path writes ONE ``protein_ligand_csv``
+    with a row per task (``complex_name``=complex_id, ``protein_path``=the
+    per-task receptor PDB written under ``out_root``, ``ligand_description``=
+    smiles, ``protein_sequence``=""), runs a SINGLE ``python -m inference
+    --protein_ligand_csv <csv> --out_dir <out_root> --samples_per_complex <cfg>``
+    (the same flags as the single-target path; the GPU pin is the CALLER's job
+    via ``CUDA_VISIBLE_DEVICES`` — ``gpu_device`` is accepted only for logging),
+    then parses ALL ranks for EACH complex.
+
+    Returns ``{complex_id: [Pose, ...]}`` (best rank first per complex). A task
+    whose receptor is unavailable degrades per the usual honesty contract (mock
+    list if allowed, else raises).
+
+    Mock backend: a deterministic N-rank ensemble per complex, no real tool."""
+    if backend is not Backend.real:
+        return {
+            cid: mock_redock_modes(
+                cid, METHOD, ref,
+                n_modes=max(1, int(cfg.poses_per_candidate)),
+                score_type=SCORE_TYPE, higher_is_better=True, with_cnn=False,
+                base_instability=0.08, score_offset=-0.2,
+            )
+            for (cid, _struct, ref, _smiles) in tasks
+        }
+    return _redock_batch_real(
+        tasks, Path(out_root), cfg, dry_run=dry_run, gpu_device=gpu_device,
+    )
+
+
+def _redock_batch_real(
+    tasks: Sequence[BatchTask],
+    out_root: Path,
+    cfg: DockingConfig,
+    *,
+    dry_run: bool,
+    gpu_device: Optional[int],
+) -> Dict[str, List[Pose]]:
+    require("python")
+    apply_gpu_selection()
+    out_root.mkdir(parents=True, exist_ok=True)
+    if gpu_device is not None:
+        log.info("diffdock batch: %d task(s), pinned to GPU %s (by caller)",
+                 len(tasks), gpu_device)
+
+    rows: List[str] = ["complex_name,protein_path,ligand_description,protein_sequence"]
+    refs: Dict[str, Sequence[LigandAtom]] = {}
+    result: Dict[str, List[Pose]] = {}
+    for cid, structure, ref_atoms, smiles in tasks:
+        refs[cid] = ref_atoms
+        rec = out_root / f"{cid}_rec.pdb"
+        if not full_atom_receptor_pdb(structure, rec):
+            if dry_run:
+                write_min_pdb(rec, structure)
+            else:
+                fail_unless_mock_allowed(
+                    f"diffdock: no full-atom receptor for {cid} "
+                    "(upstream s04/s08b emitted a CA-only/mock structure)")
+                log.warning(
+                    "diffdock: no full-atom receptor for %s; mock fallback "
+                    "(NOT a real dock)", cid,
+                )
+                result[cid] = _mock_all(cid, ref_atoms, cfg)
+                continue
+        # CSV fields must not contain commas; receptor paths/SMILES here don't,
+        # but resolve() keeps the path absolute for DiffDock's cwd-relative run.
+        rows.append(f"{cid},{rec.resolve()},{smiles},")
+
+    csv_targets = [r for r in rows[1:]]
+    if not csv_targets:               # every task degraded above -> nothing to run
+        return result
+
+    csv = out_root / "batch_input.csv"
+    csv.write_text("\n".join(rows) + "\n")
+    # DiffDock's `inference` module lives in its repo, not on the pipeline's
+    # import path. Run it FROM that repo (cwd) so `-m inference` resolves, rather
+    # than putting it on PYTHONPATH globally. EVOLIEZ_DIFFDOCK points at the
+    # clone; its model weights live under <repo>/workdir.
+    cmd = [
+        "python", "-m", "inference",
+        "--protein_ligand_csv", str(csv.resolve()),
+        "--out_dir", str(out_root.resolve()),
+        "--samples_per_complex", str(cfg.poses_per_candidate),
+    ]
+    run(cmd, cwd=os.environ.get("EVOLIEZ_DIFFDOCK"), dry_run=dry_run)
+    version = tool_version("python", "-c",
+                           "import importlib.metadata as m;"
+                           "print('diffdock', m.version('diffdock'))") or ""
+
+    for cid, structure, ref_atoms, smiles in tasks:
+        if cid in result:             # already degraded to mock above
+            continue
+        if dry_run:
+            result[cid] = _mock_all(cid, ref_atoms, cfg)
+            continue
+        complex_dir = _complex_out_dir(out_root, cid)
+        if complex_dir is None:
+            fail_unless_mock_allowed(
+                f"diffdock produced no output for {cid} (under {out_root})")
+            log.warning(
+                "diffdock produced no output for %s (%s); mock fallback "
+                "(NOT a real dock)", cid, out_root,
+            )
+            result[cid] = _mock_all(cid, ref_atoms, cfg)
+            continue
+        poses = parse_all_ranks(
+            complex_dir, ref_atoms, candidate_id=cid,
+            command_args=" ".join(cmd), engine_version=version,
+        )
+        result[cid] = poses or _mock_all(cid, ref_atoms, cfg)
+    return result
+
+
+def _redock_real_all(
     candidate_id: str,
     structure: ProteinStructure,
     smiles: str,
@@ -59,7 +225,7 @@ def _redock_real(
     reference_atoms: Sequence[LigandAtom],
     *,
     dry_run: bool,
-) -> Pose:
+) -> List[Pose]:
     require("python")
     apply_gpu_selection()
     workdir.mkdir(parents=True, exist_ok=True)
@@ -77,22 +243,22 @@ def _redock_real(
                 "diffdock: no full-atom receptor for %s; mock fallback "
                 "(NOT a real dock)", candidate_id,
             )
-            return mock_redock(candidate_id, METHOD, reference_atoms,
-                               instability=0.2)
+            return _mock_all(candidate_id, reference_atoms, cfg)
     csv = workdir / f"{candidate_id}_input.csv"
     csv.write_text(
         "complex_name,protein_path,ligand_description,protein_sequence\n"
         f"{candidate_id},{rec},{smiles},\n"
     )
     out = workdir / f"{candidate_id}_dd_out"
-    run(
-        ["python", "-m", "inference", "--protein_ligand_csv", str(csv),
-         "--out_dir", str(out), "--samples_per_complex",
-         str(cfg.poses_per_candidate)],
-        dry_run=dry_run,
-    )
+    cmd = [
+        "python", "-m", "inference",
+        "--protein_ligand_csv", str(csv.resolve()),
+        "--out_dir", str(out.resolve()),
+        "--samples_per_complex", str(cfg.poses_per_candidate),
+    ]
+    run(cmd, cwd=os.environ.get("EVOLIEZ_DIFFDOCK"), dry_run=dry_run)
     if dry_run:
-        return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
+        return _mock_all(candidate_id, reference_atoms, cfg)
     if not out.exists():
         fail_unless_mock_allowed(
             f"diffdock produced no output for {candidate_id} ({out})")
@@ -100,31 +266,147 @@ def _redock_real(
             "diffdock produced no output for %s (%s); using mock fallback "
             "(NOT a real dock)", candidate_id, out,
         )
-        return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
-    score = _parse_diffdock(out)
-    # Adopt the rank-1 docked pose coordinates (was discarded -> no RMSD ->
-    # falsely 'perfect' redocking_consistency in s09). Use the SAME confidence-
-    # first selection as the score parser so the score and the coords come from
-    # one pose (a bare rank1.sdf sorts first and would mismatch them).
-    ranks = _rank1_pose_files(out)
-    locked, rmsd = lock_pose_to_reference(
-        parse_sdf_first_pose(ranks[0]) if ranks else [], reference_atoms,
-        candidate_id=candidate_id, method=METHOD, logger=log,
+        return _mock_all(candidate_id, reference_atoms, cfg)
+    version = tool_version("python", "-c",
+                           "import importlib.metadata as m;"
+                           "print('diffdock', m.version('diffdock'))") or ""
+    poses = parse_all_ranks(
+        out, reference_atoms, candidate_id=candidate_id,
+        command_args=" ".join(cmd), engine_version=version,
     )
-    return Pose(candidate_id=candidate_id, method=METHOD, score=score,
-                ligand_atoms=locked, rmsd_to_reference=rmsd, cluster=0)
+    return poses or _mock_all(candidate_id, reference_atoms, cfg)
 
 
+def _mock_all(candidate_id, reference_atoms, cfg) -> List[Pose]:
+    return mock_redock_modes(
+        candidate_id, METHOD, reference_atoms,
+        n_modes=max(1, int(cfg.poses_per_candidate)),
+        score_type=SCORE_TYPE, higher_is_better=True, with_cnn=False,
+        base_instability=0.2, score_offset=-0.2,
+    )
+
+
+def _complex_out_dir(out_root: Path, complex_id: str) -> Optional[Path]:
+    """DiffDock writes each complex's ranks under ``<out_dir>/<complex_name>/``.
+    Return that per-complex dir if it holds any ``rank*.sdf``, else the deepest
+    dir under ``out_root`` that does (some versions nest differently), else None.
+
+    Scoping per-complex matters in the BATCH case: ``out_root`` holds one
+    sub-dir per task, so we must not let one complex's ranks leak into another's.
+    """
+    cand = out_root / complex_id
+    if cand.is_dir() and any(_is_rank(p) for p in cand.glob("rank*.sdf")):
+        return cand
+    # Fallback: a directory directly containing this complex's rank files. Match
+    # on the complex_id appearing in the path so batch dirs stay separated.
+    for sub in sorted(p for p in out_root.rglob("*") if p.is_dir()):
+        if complex_id in sub.name and any(_is_rank(p) for p in sub.glob("rank*.sdf")):
+            return sub
+    # Last resort (single-target layout): out_root itself or any dir with ranks.
+    if any(_is_rank(p) for p in out_root.glob("rank*.sdf")):
+        return out_root
+    for sub in sorted(p for p in out_root.rglob("*") if p.is_dir()):
+        if any(_is_rank(p) for p in sub.glob("rank*.sdf")):
+            return sub
+    return None
+
+
+def parse_all_ranks(
+    complex_out_dir,
+    reference_atoms: Sequence[LigandAtom],
+    *,
+    candidate_id: str = "",
+    command_args: str = "",
+    engine_version: str = "",
+) -> List[Pose]:
+    """Parse EVERY DiffDock rank for ONE complex into provenanced :class:`Pose`s.
+
+    DiffDock writes per-complex ``rank{N}_confidence{score}.sdf`` (N=1 is best)
+    and sometimes a bare ``rank1.sdf``; the confidence is encoded IN THE
+    FILENAME (``confidence-0.53`` etc.). For each rank file we emit a Pose with
+    ``rank`` = the parsed integer, docked ``ligand_atoms`` (locked onto the
+    canonical reference), ``score`` = confidence (``score_type``=
+    "diffdock_confidence", HIGHER is better), and ``command_args`` /
+    ``engine_version``. A bare ``rankN.sdf`` with no confidence token -> score
+    0.0 (unscored) with a warning, NEVER a fabricated affinity. Returned best
+    rank first (rank ascending)."""
+    files = _rank_files(complex_out_dir)
+    poses: List[Pose] = []
+    import re
+
+    for rank_n, path in files:
+        atoms = parse_sdf_first_pose(path)
+        locked, rmsd = lock_pose_to_reference(
+            atoms, reference_atoms,
+            candidate_id=candidate_id, method=METHOD, logger=log,
+        )
+        m = re.search(r"confidence(-?\d+\.?\d*)", path.name)
+        if m:
+            score = round(float(m.group(1)), 4)
+        else:
+            score = 0.0
+            log.warning(
+                "diffdock rank-%d pose %s has no confidence token; unscored",
+                rank_n, path.name,
+            )
+        poses.append(Pose(
+            candidate_id=candidate_id, method=METHOD, score=score,
+            ligand_atoms=locked, rmsd_to_reference=rmsd,
+            cluster=rank_n - 1, rank=rank_n, score_type=SCORE_TYPE,
+            engine_version=engine_version, command_args=command_args,
+        ))
+    return poses
+
+
+def _is_rank(p: Path) -> bool:
+    import re
+    return re.match(r"rank\d+", p.name) is not None
+
+
+def _rank_files(out_dir) -> List[Tuple[int, Path]]:
+    """All ``rankN[...].sdf`` for a complex as ``[(N, path), ...]`` sorted by N.
+
+    Parses the rank INTEGER (a glob can't: ``rank1*`` also matches rank10..19,
+    and ``sorted()`` puts 'rank10' BEFORE 'rank1_' since '0' < '_'). When BOTH a
+    bare ``rankN.sdf`` and a ``rankN_confidence*.sdf`` exist for the same N, the
+    confidence-bearing file is kept (so the score and the adopted coordinates
+    come from the SAME real pose)."""
+    import re
+
+    best: Dict[int, Path] = {}
+    for p in Path(out_dir).glob("rank*.sdf"):
+        m = re.match(r"rank(\d+)", p.name)
+        if not m:
+            continue
+        n = int(m.group(1))
+        # Prefer the confidence-bearing file for a given rank.
+        if n not in best or ("confidence" in p.name and "confidence" not in best[n].name):
+            best[n] = p
+    return [(n, best[n]) for n in sorted(best)]
+
+
+# --------------------------------------------------------------------------- #
+# Back-compat single-pose helpers (referenced by tests/test_diffdock_rank.py and
+# the pre-redesign single-pose path). Kept working verbatim.
+# --------------------------------------------------------------------------- #
 def _rank1_pose_files(out_dir):
-    """rank-1 pose SDFs, confidence-bearing files FIRST. DiffDock writes
-    `rank1_confidence-X.XX.sdf`, but some versions also emit a bare `rank1.sdf`
-    which sorts before it ('.' < '_') and carries no confidence token. Preferring
-    confidence-bearing files keeps the score and the adopted coords on the SAME
-    real pose instead of pairing a fabricated score with a bare-file pose."""
+    """The DiffDock rank-1 (best) pose SDF(s), confidence-bearing file first.
+
+    DiffDock writes ``rank{N}_confidence{score}.sdf`` (N=1 is best) and sometimes
+    a bare ``rank1.sdf``. We parse the rank INTEGER and keep only N==1: a glob
+    like ``rank1*`` also matches rank10..19, and ``sorted()`` puts 'rank10'
+    BEFORE 'rank1_' ('0' < '_'), so the old code silently selected the WORST
+    pose. The confidence-bearing file is returned first so the score and the
+    adopted coordinates come from the SAME real pose."""
+    import re
     from pathlib import Path
 
-    conf = sorted(Path(out_dir).rglob("rank1*confidence*.sdf"))
-    return conf or sorted(Path(out_dir).rglob("rank1*.sdf"))
+    def _is_rank1(p):
+        m = re.match(r"rank(\d+)", p.name)
+        return m is not None and int(m.group(1)) == 1
+
+    r1 = [p for p in Path(out_dir).rglob("rank*.sdf") if _is_rank1(p)]
+    return sorted(p for p in r1 if "confidence" in p.name) or sorted(r1)
 
 
 def _parse_diffdock(out_dir):

@@ -24,6 +24,19 @@ class PoseRecord:
     msa_membership: float = 1.0
     identity_to_target: float = 0.0
     pred_score: float = 0.0  # per-pose docking/structure prediction score
+    # Provenance of the pose. "boltz" (the family-geometry teacher) is the
+    # default so every existing record keeps its meaning; the multi-engine
+    # extension tags augmenting docking poses "gnina"/"diffdock".
+    source: str = "boltz"
+    # Pre-assigned class for an externally-classified row (multi-engine docking
+    # poses already scored against the Boltz consensus). Empty -> let the
+    # in-group robust-z statistics classify it (the Boltz default path).
+    #   "weak_positive" | "hard_negative" | "strong_negative"
+    role: str = ""
+    # Per-row training weight for a pre-classified row (only consulted when
+    # `role` is set). Boltz rows ignore this and derive the weight from
+    # pred_score inside select_poses, as before.
+    sample_weight: float = 1.0
 
 
 @dataclass
@@ -43,6 +56,10 @@ class SelectionResult:
     n_outlier: int = 0
     n_decoy: int = 0
     n_hard_decoy: int = 0
+    # multi-engine docking augmentation (0 unless cfg.multi_engine fed in
+    # pre-classified gnina/diffdock rows).
+    n_weak_positive: int = 0
+    n_hard_negative: int = 0
     consensus: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
 
@@ -76,18 +93,28 @@ def select_poses(
     if not records:
         return SelectionResult(np.zeros((0, 0)), np.zeros(0))
 
-    fps = np.vstack([r.fingerprint for r in records])
+    # The family consensus is the BOLTZ teacher only: pre-classified docking
+    # rows (role set, source gnina/diffdock) were already scored against the
+    # Boltz consensus by multi_engine.classify_docking_poses, and must NEVER
+    # move the median that defines the family-geometry prior. Boltz-only
+    # statistics also keep the robust-z + pred_score normalisation byte-
+    # identical when multi_engine is off (every record then has role="").
+    boltz_records = [r for r in records if not r.role]
+    pre_records = [r for r in records if r.role]
+    stat_records = boltz_records or records  # degenerate: no Boltz rows at all
+
+    fps = np.vstack([r.fingerprint for r in stat_records])
     consensus = np.median(fps, axis=0)
     dists = np.linalg.norm(fps - consensus, axis=1)
     z = _robust_z(dists)
 
-    preds = np.array([r.pred_score for r in records], dtype=float)
+    preds = np.array([r.pred_score for r in stat_records], dtype=float)
     lo, hi = float(preds.min()), float(preds.max())
     rng_span = (hi - lo) or 1.0
 
     rows, soft, cls, wts = [], [], [], []
     n_pos = n_alt = n_out = 0
-    for rec, zi in zip(records, z):
+    for rec, zi in zip(stat_records, z):
         reln = (rec.pred_score - lo) / rng_span
         if zi <= select_z:  # class 3: consensus, strong positive
             rows.append(_augment(rec))
@@ -108,8 +135,29 @@ def select_poses(
             wts.append(alternative_weight)
             n_alt += 1
 
-    groups = sorted({r.group_id for r in records})
-    fp_dim = records[0].fingerprint.shape[0]
+    # Pre-classified multi-engine docking rows: the role already encodes the
+    # relationship to the Boltz consensus, so map it straight to a label +
+    # carried sample weight (no robust-z reclassification).
+    #   weak_positive  -> positive-ish (class 2, low weight): a docking pose that
+    #                     AGREES with the family geometry — mild corroboration.
+    #   hard_negative  -> negative (class 1, soft 0.15): scores well yet the
+    #                     contact pattern DISAGREES — the valuable hard signal.
+    #   strong_negative-> negative (class 0): clash / inverted / catalytic broken.
+    n_weak_pos = n_hard_neg = 0
+    for rec in pre_records:
+        rows.append(_augment(rec))
+        wts.append(float(rec.sample_weight))
+        if rec.role == "weak_positive":
+            soft.append(0.55); cls.append(2); n_weak_pos += 1
+        elif rec.role == "hard_negative":
+            soft.append(0.15); cls.append(1); n_hard_neg += 1
+        else:  # strong_negative (or any unknown role) -> hard negative class 0
+            soft.append(0.05); cls.append(0); n_hard_neg += 1
+
+    # Decoys are generated from the BOLTZ groups + consensus only (docking rows
+    # carry no homolog group and must not spawn synthetic per-group decoys).
+    groups = sorted({r.group_id for r in stat_records})
+    fp_dim = stat_records[0].fingerprint.shape[0]
     n_decoy = n_hard = 0
     for g in groups:
         # easy / chemically-impossible decoys: heavily perturbed geometry
@@ -151,7 +199,9 @@ def select_poses(
     return SelectionResult(
         X=X, y=y, weights=w, soft_y=soft_y, pose_class=pose_class,
         n_positive=n_pos, n_alternative=n_alt, n_outlier=n_out,
-        n_decoy=n_decoy, n_hard_decoy=n_hard, consensus=consensus,
+        n_decoy=n_decoy, n_hard_decoy=n_hard,
+        n_weak_positive=n_weak_pos, n_hard_negative=n_hard_neg,
+        consensus=consensus,
     )
 
 
