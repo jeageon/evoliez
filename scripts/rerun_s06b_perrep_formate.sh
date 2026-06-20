@@ -20,6 +20,16 @@ export EVOLIEZ_DIFFDOCK=/mnt/data/jglee/DiffDock
 export BOLTZ_CACHE=/mnt/data/jglee/evoliez_assets/boltz_cache
 export CUDA_VISIBLE_DEVICES=0,2,3          # 3 GPUs (leave GPU1); >1 -> dir-batch fresh fold
 export EVOLIEZ_NUM_THREADS=6               # keep CPU modest on the shared box
+# Boltz GPU-batching of each rep's diffusion samples. These were NEVER exported
+# by any launch script, so Boltz folded the 15 samples/rep SERIALLY (default
+# --max_parallel_samples=1). Folding them concurrently is quality-neutral (same
+# samples, same schedule) and VRAM-bound on the 48 GB A6000. ~2-4x the fold phase.
+export EVOLIEZ_BOLTZ_MAX_PARALLEL_SAMPLES=8
+export EVOLIEZ_BOLTZ_NUM_WORKERS=2
+export EVOLIEZ_BOLTZ_PREPROCESSING_THREADS=4
+# DiffDock reverse-diffusion GPU batch size (samples per forward pass). Unset ->
+# DiffDock's low default underfills the GPU; quality-neutral packing only.
+export EVOLIEZ_DIFFDOCK_BATCH=40
 export EVOLIEZ_DOCK_CPU=4                  # per-gnina search threads (3 GPUs x 4 = 12 cores)
 export OMP_NUM_THREADS=4                   # cap diffdock/torch CPU threads
 export MKL_NUM_THREADS=4
@@ -46,7 +56,7 @@ command -v gnina >/dev/null && command -v boltz >/dev/null \
 echo ">> [2/5] move old single-ligand rep structures aside (keep local_msa cache)"
 TS=$(date +%s); BAK="$RD/structures/representatives_singlelig_bak_$TS"
 mkdir -p "$BAK"; shopt -s nullglob
-moved=0; for d in "$REPS"/hom_* "$REPS"/boltz_results_*; do [ -e "$d" ] && { mv "$d" "$BAK/"; moved=$((moved+1)); }; done
+moved=0; for d in "$REPS"/hom_* "$REPS"/boltz_results_* "$REPS"/_batch_out_*; do [ -e "$d" ] && { mv "$d" "$BAK/"; moved=$((moved+1)); }; done
 echo "   moved $moved old rep dir(s) -> $BAK ; local_msa kept: $([ -d "$REPS/local_msa" ] && echo yes || echo no)"
 
 echo ">> [3/5] patch _state.json (fingerprint -> config; drop s06b so it re-runs)"

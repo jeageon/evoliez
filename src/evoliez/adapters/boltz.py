@@ -394,14 +394,29 @@ def _assign_residue_plddt(residues, token_plddt) -> None:
         r.plddt = fv * 100.0 if fv <= 1.5 else fv
 
 
-def _assemble_real_complex(outdir, found, sequence, ligand, primary_method) -> Complex:
+def _assemble_real_complex(
+    outdir, found, sequence, ligand, primary_method, *, structure_only: bool = False
+) -> Complex:
     """Parse a finished Boltz run (shared backbone + per-sample ligand poses +
     confidence + per-residue pLDDT) into a finalized Complex. Split out of
-    _predict_real so the real-output assembly is testable without the binary."""
+    _predict_real so the real-output assembly is testable without the binary.
+
+    ``structure_only`` (default False — every existing caller is byte-identical):
+    parse ONLY the representative model (``found[0]``) for ``cx.structure`` +
+    ``cx.ligand`` (+ ``structure.pdb_path``) and SKIP the full diffusion-sample
+    ensemble (``_parse_real_samples``) and the per-sample ``_load_plddt`` —
+    leaving ``cx.samples == []``. The s06b DOCKING phase only consumes the
+    receptor + reference ligand, never the samples, so this drops the per-stem
+    re-read of every model PDB + confidence JSON + plddt npz for that path."""
     structure_file = found[0]
     cx = _parse_real_structure(structure_file, sequence, ligand)
     cx.method = primary_method
     cx.path = str(structure_file)
+    if structure_only:
+        # Structure-only: keep cx.structure + cx.ligand + structure.pdb_path,
+        # leave cx.samples = [] and skip the per-sample pLDDT load. _finalize is
+        # a no-op without samples, so cx.metrics/confidence stay at defaults.
+        return _finalize(cx)
     cx.samples = _parse_real_samples(outdir, cx.ligand.atoms, found)
     if not cx.samples:  # at least one sample from aggregate scores
         m = _parse_one_confidence(outdir) or {}
@@ -419,7 +434,8 @@ def _assemble_real_complex(outdir, found, sequence, ligand, primary_method) -> C
 # same per-rep spec (protein+ligand+MSA) — only the launch topology changes.
 # --------------------------------------------------------------------------- #
 def parse_prediction_dir(
-    stem_dir: Path, sequence: str, ligand: Ligand, primary_method: str
+    stem_dir: Path, sequence: str, ligand: Ligand, primary_method: str,
+    *, structure_only: bool = False,
 ) -> Optional[Complex]:
     """Parse ONE rep's Boltz prediction, SCOPED to a single
     ``predictions/<stem>/`` directory, into a finalized Complex.
@@ -433,12 +449,21 @@ def parse_prediction_dir(
     into a single prediction (the exact unscoped-glob cross-contamination defect
     fixed once before). Here ``stem_dir`` IS that single subdir, so reusing
     ``_assemble_real_complex(stem_dir, <stem_dir's own pdbs>, …)`` is scoped by
-    construction. Returns None if the subdir holds no structure file."""
+    construction. Returns None if the subdir holds no structure file.
+
+    ``structure_only`` (default False keeps every caller byte-identical): parse
+    ONLY the representative model into ``cx.structure`` + ``cx.ligand`` and skip
+    the full diffusion-sample ensemble (``cx.samples == []``). The s06b DOCKING
+    phase needs only the receptor + reference ligand, so this avoids re-reading
+    every model PDB / confidence JSON / plddt npz for that path."""
     found = sorted(stem_dir.glob("*.cif")) + sorted(stem_dir.glob("*.pdb"))
     found = [p for p in found if not p.name.endswith("_complex.pdb")]
     if not found:
         return None
-    return _assemble_real_complex(stem_dir, found, sequence, ligand, primary_method)
+    return _assemble_real_complex(
+        stem_dir, found, sequence, ligand, primary_method,
+        structure_only=structure_only,
+    )
 
 
 def write_batch_input(
@@ -493,46 +518,112 @@ def predict_batch(
 
     Returns the ``boltz_results_<in_dirname>`` directory that holds the chunk's
     ``predictions/<stem>/`` subdirs (so the caller can scoped-parse each rep).
-    Resume-skip: if that results dir already has >= diffusion_samples models for
-    every input stem, the Boltz run is skipped (mirrors the per-rep skip)."""
+    Resume is PER-STEM: every input stem with >= diffusion_samples models is
+    skipped and only the INCOMPLETE stems are re-folded (one missing stem no
+    longer re-folds the whole chunk). The already-complete stems' outputs stay in
+    place, so the returned results dir still contains every stem. If all stems are
+    already complete the Boltz subprocess is skipped entirely."""
     if not dry_run:
         require("boltz")
     out_dir.mkdir(parents=True, exist_ok=True)
     results_dir = out_dir / f"boltz_results_{in_dir.name}"
 
     batch_seed = derive_seed(seed, "boltz_batch", str(gpu_device)) % (2 ** 31 - 1)
-    cmd = _build_predict_cmd(
-        in_dir, out_dir, cfg, batch_seed, any_msa_server=any_msa_server
-    )
     boltz_env = (
         {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu_device)}
         if gpu_device is not None else None
     )
 
-    # Resume-skip: a chunk is complete iff EVERY input stem already has >=
-    # diffusion_samples model PDBs in its predictions/<stem>/ subdir. Scoped per
-    # stem (not a flat count) so a half-finished chunk re-runs rather than being
-    # mistaken for done.
+    # Per-stem chunk-skip on resume: a stem is DONE iff its predictions/<stem>/
+    # already holds >= diffusion_samples model PDBs. Only the INCOMPLETE stems
+    # get re-folded — the all-or-nothing check (one missing stem -> re-fold the
+    # whole chunk) is replaced by filtering the chunk's input down to just the
+    # incomplete stems. Already-complete stems' outputs stay in place so the
+    # downstream per-stem parse_prediction_dir still finds every stem.
     want = max(1, cfg.diffusion_samples)
     stems = sorted(p.stem for p in in_dir.glob("*.yaml"))
     preds_root = results_dir / "predictions"
 
-    def _complete() -> bool:
-        if not stems or not preds_root.is_dir():
+    def _stem_done(stem: str) -> bool:
+        sub = preds_root / stem
+        if not sub.is_dir():
             return False
-        for stem in stems:
-            sub = preds_root / stem
-            models = [p for p in sub.glob("*.pdb")
-                      if not p.name.endswith("_complex.pdb")] if sub.is_dir() else []
-            if len(models) < want:
-                return False
-        return True
+        models = [p for p in sub.glob("*.pdb")
+                  if not p.name.endswith("_complex.pdb")]
+        return len(models) >= want
 
-    if dry_run or not _complete():
-        run(cmd, dry_run=dry_run, timeout=None, env=boltz_env)
-    else:
+    incomplete = [] if dry_run else [s for s in stems if not _stem_done(s)]
+
+    # Dry-run previews the FULL chunk command. A live run with every stem already
+    # complete skips the subprocess entirely (mirrors the per-rep resume-skip).
+    if not dry_run and stems and not incomplete:
         log.info("reusing complete batched Boltz chunk %s (%d stems, skip "
                  "recompute)", results_dir.name, len(stems))
+        return results_dir
+
+    # Full launch when: dry-run, no per-stem layout yet (every stem missing), or
+    # every stem is incomplete. Run Boltz over the original in_dir unchanged so
+    # the output lands directly in boltz_results_<in_dir.name>/.
+    if dry_run or len(incomplete) == len(stems):
+        cmd = _build_predict_cmd(
+            in_dir, out_dir, cfg, batch_seed, any_msa_server=any_msa_server
+        )
+        run(cmd, dry_run=dry_run, timeout=None, env=boltz_env)
+        return results_dir
+
+    # PARTIAL resume: re-fold ONLY the incomplete stems. Build a filtered input
+    # dir holding just those stems' YAMLs (+ any MSA file they reference that
+    # lives in in_dir), run Boltz over it into a SEPARATE results tree, then move
+    # each freshly produced predictions/<stem>/ back into the canonical
+    # results_dir so downstream parses every stem. results_dir name is unchanged.
+    import shutil
+
+    log.info("partial-resume batched Boltz chunk %s: re-folding %d of %d stem(s) "
+             "(%s)", results_dir.name, len(incomplete), len(stems),
+             ", ".join(incomplete))
+    filt_in = out_dir / f"{in_dir.name}_resume"
+    if filt_in.exists():
+        shutil.rmtree(filt_in)
+    filt_in.mkdir(parents=True, exist_ok=True)
+    for stem in incomplete:
+        yml = in_dir / f"{stem}.yaml"
+        shutil.copy2(yml, filt_in / yml.name)
+        # Copy any MSA file the spec references that lives inside in_dir so the
+        # (possibly relative) path still resolves from the filtered dir; absolute
+        # external MSAs keep working untouched.
+        try:
+            spec = yaml.safe_load(yml.read_text()) or {}
+            for seq_entry in spec.get("sequences", []):
+                mp = (seq_entry.get("protein", {}) or {}).get("msa")
+                if not mp or mp == "empty":
+                    continue
+                msa_src = Path(mp)
+                cand = msa_src if msa_src.is_absolute() else (in_dir / mp)
+                if cand.is_file() and cand.parent == in_dir:
+                    shutil.copy2(cand, filt_in / cand.name)
+        except Exception:
+            pass  # MSA copy is best-effort; absolute paths still resolve
+
+    filt_out = out_dir / f"_resume_out_{in_dir.name}"
+    filt_out.mkdir(parents=True, exist_ok=True)
+    cmd = _build_predict_cmd(
+        filt_in, filt_out, cfg, batch_seed, any_msa_server=any_msa_server
+    )
+    run(cmd, dry_run=False, timeout=None, env=boltz_env)
+
+    # Merge the freshly folded stems back into the canonical predictions tree.
+    fresh_preds = filt_out / f"boltz_results_{filt_in.name}" / "predictions"
+    preds_root.mkdir(parents=True, exist_ok=True)
+    for stem in incomplete:
+        src = fresh_preds / stem
+        if not src.is_dir():
+            continue
+        dst = preds_root / stem
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.move(str(src), str(dst))
+    shutil.rmtree(filt_in, ignore_errors=True)
+    shutil.rmtree(filt_out, ignore_errors=True)
     return results_dir
 
 

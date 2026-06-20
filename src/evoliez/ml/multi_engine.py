@@ -58,8 +58,18 @@ class DockingPoseInput:
     ligand_atoms: Sequence[LigandAtom]
     score: float = 0.0
     score_is_better_low: bool = True   # gnina affinity: lower is better
+    score_gate_pass: bool = True       # required for discordant hard negatives
     primary_only: bool = False         # docked design ligand only (no cofactor)
     candidate_id: str = "wt"
+    rank: int = 1
+    score_type: str = ""
+    cnn_score: Optional[float] = None
+    cnn_affinity: Optional[float] = None
+    engine_version: str = ""
+    command_args: str = ""
+    context_mode: str = ""
+    ligand_id: str = ""
+    ligand_role: str = ""
 
 
 @dataclass
@@ -74,8 +84,18 @@ class PoseClassification:
     key_contacts_ok: bool
     score: float
     sample_weight: float
+    score_gate_pass: bool = True
     primary_only: bool = False
     candidate_id: str = ""   # the docking target (WT / "rep_NNN") this pose is for
+    rank: int = 1
+    score_type: str = ""
+    cnn_score: Optional[float] = None
+    cnn_affinity: Optional[float] = None
+    engine_version: str = ""
+    command_args: str = ""
+    context_mode: str = ""
+    ligand_id: str = ""
+    ligand_role: str = ""
     note: str = ""
 
 
@@ -101,17 +121,29 @@ def _contact_pattern(fp: np.ndarray, *, n_bins: int) -> np.ndarray:
     return np.concatenate([contact_types, contact_fraction, hist])
 
 
+def _fp_overlap_cached(
+    a: np.ndarray, cons_pattern: np.ndarray, cons_norm: float, *, n_bins: int = 8
+) -> float:
+    """:func:`_fp_overlap` with the CONSENSUS side pre-computed. When classifying
+    many poses against ONE fixed consensus fingerprint, ``_contact_pattern(b)``
+    and its norm are loop-invariant; this variant takes them in so only the
+    per-pose ``a`` side is recomputed. Bit-identical to ``_fp_overlap(a, b)``
+    when ``cons_pattern == _contact_pattern(b, n_bins=n_bins)`` and
+    ``cons_norm == norm(cons_pattern)`` (same operations, same order)."""
+    pa = _contact_pattern(a, n_bins=n_bins)
+    na = float(np.linalg.norm(pa))
+    if na == 0.0 or cons_norm == 0.0:
+        return 0.0
+    return float(np.clip(np.dot(pa, cons_pattern) / (na * cons_norm), 0.0, 1.0))
+
+
 def _fp_overlap(a: np.ndarray, b: np.ndarray, *, n_bins: int = 8) -> float:
     """Contact-fingerprint overlap in [0, 1]: cosine over the contact-
     discriminative subspace (see :func:`_contact_pattern`). Non-negative inputs
     -> bounded to [0, 1]; a contactless pose vs a bound one -> ~0."""
-    pa = _contact_pattern(a, n_bins=n_bins)
     pb = _contact_pattern(b, n_bins=n_bins)
-    na = float(np.linalg.norm(pa))
     nb = float(np.linalg.norm(pb))
-    if na == 0.0 or nb == 0.0:
-        return 0.0
-    return float(np.clip(np.dot(pa, pb) / (na * nb), 0.0, 1.0))
+    return _fp_overlap_cached(a, pb, nb, n_bins=n_bins)
 
 
 def _has_clash(
@@ -131,6 +163,26 @@ def _has_clash(
     if not ligand_atoms or not structure.residues:
         return False
     pts = [(r.sidechain_centroid or r.ca) for r in structure.residues]
+    return _has_clash_pts(
+        pts, ligand_atoms, clash_dist=clash_dist, max_clashes=max_clashes
+    )
+
+
+def _has_clash_pts(
+    pts: Sequence,
+    ligand_atoms: Sequence[LigandAtom],
+    *,
+    clash_dist: float = 1.0,
+    max_clashes: int = 1,
+) -> bool:
+    """:func:`_has_clash` with the receptor reference points pre-built. When
+    classifying many poses that share ONE receptor ``structure``, the
+    ``pts = [sidechain_centroid or ca for r in residues]`` list is loop-invariant;
+    this variant takes it in so it is built once per target, not once per pose.
+    Bit-identical to ``_has_clash(structure, ligand_atoms)`` when ``pts`` is that
+    same list (same distance test, same early-exit, same ``max_clashes``)."""
+    if not ligand_atoms or not pts:
+        return False
     n = 0
     for atom in ligand_atoms:
         for pt in pts:
@@ -231,21 +283,49 @@ def classify_docking_poses(
             docking_poses[0].structure, consensus_pose_atoms, key_positions
         )
 
+    # --- per-TARGET invariants, hoisted out of the per-POSE loop ------------- #
+    # Every pose here shares the SAME consensus (the positive teacher) and the
+    # SAME receptor structure, so these three quantities are loop-invariant.
+    # Recomputing them per pose was pure redundant work; the per-pose outputs
+    # (overlap / rmsd / clash) are byte-for-byte unchanged.
+    #   1. consensus-side contact pattern + its norm for the fp-overlap cosine.
+    cons_pattern = _contact_pattern(consensus_fp, n_bins=n_bins)
+    cons_norm = float(np.linalg.norm(cons_pattern))
+    #   2. consensus ligand coordinates for the RMSD gate (guard the empty case
+    #      so the rmsd branch is still skipped exactly as before).
+    cons_coords = (
+        np.array([a.coord for a in consensus_pose_atoms], dtype=float)
+        if consensus_pose_atoms
+        else None
+    )
+    #   3. receptor reference points for the clash test, built once from the
+    #      shared structure (first non-None pose). When no pose carries a
+    #      structure, clash_pts is None and the clash test is skipped — matching
+    #      the per-pose ``_has_clash`` guard for that (degenerate) case.
+    _clash_struct = next(
+        (dp.structure for dp in docking_poses if dp.structure is not None), None
+    )
+    clash_pts = (
+        [(r.sidechain_centroid or r.ca) for r in _clash_struct.residues]
+        if _clash_struct is not None
+        else None
+    )
+
     kept: List[PoseRecord] = []
     diagnostics: List[PoseClassification] = []
     for k, dp in enumerate(docking_poses):
         fp = complex_fingerprint(
             dp.structure, dp.ligand_atoms, cutoff=cutoff, k_nearest=k_nearest
         )
-        overlap = _fp_overlap(fp, consensus_fp, n_bins=n_bins)
-        if consensus_pose_atoms and dp.ligand_atoms:
+        overlap = _fp_overlap_cached(fp, cons_pattern, cons_norm, n_bins=n_bins)
+        if cons_coords is not None and dp.ligand_atoms:
             r = rmsd(
-                np.array([a.coord for a in consensus_pose_atoms], dtype=float),
+                cons_coords,
                 np.array([a.coord for a in dp.ligand_atoms], dtype=float),
             )
         else:
             r = float("nan")
-        clash = _has_clash(dp.structure, dp.ligand_atoms)
+        clash = _has_clash_pts(clash_pts or [], dp.ligand_atoms)
         key_ok = _key_contacts_preserved(
             dp.structure, dp.ligand_atoms, consensus_cat, key_positions
         )
@@ -253,6 +333,7 @@ def classify_docking_poses(
         role, weight, note = _assign_role(
             rmsd_to_consensus=r, fp_overlap=overlap, clash=clash,
             key_ok=key_ok, primary_only=dp.primary_only,
+            score_gate_pass=dp.score_gate_pass,
             rmsd_thr=rmsd_thr, fp_thr=fp_thr, w_weak=w_weak, w_hard=w_hard,
         )
         diag = PoseClassification(
@@ -260,7 +341,13 @@ def classify_docking_poses(
             rmsd_to_consensus=(round(r, 3) if r == r else float("nan")),
             fp_overlap=round(overlap, 3), clash=clash, key_contacts_ok=key_ok,
             score=round(float(dp.score), 4), sample_weight=round(weight, 3),
+            score_gate_pass=bool(dp.score_gate_pass),
             primary_only=dp.primary_only, candidate_id=dp.candidate_id, note=note,
+            rank=int(dp.rank), score_type=dp.score_type,
+            cnn_score=dp.cnn_score, cnn_affinity=dp.cnn_affinity,
+            engine_version=dp.engine_version, command_args=dp.command_args,
+            context_mode=dp.context_mode, ligand_id=dp.ligand_id,
+            ligand_role=dp.ligand_role,
         )
         diagnostics.append(diag)
         if role == "excluded":
@@ -299,6 +386,7 @@ def _assign_role(
     clash: bool,
     key_ok: bool,
     primary_only: bool,
+    score_gate_pass: bool,
     rmsd_thr: float,
     fp_thr: float,
     w_weak: float,
@@ -312,7 +400,9 @@ def _assign_role(
       2. AGREE (RMSD ok + overlap >= fp_thr)     -> weak_positive.
          (a primary-only pose must clear a STRICTER overlap bar so it can never
           stand in for the full cofactor+substrate geometry.)
-      3. DISCORDANT (overlap < fp_thr) yet kept  -> hard_negative.
+      3. DISCORDANT (overlap < fp_thr) AND score-gated -> hard_negative.
+         Low-score discordant docking poses are excluded; they are easy
+         engine failures, not useful hard negatives.
     """
     rmsd_ok = (rmsd_to_consensus != rmsd_to_consensus) or (
         rmsd_to_consensus <= rmsd_thr  # NaN (no consensus atoms) -> gate off
@@ -332,6 +422,8 @@ def _assign_role(
         note = "agrees with consensus" + (" (primary-only, tagged)"
                                           if primary_only else "")
         return "weak_positive", w_weak, note
+    if not score_gate_pass:
+        return "excluded", 0.0, "discordant but low-score / low-rank"
     # scores well in the engine but the contact pattern disagrees -> the
     # valuable hard negative.
     return "hard_negative", w_hard, "discordant contact pattern"

@@ -12,8 +12,9 @@ scores well yet disagrees with the family consensus.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from evoliez.adapters.base import (
     fail_unless_mock_allowed,
@@ -48,6 +49,7 @@ def redock(
     backend: Backend,
     dry_run: bool = False,
     context_chains=None,
+    receptor_pdb: Optional[Path] = None,
 ) -> Pose:
     """Back-compat single-pose entry point: the rank-1 (best) gnina mode.
 
@@ -57,7 +59,7 @@ def redock(
     poses = redock_all(
         candidate_id, structure, reference_atoms, cfg, workdir,
         instability=instability, backend=backend, dry_run=dry_run,
-        context_chains=context_chains,
+        context_chains=context_chains, receptor_pdb=receptor_pdb,
     )
     return poses[0]
 
@@ -73,17 +75,28 @@ def redock_all(
     backend: Backend,
     dry_run: bool = False,
     context_chains=None,
+    receptor_pdb: Optional[Path] = None,
 ) -> List[Pose]:
     """ALL gnina modes (best first), each a fully-provenanced :class:`Pose`.
 
     Real backend: one ``gnina`` run writing N modes into a single SDF, then
     :func:`parse_all_modes` over every mode. Mock backend: a deterministic
     N-mode ranked ensemble (descending plausibility) so tests need no real tool.
-    Always returns a NON-EMPTY list (rank-1 at index 0)."""
+    Always returns a NON-EMPTY list (rank-1 at index 0).
+
+    ``receptor_pdb``: an optional pre-rendered receptor PDB. When given AND the
+    file exists it is COPIED to the per-candidate ``rec`` path verbatim instead
+    of re-rendering from ``structure.pdb_path`` — a perf win when the caller
+    (s06b) renders one context-retained receptor per rep and reuses it across
+    targets/engines. It MUST already carry the right cofactor/substrate context
+    chains (gnina keeps ``keep_het_chains=context_chains``); a protein-only
+    receptor here would silently drop that context. Default ``None`` = render
+    exactly as before (byte-identical)."""
     if backend is Backend.real:
         return _redock_real_all(
             candidate_id, structure, reference_atoms, cfg, workdir,
             dry_run=dry_run, context_chains=context_chains,
+            receptor_pdb=receptor_pdb,
         )
     # CNN scoring tends to be a touch more optimistic than Vina; small offset.
     return mock_redock_modes(
@@ -114,6 +127,7 @@ def _redock_real_all(
     *,
     dry_run: bool,
     context_chains=None,
+    receptor_pdb: Optional[Path] = None,
 ) -> List[Pose]:
     require("gnina")
     apply_gpu_selection()
@@ -124,7 +138,14 @@ def _redock_real_all(
     # Full-atom Boltz receptor; keep the OTHER co-modelled ligands' chains as
     # fixed context (physics-based gnina docks this ligand around them). Honest
     # mock fallback if the upstream structure is a CA-only trace.
-    if not full_atom_receptor_pdb(structure, rec, keep_het_chains=context_chains):
+    #
+    # RENDER-ONCE: if the caller pre-rendered a context-retained receptor, copy
+    # it to the expected ``rec`` path verbatim and skip the (re-)render. The
+    # supplied PDB is assumed to already carry the right context chains; we do
+    # not re-filter it (gnina would otherwise re-render once per target).
+    if receptor_pdb is not None and Path(receptor_pdb).exists():
+        shutil.copyfile(Path(receptor_pdb), rec)
+    elif not full_atom_receptor_pdb(structure, rec, keep_het_chains=context_chains):
         if dry_run:
             write_min_pdb(rec, structure)
         else:

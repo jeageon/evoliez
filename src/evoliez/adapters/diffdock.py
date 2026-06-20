@@ -11,6 +11,7 @@ ONE model load per GPU for many targets) and parses ALL ranks (every
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -36,6 +37,27 @@ SCORE_TYPE = "diffdock_confidence"
 # One batch task: (complex_id, receptor_structure, reference_atoms, smiles).
 BatchTask = Tuple[str, ProteinStructure, Sequence[LigandAtom], str]
 
+# Memoized DiffDock version string. ``tool_version`` here spawns a cold Python
+# interpreter (``python -c "import importlib.metadata..."``); the result is
+# constant for the life of the process, so compute it AT MOST ONCE. Sentinel
+# ``None`` = not yet computed (the version string itself may be "").
+_DIFFDOCK_VERSION: Optional[str] = None
+
+
+def _diffdock_version() -> str:
+    """DiffDock version for the audit trail, computed at most once per process.
+
+    Wraps the cold-interpreter ``tool_version`` subprocess so batch/per-target
+    runs don't pay it every call. Falls back to "" exactly as the inline call
+    did (provenance is best-effort, never a run-blocker)."""
+    global _DIFFDOCK_VERSION
+    if _DIFFDOCK_VERSION is None:
+        _DIFFDOCK_VERSION = tool_version(
+            "python", "-c",
+            "import importlib.metadata as m;"
+            "print('diffdock', m.version('diffdock'))") or ""
+    return _DIFFDOCK_VERSION
+
 
 def redock(
     candidate_id: str,
@@ -51,6 +73,7 @@ def redock(
     context_chains=None,  # accepted for a uniform call signature but IGNORED:
                           # DiffDock's learned model takes a protein receptor +
                           # one ligand, with no cofactor-context input.
+    receptor_pdb: Optional[Path] = None,
 ) -> Pose:
     """Back-compat single-pose entry point: the rank-1 (best) DiffDock pose.
 
@@ -59,7 +82,7 @@ def redock(
     return redock_all(
         candidate_id, structure, reference_atoms, cfg, workdir,
         instability=instability, smiles=smiles, backend=backend,
-        dry_run=dry_run,
+        dry_run=dry_run, receptor_pdb=receptor_pdb,
     )[0]
 
 
@@ -74,15 +97,22 @@ def redock_all(
     smiles: str,
     backend: Backend,
     dry_run: bool = False,
+    receptor_pdb: Optional[Path] = None,
 ) -> List[Pose]:
     """ALL DiffDock ranks (best first) for a SINGLE target, fully provenanced.
     Always non-empty (rank-1 at index 0). The batch path (:func:`redock_batch`)
     is preferred on the server (one model load for many targets); this stays for
-    one-off / per-target callers."""
+    one-off / per-target callers.
+
+    ``receptor_pdb``: an optional pre-rendered PROTEIN-ONLY receptor PDB; when
+    given AND it exists it is copied to the expected ``rec`` path instead of
+    re-rendering from ``structure.pdb_path``. DiffDock is protein-only, so this
+    must NOT be a context-retained (cofactor-bearing) receptor. Default
+    ``None`` = render exactly as before (byte-identical)."""
     if backend is Backend.real:
         return _redock_real_all(
             candidate_id, structure, smiles, cfg, workdir,
-            reference_atoms, dry_run=dry_run,
+            reference_atoms, dry_run=dry_run, receptor_pdb=receptor_pdb,
         )
     return mock_redock_modes(
         candidate_id, METHOD, reference_atoms,
@@ -100,6 +130,7 @@ def redock_batch(
     backend: Backend,
     dry_run: bool = False,
     gpu_device: Optional[int] = None,
+    receptor_pdb: Optional[Dict[str, Path]] = None,
 ) -> Dict[str, List[Pose]]:
     """GPU-BATCH DiffDock: ONE model load for MANY targets.
 
@@ -117,6 +148,14 @@ def redock_batch(
     whose receptor is unavailable degrades per the usual honesty contract (mock
     list if allowed, else raises).
 
+    ``receptor_pdb``: an optional ``{complex_id: Path}`` map of pre-rendered
+    PROTEIN-ONLY receptors (DiffDock is protein-only — these must NOT carry
+    cofactor context). When a task's cid is present AND the file exists, that
+    PDB is copied to the per-task ``rec`` path instead of re-rendering from the
+    structure (RENDER-ONCE: the caller renders one receptor per rep and reuses
+    it across engines). cids absent from the map render as before. Default
+    ``None`` = render every task exactly as before (byte-identical).
+
     Mock backend: a deterministic N-rank ensemble per complex, no real tool."""
     if backend is not Backend.real:
         return {
@@ -130,6 +169,7 @@ def redock_batch(
         }
     return _redock_batch_real(
         tasks, Path(out_root), cfg, dry_run=dry_run, gpu_device=gpu_device,
+        receptor_pdb=receptor_pdb,
     )
 
 
@@ -140,6 +180,7 @@ def _redock_batch_real(
     *,
     dry_run: bool,
     gpu_device: Optional[int],
+    receptor_pdb: Optional[Dict[str, Path]] = None,
 ) -> Dict[str, List[Pose]]:
     require("python")
     apply_gpu_selection()
@@ -148,13 +189,18 @@ def _redock_batch_real(
         log.info("diffdock batch: %d task(s), pinned to GPU %s (by caller)",
                  len(tasks), gpu_device)
 
+    pre = receptor_pdb or {}
     rows: List[str] = ["complex_name,protein_path,ligand_description,protein_sequence"]
     refs: Dict[str, Sequence[LigandAtom]] = {}
     result: Dict[str, List[Pose]] = {}
     for cid, structure, ref_atoms, smiles in tasks:
         refs[cid] = ref_atoms
         rec = out_root / f"{cid}_rec.pdb"
-        if not full_atom_receptor_pdb(structure, rec):
+        # RENDER-ONCE: reuse a caller-supplied protein-only receptor if present.
+        pre_rec = pre.get(cid)
+        if pre_rec is not None and Path(pre_rec).exists():
+            shutil.copyfile(Path(pre_rec), rec)
+        elif not full_atom_receptor_pdb(structure, rec):
             if dry_run:
                 write_min_pdb(rec, structure)
             else:
@@ -187,10 +233,11 @@ def _redock_batch_real(
         "--out_dir", str(out_root.resolve()),
         "--samples_per_complex", str(cfg.poses_per_candidate),
     ]
+    _bs = os.environ.get("EVOLIEZ_DIFFDOCK_BATCH")
+    if _bs and str(_bs).strip():        # GPU packing (DiffDock default 10); quality-neutral
+        cmd += ["--batch_size", str(int(_bs))]
     run(cmd, cwd=os.environ.get("EVOLIEZ_DIFFDOCK"), dry_run=dry_run)
-    version = tool_version("python", "-c",
-                           "import importlib.metadata as m;"
-                           "print('diffdock', m.version('diffdock'))") or ""
+    version = _diffdock_version()
 
     for cid, structure, ref_atoms, smiles in tasks:
         if cid in result:             # already degraded to mock above
@@ -225,6 +272,7 @@ def _redock_real_all(
     reference_atoms: Sequence[LigandAtom],
     *,
     dry_run: bool,
+    receptor_pdb: Optional[Path] = None,
 ) -> List[Pose]:
     require("python")
     apply_gpu_selection()
@@ -232,7 +280,10 @@ def _redock_real_all(
     rec = workdir / f"{candidate_id}_rec.pdb"
     # Full-atom Boltz receptor for real docking; honest mock fallback if the
     # upstream structure is a CA-only trace (dry-run keeps a placeholder).
-    if not full_atom_receptor_pdb(structure, rec):
+    # RENDER-ONCE: copy a caller-supplied protein-only receptor if present.
+    if receptor_pdb is not None and Path(receptor_pdb).exists():
+        shutil.copyfile(Path(receptor_pdb), rec)
+    elif not full_atom_receptor_pdb(structure, rec):
         if dry_run:
             write_min_pdb(rec, structure)
         else:
@@ -256,6 +307,9 @@ def _redock_real_all(
         "--out_dir", str(out.resolve()),
         "--samples_per_complex", str(cfg.poses_per_candidate),
     ]
+    _bs = os.environ.get("EVOLIEZ_DIFFDOCK_BATCH")
+    if _bs and str(_bs).strip():        # GPU packing (DiffDock default 10); quality-neutral
+        cmd += ["--batch_size", str(int(_bs))]
     run(cmd, cwd=os.environ.get("EVOLIEZ_DIFFDOCK"), dry_run=dry_run)
     if dry_run:
         return _mock_all(candidate_id, reference_atoms, cfg)
@@ -267,9 +321,7 @@ def _redock_real_all(
             "(NOT a real dock)", candidate_id, out,
         )
         return _mock_all(candidate_id, reference_atoms, cfg)
-    version = tool_version("python", "-c",
-                           "import importlib.metadata as m;"
-                           "print('diffdock', m.version('diffdock'))") or ""
+    version = _diffdock_version()
     poses = parse_all_ranks(
         out, reference_atoms, candidate_id=candidate_id,
         command_args=" ".join(cmd), engine_version=version,
@@ -293,21 +345,30 @@ def _complex_out_dir(out_root: Path, complex_id: str) -> Optional[Path]:
 
     Scoping per-complex matters in the BATCH case: ``out_root`` holds one
     sub-dir per task, so we must not let one complex's ranks leak into another's.
+
+    PERF: the fallbacks are SCOPED to ``out_root.glob('*<cid>*')`` (and descend
+    at most one further level), NOT ``rglob('*')`` over the whole chunk tree —
+    walking every file per complex was O(all files) and risked O(N^2) per chunk.
     """
     cand = out_root / complex_id
     if cand.is_dir() and any(_is_rank(p) for p in cand.glob("rank*.sdf")):
         return cand
-    # Fallback: a directory directly containing this complex's rank files. Match
-    # on the complex_id appearing in the path so batch dirs stay separated.
-    for sub in sorted(p for p in out_root.rglob("*") if p.is_dir()):
-        if complex_id in sub.name and any(_is_rank(p) for p in sub.glob("rank*.sdf")):
-            return sub
-    # Last resort (single-target layout): out_root itself or any dir with ranks.
+    # Fallback: a directory (matching the complex_id) directly holding this
+    # complex's rank files, or one level below it (some versions nest deeper).
+    # Globbing on the cid keeps batch dirs separated AND bounds the walk.
+    for top in sorted(p for p in out_root.glob(f"*{complex_id}*") if p.is_dir()):
+        if any(_is_rank(p) for p in top.glob("rank*.sdf")):
+            return top
+        for sub in sorted(p for p in top.glob("*") if p.is_dir()):
+            if any(_is_rank(p) for p in sub.glob("rank*.sdf")):
+                return sub
+    # Last resort (single-target layout): out_root itself or a cid-matching dir
+    # (one level down) with ranks. Still scoped to the cid — never a full walk.
     if any(_is_rank(p) for p in out_root.glob("rank*.sdf")):
         return out_root
-    for sub in sorted(p for p in out_root.rglob("*") if p.is_dir()):
-        if any(_is_rank(p) for p in sub.glob("rank*.sdf")):
-            return sub
+    for top in sorted(p for p in out_root.glob(f"*{complex_id}*") if p.is_dir()):
+        if any(_is_rank(p) for p in top.glob("rank*.sdf")):
+            return top
     return None
 
 

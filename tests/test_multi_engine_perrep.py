@@ -90,7 +90,12 @@ def _ligand():
 # A fake RunContext exposing exactly what _augment_with_docking reads.
 # --------------------------------------------------------------------------- #
 def _fake_ctx(root: Path, ligand):
-    paths = SimpleNamespace(docking=root / "docking", complexes=root / "complexes")
+    (root / "interaction_graphs").mkdir(parents=True, exist_ok=True)
+    paths = SimpleNamespace(
+        docking=root / "docking",
+        complexes=root / "complexes",
+        interaction_graphs=root / "interaction_graphs",
+    )
     config = SimpleNamespace(
         validation=SimpleNamespace(redocking=DockingConfig(poses_per_candidate=2)),
         complex_prediction=SimpleNamespace(primary_method="boltz2"),
@@ -227,6 +232,16 @@ def test_per_rep_augmentation_serial(tmp_path, monkeypatch):
 
     # diagnostics returned cover the classified poses
     assert len(diags) == len(added) or len(diags) >= len(added)
+
+    audit = tmp_path / "interaction_graphs" / "multi_engine_docking.json"
+    status_file = tmp_path / "interaction_graphs" / "multi_engine_status.json"
+    assert audit.exists() and status_file.exists()
+    audit_data = json.loads(audit.read_text())
+    assert audit_data["status"]
+    assert audit_data["rows"]
+    row = audit_data["rows"][0]
+    assert {"rank", "score_type", "score_gate_pass", "context_mode",
+            "ligand_id", "engine_version", "command_args"} <= set(row)
 
     # --- (c) select_poses runs on the COMBINED Boltz + docking records ------- #
     sel = select_poses(records, select_z=2.5, outlier_z=4.0,

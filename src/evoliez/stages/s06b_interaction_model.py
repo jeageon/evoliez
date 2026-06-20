@@ -244,6 +244,25 @@ def _parse_rep_worker(payload):
     return i, recs, prows, stem_dir
 
 
+def _lpt_partition(items, n_buckets, weight):
+    """Longest-processing-time greedy partition of ``items`` into ``n_buckets``
+    lists, balanced by ``weight(item)``. Balances per-GPU MAKESPAN — the naive
+    ``items[i::n]`` round-robin ignores per-item cost, so a GPU handed the long
+    reps runs long while the others idle. Boltz fold cost ~O(seq_len^2); docking
+    cost ~O(receptor_residues * ligand_atoms). Quality-neutral for the family
+    model: the same items are folded with the same per-sample count/schedule;
+    only which GPU each lands on (and thus its reproducible per-chunk Boltz seed
+    draw) changes — a detail the dir-batch seed contract already owns. Returns
+    ``n_buckets`` lists (some may be empty)."""
+    buckets = [[] for _ in range(max(1, n_buckets))]
+    loads = [0.0] * len(buckets)
+    for it in sorted(items, key=weight, reverse=True):
+        j = min(range(len(buckets)), key=lambda k: loads[k])
+        buckets[j].append(it)
+        loads[j] += float(weight(it))
+    return buckets
+
+
 def _run_batched_ensemble(reps, payloads, gpu_list, ligand, cp_cfg, outdir,
                           seed, extra_ligands, rep_msas, log):
     """GPU-batched ensemble: Phase 1 (one batched Boltz process per GPU) then
@@ -266,8 +285,13 @@ def _run_batched_ensemble(reps, payloads, gpu_list, ligand, cp_cfg, outdir,
     # dry_run, msa_path, cutoff, k_nearest, extra_ligands).
     cutoff, k_nearest = payloads[0][10], payloads[0][11]
     reps_meta_all = [(p[0], p[1], p[2]) for p in payloads]  # (i, seq, identity)
+    # LPT-balance reps across GPUs by fold cost (~O(seq_len^2)) instead of the
+    # round-robin [gi::N] that ignores length and lets a GPU with the long
+    # homologs gate Phase 1 while the others idle.
+    rep_buckets = _lpt_partition(reps_meta_all, len(gpu_list),
+                                 weight=lambda m: len(m[1]) ** 2)
     chunks = [
-        (g, reps_meta_all[gi::len(gpu_list)], ligand, cp_cfg, str(outdir),
+        (g, rep_buckets[gi], ligand, cp_cfg, str(outdir),
          seed, extra_ligands, rep_msas)
         for gi, g in enumerate(gpu_list)
     ]
@@ -291,7 +315,10 @@ def _run_batched_ensemble(reps, payloads, gpu_list, ligand, cp_cfg, outdir,
         (i, label, seq, identity, ligand, cp_cfg, results_dir, cutoff, k_nearest)
         for (i, label, seq, identity, results_dir) in parse_jobs
     ]
-    n_workers = min(len(parse_payloads), (os.cpu_count() or 2))
+    # cap parse workers to the launch thread budget (not cpu_count()) — a ~48-proc
+    # burst on the shared box trips the core watchdog, and parsing is I/O-bound.
+    _cap = int(os.environ.get("EVOLIEZ_NUM_THREADS") or (os.cpu_count() or 2))
+    n_workers = min(len(parse_payloads), max(1, _cap))
     with ProcessPoolExecutor(max_workers=max(1, n_workers),
                              mp_context=mpctx) as ex:
         for i, recs, prows, stem_dir in ex.map(_parse_rep_worker, parse_payloads):
@@ -314,145 +341,443 @@ def _boltz_consensus_fp(records):
     return np.median(np.vstack(fps), axis=0)
 
 
-def _dock_target_worker(payload, gpu):
-    """Dock the design ligand into ONE target's Boltz structure (the WT or one
-    representative) with every requested engine, then classify each pose against
-    the FAMILY Boltz consensus. Module-level + fully picklable so it runs in a
-    ProcessPool worker.
+def _safe_key(s: str) -> str:
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in str(s))
 
-    The two references handed to ``classify_docking_poses`` are deliberately
-    different in origin:
-      * overlap reference  = the FAMILY ``consensus_fp`` (interaction
-        fingerprints are coordinate-frame-independent) — the SAME for every
-        target.
-      * RMSD + catalytic ref = this TARGET's OWN Boltz ligand atoms
-        (``ref_atoms``) — DIFFERENT per target. Each rep is its own coordinate
-        frame, so a cross-frame RMSD against the family's atoms is meaningless.
 
-    The docking adapters (gnina/diffdock) are torch-FREE, so pre-setting
-    ``CUDA_VISIBLE_DEVICES`` here pins the docking subprocess and the worker is
-    fork-safe (no in-process CUDA init). Each engine is wrapped so one failing
-    engine skips that engine, not the whole target. Returns
-    (target_key, [kept PoseRecord], [PoseClassification diagnostics])."""
+def _fallback_ligand_spec(ligand):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=ligand.id, role="design_ligand", dock=True,
+        keep_as_context=False, ligand=ligand, is_primary=True,
+    )
+
+
+def _manifest_chain_map(specs, pdb_path):
+    """Map role-manifest ligands onto Boltz HETATM chains by input order.
+
+    Boltz input is protein A, primary ligand B, extras C/D/... . We prefer the
+    actual HETATM chains present in the parsed PDB, falling back to that contract
+    for dry/mock layouts.
+    """
+    from evoliez.adapters.base import het_chains_in_pdb
+
+    actual = het_chains_in_pdb(pdb_path) if pdb_path else []
+    default = list("BCDEFGHIJKLMNOPQRSTUVWXYZ")
+    out = {}
+    for i, spec in enumerate(specs):
+        chain = actual[i] if i < len(actual) else (
+            default[i] if i < len(default) else None
+        )
+        if chain:
+            out[getattr(spec, "id", str(i))] = chain
+    return out
+
+
+def _prepare_docking_targets(payloads, log):
+    """Parse each WT/rep Boltz stem once and expand it by dock-ligand role.
+
+    The legacy payload shape is still accepted for scripts/tests. A 16th payload
+    item may carry ``ligand_manifest``; without it we fall back to the primary
+    design ligand only.
+    """
+    from evoliez.adapters.base import parse_pdb_het_chain
+    from evoliez.adapters.boltz import parse_prediction_dir
+
+    targets, status = [], []
+    for payload in payloads:
+        (base_key, stem_dir, seq, ligand, consensus_fp, methods, dock_cfg,
+         docking_root, backend, _cutoff, _k_nearest, key_positions, has_context,
+         cfg, primary_method) = payload[:15]
+        specs = list(payload[15]) if len(payload) > 15 and payload[15] else [
+            _fallback_ligand_spec(ligand)
+        ]
+        dock_specs = [s for s in specs if getattr(s, "dock", False)] or [
+            _fallback_ligand_spec(ligand)
+        ]
+        context_specs = [s for s in specs if getattr(s, "keep_as_context", False)]
+
+        # structure_only: the docking phase needs only the receptor + the
+        # reference ligand atoms, NOT the full diffusion-sample ensemble that
+        # the fold phase already parsed+fingerprinted — skips re-reading all 15
+        # per-sample PDBs/conf/plddt per target (eliminates the double-parse).
+        cx = parse_prediction_dir(Path(stem_dir), seq, ligand, primary_method,
+                                  structure_only=True)
+        if cx is None or not cx.ligand.atoms:
+            status.append({
+                "target": base_key, "engine": "all", "status": "skipped",
+                "reason": "missing Boltz target structure or ligand atoms",
+            })
+            continue
+
+        pdb_path = getattr(cx.structure, "pdb_path", None)
+        chain_map = _manifest_chain_map(specs, pdb_path)
+        for spec in dock_specs:
+            dock_ligand = getattr(spec, "ligand", ligand)
+            ligand_id = getattr(spec, "id", dock_ligand.id)
+            dock_chain = chain_map.get(ligand_id)
+            if getattr(spec, "is_primary", False):
+                ref_atoms = list(cx.ligand.atoms)
+            else:
+                ref_atoms = parse_pdb_het_chain(pdb_path, dock_chain) if dock_chain else []
+            if not ref_atoms:
+                status.append({
+                    "target": base_key, "engine": "all", "ligand_id": ligand_id,
+                    "status": "skipped", "reason": "missing dock-ligand atoms",
+                })
+                continue
+
+            context_ids, context_chains = [], []
+            for cs in context_specs:
+                cid = getattr(cs, "id", "")
+                if cid == ligand_id:
+                    continue
+                ch = chain_map.get(cid)
+                context_ids.append(cid)
+                if ch and ch != dock_chain:
+                    context_chains.append(ch)
+
+            target_key = base_key if len(dock_specs) == 1 else (
+                f"{base_key}_{_safe_key(ligand_id)}"
+            )
+            targets.append({
+                "target_key": target_key,
+                "base_key": base_key,
+                "structure": cx.structure,
+                "ref_atoms": ref_atoms,
+                "dock_ligand": dock_ligand,
+                "ligand_id": ligand_id,
+                "ligand_role": getattr(spec, "role", "design_ligand"),
+                "dock_chain": dock_chain,
+                "context_ligand_ids": context_ids,
+                "context_chains": context_chains,
+                "has_context": bool(has_context or context_specs),
+                "consensus_fp": consensus_fp,
+                "methods": list(methods),
+                "dock_cfg": dock_cfg,
+                "docking_root": docking_root,
+                "backend": backend,
+                "key_positions": key_positions,
+                "cfg": cfg,
+            })
+    if status:
+        log.info("multi_engine: %d target preparation status row(s)", len(status))
+    return targets, status
+
+
+def _context_for_method(target, method: str):
+    has_context = bool(target.get("has_context"))
+    chains = list(target.get("context_chains") or [])
+    if method == "gnina":
+        if chains:
+            return chains, "context_retained", False
+        if has_context:
+            return None, "context_missing", True
+        return None, "no_context", False
+    if has_context:
+        return None, "context_dropped", True
+    return None, "no_context", False
+
+
+def _score_gate_passes(poses, method: str):
+    if not poses:
+        return []
+    ranks = [max(1, int(getattr(p, "rank", i + 1) or (i + 1)))
+             for i, p in enumerate(poses)]
+    if method == "diffdock":
+        scored = [float(p.score) for p in poses if float(p.score) != 0.0]
+        best = max(scored) if scored else None
+        return [
+            bool(best is not None and r <= 3 and float(p.score) >= best - 1.0)
+            for p, r in zip(poses, ranks)
+        ]
+
+    scores = [float(p.score) for p in poses]
+    best_score = min(scores) if scores else None
+    cnn_scores = [float(p.cnn_score) for p in poses
+                  if getattr(p, "cnn_score", None) is not None]
+    best_cnn = max(cnn_scores) if cnn_scores else None
+    out = []
+    for p, r in zip(poses, ranks):
+        if r > 3:
+            out.append(False)
+        elif best_cnn is not None and getattr(p, "cnn_score", None) is not None:
+            out.append(float(p.cnn_score) >= max(0.0, best_cnn - 0.2))
+        elif best_score is not None:
+            out.append(float(p.score) <= best_score + 1.0)
+        else:
+            out.append(False)
+    return out
+
+
+def _classify_engine_poses(target, method: str, poses):
+    """Classify all poses from one engine for one target."""
     import numpy as np
 
-    from evoliez.adapters.boltz import parse_prediction_dir
-    from evoliez.ml.multi_engine import DockingPoseInput, classify_docking_poses
+    from evoliez.ml import multi_engine as me
 
-    (target_key, stem_dir, seq, ligand, consensus_fp, methods, dock_cfg,
-     docking_root, backend, cutoff, k_nearest, key_positions, primary_only,
-     cfg, primary_method) = payload
-
-    if gpu is not None:
-        # apply_gpu_selection() respects a pre-set CVD -> this pins the (torch-
-        # free) docking subprocess to `gpu`; fork-safe (no in-process CUDA).
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-
-    consensus_fp = np.asarray(consensus_fp, dtype=float)
-    cx = parse_prediction_dir(Path(stem_dir), seq, ligand, primary_method)
-    if cx is None or not cx.ligand.atoms:
-        # No structure for this target (Boltz skipped/failed it, or no ligand):
-        # nothing to dock against -> contribute no augmenting rows.
-        return target_key, [], []
-    # RMSD + catalytic reference = this target's OWN Boltz ligand pose.
-    ref_atoms = list(cx.ligand.atoms)
-    # Cofactor/substrate context: keep the NON-primary het chains (the co-modelled
-    # extras, e.g. formate) as FIXED receptor context so the design ligand is
-    # docked into the real catalytic environment, mirroring s05. het[0] is the
-    # primary (design) ligand; het[1:] are the extras. gnina honours this;
-    # diffdock ignores context_chains. (Single-ligand reps -> het[1:] empty -> None.)
-    from evoliez.adapters.base import het_chains_in_pdb
-    _pdb = getattr(cx.structure, "pdb_path", None)
-    _het = het_chains_in_pdb(_pdb) if _pdb else []
-    context_chains = _het[1:] or None
-
-    dock_inputs = []
-    for method in methods:
-        try:
-            if method == "gnina":
-                from evoliez.adapters import gnina
-                pose = gnina.redock(
-                    f"{target_key}_gnina", cx.structure, ref_atoms, dock_cfg,
-                    Path(docking_root) / f"me_{target_key}_gnina",
-                    instability=0.05, backend=backend, dry_run=False,
-                    context_chains=context_chains,  # cofactor/substrate as context
-                )
-            elif method == "diffdock":
-                from evoliez.adapters import diffdock
-                pose = diffdock.redock(
-                    f"{target_key}_diffdock", cx.structure, ref_atoms, dock_cfg,
-                    Path(docking_root) / f"me_{target_key}_diffdock",
-                    instability=0.05, smiles=ligand.smiles, backend=backend,
-                    dry_run=False, context_chains=None,
-                )
-            else:  # unknown engine in cfg -> skip rather than crash the target
-                continue
-        except Exception:  # one engine failing must not sink the rest
-            continue
-        if pose is None or not pose.ligand_atoms:
-            continue
-        dock_inputs.append(DockingPoseInput(
-            source=method, structure=cx.structure,
-            ligand_atoms=pose.ligand_atoms, score=float(pose.score),
-            score_is_better_low=(method != "diffdock"),  # diffdock conf: higher better
+    target_key = target["target_key"]
+    _context_chains, context_mode, primary_only = _context_for_method(target, method)
+    gates = _score_gate_passes(poses, method)
+    dock_inputs = [
+        me.DockingPoseInput(
+            source=method, structure=target["structure"],
+            ligand_atoms=p.ligand_atoms, score=float(p.score),
+            score_is_better_low=(method != "diffdock"),
+            score_gate_pass=bool(gates[i]),
             primary_only=primary_only, candidate_id=target_key,
-        ))
-
+            rank=int(getattr(p, "rank", i + 1) or (i + 1)),
+            score_type=getattr(p, "score_type", ""),
+            cnn_score=getattr(p, "cnn_score", None),
+            cnn_affinity=getattr(p, "cnn_affinity", None),
+            engine_version=getattr(p, "engine_version", ""),
+            command_args=getattr(p, "command_args", ""),
+            context_mode=context_mode,
+            ligand_id=target.get("ligand_id", ""),
+            ligand_role=target.get("ligand_role", ""),
+        )
+        for i, p in enumerate(poses or []) if p is not None and p.ligand_atoms
+    ]
     if not dock_inputs:
-        return target_key, [], []
-    # overlap reference = FAMILY consensus_fp (frame-independent, same for all);
-    # RMSD/catalytic reference = THIS target's own ligand atoms (per-frame).
-    kept = classify_docking_poses(
-        consensus_fp, ref_atoms, dock_inputs,
-        cfg=cfg, key_positions=key_positions,
+        return [], [], {
+            "target": target_key, "engine": method,
+            "ligand_id": target.get("ligand_id", ""),
+            "context_mode": context_mode, "status": "no_poses",
+            "n_poses": 0, "n_classified": 0, "n_kept": 0,
+        }
+    kept = me.classify_docking_poses(
+        np.asarray(target["consensus_fp"], dtype=float),
+        target["ref_atoms"], dock_inputs,
+        cfg=target["cfg"], key_positions=target["key_positions"],
     )
-    return target_key, list(kept), list(getattr(kept, "diagnostics", []))
+    diags = list(getattr(kept, "diagnostics", []))
+    return list(kept), diags, {
+        "target": target_key, "engine": method,
+        "ligand_id": target.get("ligand_id", ""),
+        "ligand_role": target.get("ligand_role", ""),
+        "context_ligands": list(target.get("context_ligand_ids") or []),
+        "context_mode": context_mode, "status": "success",
+        "n_poses": len(poses or []), "n_classified": len(diags),
+        "n_kept": len(kept),
+    }
 
 
-def _run_per_rep_docking(targets, gpu_list, log):
-    """Fan the per-target docking workers across the pinned GPUs (round-robin),
-    one process per GPU, mirroring the ensemble fan-out. Each ``targets`` entry
-    is a ``(_dock_target_worker payload)`` tuple. With <=1 GPU declared, runs a
-    serial loop (no pool). Returns (all_kept_PoseRecords, all_diagnostics)."""
+def _gnina_target_worker(payload, gpu):
+    target = payload
+    if gpu is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    context_chains, _context_mode, _primary_only = _context_for_method(target, "gnina")
+    try:
+        from evoliez.adapters import gnina
+
+        poses = gnina.redock_all(
+            f"{target['target_key']}_gnina",
+            target["structure"], target["ref_atoms"], target["dock_cfg"],
+            Path(target["docking_root"]) / f"me_{target['target_key']}_gnina",
+            instability=0.05, backend=target["backend"], dry_run=False,
+            context_chains=context_chains,
+        )
+        kept, diags, status = _classify_engine_poses(target, "gnina", poses)
+    except Exception as exc:
+        kept, diags, status = [], [], {
+            "target": target["target_key"], "engine": "gnina",
+            "ligand_id": target.get("ligand_id", ""),
+            "status": "failed", "error": str(exc),
+            "n_poses": 0, "n_classified": 0, "n_kept": 0,
+        }
+    return target["target_key"], kept, diags, status
+
+
+def _diffdock_batch_worker(payload):
+    gpu, targets = payload
+    if gpu is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
     if not targets:
-        return [], []
+        return [], [], []
+    try:
+        from evoliez.adapters import diffdock
 
-    all_kept: List = []
-    all_diags: List = []
-    if len(gpu_list) <= 1:
-        gpu = gpu_list[0] if gpu_list else None
-        for payload in targets:
-            tkey, kept, diags = _dock_target_worker(payload, gpu)
-            all_kept.extend(kept)
-            all_diags.extend(diags)
-            log.info("multi_engine[%s]: %d kept, %d classified",
-                     tkey, len(kept), len(diags))
-        return all_kept, all_diags
+        root = Path(targets[0]["docking_root"]) / f"me_diffdock_gpu{gpu or 'single'}"
+        task_map = {}
+        tasks = []
+        for t in targets:
+            cid = f"{t['target_key']}_diffdock"
+            task_map[cid] = t
+            tasks.append((cid, t["structure"], t["ref_atoms"],
+                          t["dock_ligand"].smiles))
+        result = diffdock.redock_batch(
+            tasks, root, targets[0]["dock_cfg"],
+            backend=targets[0]["backend"], dry_run=False, gpu_device=gpu,
+        )
+    except Exception as exc:
+        return [], [], [{
+            "target": t["target_key"], "engine": "diffdock",
+            "ligand_id": t.get("ligand_id", ""),
+            "status": "failed", "error": str(exc),
+            "n_poses": 0, "n_classified": 0, "n_kept": 0,
+        } for t in targets]
+
+    all_kept, all_diags, status = [], [], []
+    for cid, t in task_map.items():
+        poses = result.get(cid, [])
+        kept, diags, row = _classify_engine_poses(t, "diffdock", poses)
+        all_kept.extend(kept)
+        all_diags.extend(diags)
+        status.append(row)
+    return all_kept, all_diags, status
+
+
+def _run_diffdock_batches(targets, gpu_list, log):
+    devices = gpu_list or [None]
+    # LPT-balance targets across GPUs by docking cost (~O(residues * ligand atoms))
+    # instead of the stride targets[i::N]; each chunk is ONE monolithic diffdock
+    # subprocess, so a heavy chunk makes its GPU the straggler the stage waits on.
+    buckets = _lpt_partition(
+        targets, len(devices),
+        weight=lambda t: max(1, len(getattr(t["structure"], "residues", []) or []))
+        * max(1, len(t.get("ref_atoms") or [])))
+    chunks = [(devices[i], ch) for i, ch in enumerate(buckets) if ch]
+    if not chunks:
+        return [], [], []
+    if len(chunks) == 1:
+        kept, diags, status = _diffdock_batch_worker(chunks[0])
+        log.info("multi_engine[diffdock]: %d kept, %d classified",
+                 len(kept), len(diags))
+        return kept, diags, status
 
     import multiprocessing as mp
     import sys
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    # FORK on Linux (the docking workers + adapters are torch/xgboost-free, so a
-    # forked child never touches CUDA in-process and avoids the spawn-time libomp
-    # double-load segfault); spawn on macOS (local tests only). Mirrors the
-    # ensemble fan-out topology.
     mpctx = mp.get_context("spawn" if sys.platform == "darwin" else "fork")
-    log.info("multi_engine per-rep docking: %d targets across %d GPUs %s",
-             len(targets), len(gpu_list), gpu_list)
-    with ProcessPoolExecutor(max_workers=len(gpu_list), mp_context=mpctx) as ex:
-        futs = {
-            ex.submit(_dock_target_worker, payload, gpu_list[ti % len(gpu_list)]):
-                payload[0]
-            for ti, payload in enumerate(targets)
-        }
+    all_kept, all_diags, all_status = [], [], []
+    log.info("multi_engine diffdock batch: %d targets across %d GPU chunk(s)",
+             len(targets), len(chunks))
+    with ProcessPoolExecutor(max_workers=len(chunks), mp_context=mpctx) as ex:
+        futs = [ex.submit(_diffdock_batch_worker, ch) for ch in chunks]
         for fut in as_completed(futs):
-            tkey, kept, diags = fut.result()
+            kept, diags, status = fut.result()
             all_kept.extend(kept)
             all_diags.extend(diags)
-            log.info("multi_engine[%s]: %d kept, %d classified",
+            all_status.extend(status)
+    log.info("multi_engine[diffdock]: %d kept, %d classified",
+             len(all_kept), len(all_diags))
+    return all_kept, all_diags, all_status
+
+
+def _gnina_gpu_init(gpu_queue):
+    """ProcessPool worker initialiser: pin THIS worker to one GPU popped from the
+    shared queue, so the device a task runs on always matches the free worker
+    (vs a static ti%N pin that can collide two tasks on one GPU). Subsequent
+    ``_gnina_target_worker(t, None)`` calls inherit this CVD."""
+    try:
+        g = gpu_queue.get_nowait()
+    except Exception:
+        g = None
+    if g is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(g)
+
+
+def _run_gnina_queue(targets, gpu_list, log):
+    if not targets:
+        return [], [], []
+    if len(gpu_list) <= 1:
+        gpu = gpu_list[0] if gpu_list else None
+        all_kept, all_diags, all_status = [], [], []
+        for t in targets:
+            _tkey, kept, diags, status = _gnina_target_worker(t, gpu)
+            all_kept.extend(kept)
+            all_diags.extend(diags)
+            all_status.append(status)
+            log.info("multi_engine[gnina:%s]: %d kept, %d classified",
+                     t["target_key"], len(kept), len(diags))
+        return all_kept, all_diags, all_status
+
+    import multiprocessing as mp
+    import sys
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    mpctx = mp.get_context("spawn" if sys.platform == "darwin" else "fork")
+    # Up to EVOLIEZ_GNINA_PER_GPU gnina per GPU (default 1 = unchanged). gnina
+    # interleaves a CPU search with GPU CNN scoring, so a 2nd gnina can use the
+    # GPU while the 1st is in its CPU phase. Each WORKER pins one GPU via the
+    # init-time queue (not ti%N), so the device matches the actually-free worker;
+    # tasks pass gpu=None and inherit that CVD. NB: HALVE EVOLIEZ_DOCK_CPU when
+    # raising per-GPU so total cores stay under the shared-box watchdog.
+    per_gpu = max(1, int(os.environ.get("EVOLIEZ_GNINA_PER_GPU", "1") or "1"))
+    n_workers = len(gpu_list) * per_gpu
+    gpu_queue = mpctx.Queue()
+    for _ in range(per_gpu):
+        for g in gpu_list:
+            gpu_queue.put(g)
+    all_kept, all_diags, all_status = [], [], []
+    log.info("multi_engine gnina queue: %d targets, %d worker(s) over %d GPUs %s "
+             "(%d/GPU)", len(targets), n_workers, len(gpu_list), gpu_list, per_gpu)
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=mpctx,
+                             initializer=_gnina_gpu_init,
+                             initargs=(gpu_queue,)) as ex:
+        futs = {
+            ex.submit(_gnina_target_worker, t, None): t["target_key"]
+            for t in targets
+        }
+        for fut in as_completed(futs):
+            tkey, kept, diags, status = fut.result()
+            all_kept.extend(kept)
+            all_diags.extend(diags)
+            all_status.append(status)
+            log.info("multi_engine[gnina:%s]: %d kept, %d classified",
                      tkey, len(kept), len(diags))
-    return all_kept, all_diags
+    return all_kept, all_diags, all_status
+
+
+def _run_per_rep_docking_with_status(targets, gpu_list, log):
+    """Engine-specific scheduling over prepared WT/rep docking targets.
+
+    DiffDock runs as GPU CSV chunks (one model load per GPU); GNINA runs as a
+    target queue. Every engine returns all poses, not just rank-1.
+    """
+    if not targets:
+        return [], [], []
+
+    prepared, prep_status = _prepare_docking_targets(targets, log)
+    if not prepared:
+        return [], [], prep_status
+
+    methods = []
+    for t in prepared:
+        for m in t.get("methods", []):
+            if m not in methods:
+                methods.append(m)
+
+    all_kept: List = []
+    all_diags: List = []
+    all_status: List = list(prep_status)
+
+    if "diffdock" in methods:
+        kept, diags, status = _run_diffdock_batches(prepared, gpu_list, log)
+        all_kept.extend(kept)
+        all_diags.extend(diags)
+        all_status.extend(status)
+    if "gnina" in methods:
+        kept, diags, status = _run_gnina_queue(prepared, gpu_list, log)
+        all_kept.extend(kept)
+        all_diags.extend(diags)
+        all_status.extend(status)
+    for method in methods:
+        if method not in ("gnina", "diffdock"):
+            all_status.extend({
+                "target": t["target_key"], "engine": method,
+                "ligand_id": t.get("ligand_id", ""),
+                "status": "skipped", "reason": "unknown multi_engine method",
+            } for t in prepared)
+    return all_kept, all_diags, all_status
+
+
+def _run_per_rep_docking(targets, gpu_list, log):
+    """Back-compatible wrapper used by smoke scripts."""
+    kept, diags, _status = _run_per_rep_docking_with_status(targets, gpu_list, log)
+    return kept, diags
 
 
 def _augment_with_docking(ctx, cfg, wt, records, rep_stem_dirs, reps, gpu_list,
@@ -481,11 +806,8 @@ def _augment_with_docking(ctx, cfg, wt, records, rep_stem_dirs, reps, gpu_list,
     primary_method = ctx.config.complex_prediction.primary_method
     docking_root = str(ctx.paths.docking)
     key_positions = ctx.get("catalytic_positions", []) or []
-    # The design ligand is docked ALONE here; if the system co-models extra
-    # ligands (cofactor + substrate) those are NOT in this docking pose, so each
-    # is a primary-ligand-only pose and is tagged accordingly (must never
-    # override the full cofactor+substrate geometry).
-    primary_only = bool(ctx.get("extra_ligands", []) or [])
+    ligand_manifest = ctx.get("ligand_manifest", []) or []
+    has_context = bool(ctx.get("context_ligands", []) or [])
     ligand = ctx.require("ligand")
 
     # WT stem dir: the predictions/<stem>/ subdir holding the s04 WT Boltz model,
@@ -506,8 +828,8 @@ def _augment_with_docking(ctx, cfg, wt, records, rep_stem_dirs, reps, gpu_list,
         targets.append((
             "wt", str(wt_stem), wt.structure.sequence, ligand, consensus_fp,
             methods, dock_cfg, docking_root, backend, cfg.contact_cutoff,
-            cfg.k_nearest_residues, key_positions, primary_only, cfg,
-            primary_method,
+            cfg.k_nearest_residues, key_positions, has_context, cfg,
+            primary_method, ligand_manifest,
         ))
     else:
         log.warning("multi_engine: WT complex stem dir not found; skipping WT "
@@ -530,8 +852,8 @@ def _augment_with_docking(ctx, cfg, wt, records, rep_stem_dirs, reps, gpu_list,
         targets.append((
             f"rep_{i:03d}", str(stem), rep.sequence, ligand, consensus_fp,
             methods, dock_cfg, docking_root, backend, cfg.contact_cutoff,
-            cfg.k_nearest_residues, key_positions, primary_only, cfg,
-            primary_method,
+            cfg.k_nearest_residues, key_positions, has_context, cfg,
+            primary_method, ligand_manifest,
         ))
 
     if not targets:
@@ -539,7 +861,8 @@ def _augment_with_docking(ctx, cfg, wt, records, rep_stem_dirs, reps, gpu_list,
                     "structures); records unchanged")
         return []
 
-    all_kept, diags = _run_per_rep_docking(targets, gpu_list, log)
+    all_kept, diags, status_rows = _run_per_rep_docking_with_status(
+        targets, gpu_list, log)
     records.extend(all_kept)
     # Durable audit / reproducibility artifact: EVERY classified docking pose
     # (including excluded ones), with its target, engine, role, geometry and
@@ -548,16 +871,19 @@ def _augment_with_docking(ctx, cfg, wt, records, rep_stem_dirs, reps, gpu_list,
     try:
         import json as _json
         audit = ctx.paths.interaction_graphs / "multi_engine_docking.json"
-        audit.write_text(_json.dumps({
+        import dataclasses as _dataclasses
+        rows = [_dataclasses.asdict(d) for d in diags]
+        audit_data = {
             "methods": methods, "n_targets": len(targets),
             "n_kept": len(all_kept), "n_classified": len(diags),
-            "rows": [{
-                "target": d.candidate_id, "source": d.source, "role": d.role,
-                "rmsd_to_own_pose": d.rmsd_to_consensus,
-                "fp_overlap_family": d.fp_overlap, "clash": d.clash,
-                "key_contacts_ok": d.key_contacts_ok, "score": d.score,
-                "sample_weight": d.sample_weight, "primary_only": d.primary_only,
-            } for d in diags],
+            "status": status_rows,
+            "rows": rows,
+        }
+        audit.write_text(_json.dumps(audit_data, indent=1, default=str))
+        status_path = ctx.paths.interaction_graphs / "multi_engine_status.json"
+        status_path.write_text(_json.dumps({
+            "methods": methods, "n_targets": len(targets),
+            "status": status_rows,
         }, indent=1, default=str))
         log.info("multi_engine docking audit -> %s (%d rows)", audit, len(diags))
     except Exception as exc:  # audit is secondary — never fail the stage
@@ -573,7 +899,7 @@ def _augment_with_docking(ctx, cfg, wt, records, rep_stem_dirs, reps, gpu_list,
         len(targets), methods, len(diags), len(all_kept),
         by_role.get("weak_positive", 0), by_role.get("hard_negative", 0),
         by_role.get("strong_negative", 0), by_role.get("excluded", 0),
-        " [primary-ligand-only, tagged]" if primary_only else "",
+        " [context-aware]" if has_context else "",
     )
     return diags
 
@@ -657,7 +983,9 @@ class InteractionModelStage(Stage):
             # per-rep process pool (mock multi-GPU): round-robin reps across GPUs.
             # FORK on Linux (torch/xgboost-free child, no libomp segfault); spawn
             # on macOS (local tests only).
-            chunks = [(g, payloads[gi::len(gpu_list)]) for gi, g in enumerate(gpu_list)]
+            _pbuckets = _lpt_partition(payloads, len(gpu_list),
+                                       weight=lambda p: len(p[1]) ** 2)  # p[1]=seq
+            chunks = [(g, _pbuckets[gi]) for gi, g in enumerate(gpu_list)]
             mpctx = mp.get_context("spawn" if sys.platform == "darwin" else "fork")
             self.log.info("ensemble fan-out: %d reps across %d GPUs %s "
                           "(per-rep process pool)", len(reps), len(gpu_list), gpu_list)
