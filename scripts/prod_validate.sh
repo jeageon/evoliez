@@ -191,6 +191,26 @@ if [ "$STAGE_ORD" -ge 4 ] && [ "$BACKEND" = real ] && [ "$ACCEPT_ONLY" -eq 0 ]; 
     mkdir -p "$BOLTZ_CACHE"
     echo ">> isolated Boltz: $BOLTZ_ENV/bin/boltz  cache=$BOLTZ_CACHE"
   fi
+  # --- s10 MD: AmberTools (+ pmemd.cuda for the Amber tier) ------------------
+  # OpenFF AM1-BCC charging needs antechamber/sqm on PATH; WITHOUT it the OpenMM
+  # tier (default) silently skips EVERY candidate -> the whole MD layer is empty.
+  # The Amber tier (md.engine: amber) additionally uses tleap/cpptraj +
+  # pmemd.cuda. Override AMBERTOOLS_ENV / EVOLIEZ_PMEMD_CUDA for another install.
+  if [ "$STAGE_ORD" -ge 10 ]; then
+    AMBERTOOLS_ENV="${AMBERTOOLS_ENV:-/mnt/data/jglee/anaconda3/envs/AmberTools25}"
+    PMEMD_AMBER_SH="${PMEMD_AMBER_SH:-/mnt/data/jglee/pmemd24_src/build/pathscripts/amber.sh}"
+    if [ -x "$AMBERTOOLS_ENV/bin/antechamber" ]; then
+      set +u; { [ -f "$PMEMD_AMBER_SH" ] && source "$PMEMD_AMBER_SH" >/dev/null 2>&1; } || true; set -u
+      export AMBERHOME="$AMBERTOOLS_ENV"                       # tleap/antechamber FF
+      export PATH="$AMBERTOOLS_ENV/bin:$PATH"                  # AmberTools tools win
+      export LD_LIBRARY_PATH="$AMBERTOOLS_ENV/lib:${LD_LIBRARY_PATH:-}"
+      export EVOLIEZ_AMBERTOOLS_BIN="$AMBERTOOLS_ENV/bin"      # code-level safety net
+      export EVOLIEZ_PMEMD_CUDA="${EVOLIEZ_PMEMD_CUDA:-/mnt/data/jglee/pmemd24_src/build/src/pmemd/src/pmemd.cuda_SPFP}"
+      echo ">> s10 MD: AmberTools on PATH ($AMBERTOOLS_ENV/bin) for AM1-BCC charges"
+    else
+      echo ">> WARNING: no antechamber at $AMBERTOOLS_ENV/bin -> s10 MD will SKIP all ligands (set AMBERTOOLS_ENV)"
+    fi
+  fi
   pin_gpu
 fi
 
