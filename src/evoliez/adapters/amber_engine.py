@@ -104,7 +104,58 @@ def mdin_prod(nsteps: int, restraint_wt: float = 0.5, nframes: int = 50) -> str:
             f" ntpr={interval}, ntwx={interval}, ntwr={nsteps},\n/\n")
 
 
-def tleap_script(net_charge: int = 0) -> str:
+def mdin_min_exp(restraint_wt: float = 5.0) -> str:
+    return ("restrained minimize (explicit, PME)\n&cntrl\n"
+            " imin=1, maxcyc=2000, ncyc=1000,\n ntb=1, cut=10.0,\n"
+            f" ntr=1, restraintmask='{_BB}', restraint_wt={restraint_wt},\n ntpr=200,\n/\n")
+
+
+def mdin_heat_exp(nsteps: int, restraint_wt: float = 5.0) -> str:
+    return ("heat 0->300K NVT, restrained backbone (explicit, PME)\n&cntrl\n"
+            f" imin=0, nstlim={nsteps}, dt=0.002, irest=0, ntx=1,\n"
+            " ntb=1, cut=10.0, iwrap=1,\n ntc=2, ntf=2,\n"
+            " ntt=3, gamma_ln=2.0, tempi=0.0, temp0=300.0, ig=-1,\n"
+            f" ntr=1, restraintmask='{_BB}', restraint_wt={restraint_wt},\n"
+            " ntpr=500, ntwx=0,\n/\n")
+
+
+def mdin_npt_equil(nsteps: int, restraint_wt: float = 1.0) -> str:
+    return ("NPT density equilibration, weak restraint (explicit, PME)\n&cntrl\n"
+            f" imin=0, nstlim={nsteps}, dt=0.002, irest=1, ntx=5,\n"
+            " ntb=2, ntp=1, barostat=2, pres0=1.0, taup=2.0,\n cut=10.0, iwrap=1,\n"
+            " ntc=2, ntf=2,\n ntt=3, gamma_ln=2.0, temp0=300.0, ig=-1,\n"
+            f" ntr=1, restraintmask='{_BB}', restraint_wt={restraint_wt},\n"
+            " ntpr=500, ntwx=0,\n/\n")
+
+
+def mdin_prod_exp(nsteps: int, nframes: int = 250) -> str:
+    interval = max(1, nsteps // max(1, nframes))
+    return ("NPT production, free (explicit, PME)\n&cntrl\n"
+            f" imin=0, nstlim={nsteps}, dt=0.002, irest=1, ntx=5,\n"
+            " ntb=2, ntp=1, barostat=2, pres0=1.0, taup=2.0,\n cut=10.0, iwrap=1,\n"
+            " ntc=2, ntf=2,\n ntt=3, gamma_ln=2.0, temp0=300.0, ig=-1,\n"
+            f" ntpr={interval}, ntwx={interval}, ntwr={nsteps},\n/\n")
+
+
+def tleap_script(net_charge: int = 0, solvent: str = "implicit") -> str:
+    """tleap build. implicit = ff14SB + GB radii (tier-2-equivalent rigour).
+    explicit = ff19SB + OPC water (the FF19SB-matched model) in a truncated
+    octahedron + addIons neutralize (addIons, NOT addIonsRand: with #=0 the
+    latter rejects a second ion type). 0.15 M physiological salt is a TODO
+    refinement (needs the post-solvate water count)."""
+    if solvent == "explicit":
+        return ("source leaprc.protein.ff19SB\n"
+                "source leaprc.gaff2\n"
+                "source leaprc.water.opc\n"
+                "loadamberparams ligand.frcmod\n"
+                "LIG = loadmol2 ligand.mol2\n"
+                "prot = loadpdb protein_clean.pdb\n"
+                "comp = combine {prot LIG}\n"
+                "solvateOct comp OPCBOX 12.0\n"
+                "addIons comp Na+ 0\n"
+                "addIons comp Cl- 0\n"
+                "saveamberparm comp complex.prmtop complex.inpcrd\n"
+                "quit\n")
     return ("source leaprc.protein.ff14SB\n"
             "source leaprc.gaff2\n"
             "loadamberparams ligand.frcmod\n"
@@ -116,13 +167,16 @@ def tleap_script(net_charge: int = 0) -> str:
             "quit\n")
 
 
-def cpptraj_script(catalytic_positions: Sequence[int]) -> str:
+def cpptraj_script(catalytic_positions: Sequence[int],
+                   solvent: str = "implicit") -> str:
     """rms (ligand + backbone), per-catalytic-residue min-distance to the
     ligand (nativecontacts mindist -> matches the OpenMM heavy-atom metric),
-    and ligand h-bonds."""
-    lines = [
-        "parm complex.prmtop",
-        "trajin prod.nc",
+    and ligand h-bonds. Explicit trajectories are autoimaged (PBC) and the
+    solvent/ions stripped so the masks below act on the solute only."""
+    lines = ["parm complex.prmtop", "trajin prod.nc"]
+    if solvent == "explicit":
+        lines += ["autoimage", "strip :WAT,Na+,Cl-,K+"]
+    lines += [
         "rms fit @CA,C,N first",                       # superpose on backbone
         "rms ligand :LIG&!@H= first nofit out ligand_rmsd.dat",
         "rms backbone @CA,C,N first nofit out pocket_rmsd.dat",
@@ -147,7 +201,8 @@ def _sh(cmd: List[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess:
                           timeout=timeout)
 
 
-def _build_system(cx: Complex, pdb_path: Path, workdir: Path) -> None:
+def _build_system(cx: Complex, pdb_path: Path, workdir: Path,
+                  solvent: str = "implicit") -> None:
     """pdb4amber + antechamber(AM1-BCC) + parmchk2 + tleap -> complex.prmtop.
     Raises _AmberParamUnsupported (-> neutral skip) when antechamber/sqm cannot
     charge the ligand; raises RuntimeError on a real protein/tleap failure."""
@@ -177,8 +232,8 @@ def _build_system(cx: Complex, pdb_path: Path, workdir: Path) -> None:
     if r.returncode != 0:
         raise _AmberParamUnsupported(f"parmchk2 failed: {r.stderr[-300:]}")
 
-    (workdir / "tleap.in").write_text(tleap_script(nc))
-    r = _sh(["tleap", "-s", "-f", "tleap.in"], workdir, 300)
+    (workdir / "tleap.in").write_text(tleap_script(nc, solvent))
+    r = _sh(["tleap", "-s", "-f", "tleap.in"], workdir, 600)
     if not (workdir / "complex.prmtop").exists():
         raise RuntimeError(f"tleap failed: {r.stdout[-400:]}")
 
@@ -214,7 +269,8 @@ def _series(workdir: Path, name: str, col: int = 1) -> List[float]:
 
 def _analyze(workdir: Path, cfg: MDConfig,
              catalytic_positions: Sequence[int]) -> Dict[str, object]:
-    (workdir / "analyze.in").write_text(cpptraj_script(catalytic_positions))
+    solvent = "explicit" if getattr(cfg, "solvent", "implicit") == "explicit" else "implicit"
+    (workdir / "analyze.in").write_text(cpptraj_script(catalytic_positions, solvent))
     _sh(["cpptraj", "-i", "analyze.in"], workdir, 600)
 
     lig = _series(workdir, "ligand_rmsd.dat")
@@ -285,8 +341,9 @@ def run_md_amber(cx: Complex, candidate_id: str, cfg: MDConfig, workdir: Path,
         return _skip(candidate_id, cfg, "skipped_no_mutant_structure",
                      f"{n} residue(s) differ: PDB is WT, not this mutant")
 
+    solvent = "explicit" if getattr(cfg, "solvent", "implicit") == "explicit" else "implicit"
     try:
-        _build_system(cx, pdb_path, workdir)
+        _build_system(cx, pdb_path, workdir, solvent)
     except _AmberParamUnsupported as exc:
         log.warning("Amber ligand param skipped for %s: %s", candidate_id, exc)
         return _skip(candidate_id, cfg, "skipped_parameterization", str(exc))
@@ -297,25 +354,44 @@ def run_md_amber(cx: Complex, candidate_id: str, cfg: MDConfig, workdir: Path,
                         simulation_time_ns=0.0, integration_failed=True,
                         failure_reason=f"amber build: {exc}")
 
-    # staged protocol: minimize -> heat -> production (all on the GPU)
+    # staged GPU protocol. implicit: min -> heat -> production. explicit (PME):
+    # min -> NVT heat -> NPT density equilibration -> NPT (free) production.
     nsteps, actual_ns = _production_nsteps(cfg)
     heat_steps = 10000
-    (workdir / "min.in").write_text(mdin_min())
-    (workdir / "heat.in").write_text(mdin_heat(heat_steps))
-    (workdir / "prod.in").write_text(mdin_prod(nsteps))
+    equil_steps = max(1000, int(getattr(cfg, "equilibration_ps", 100.0) * 1000
+                                / max(0.1, cfg.timestep_fs)))
+    P = "complex.prmtop"
     try:
-        _run_stage("min", ["-O", "-i", "min.in", "-o", "min.out",
-                           "-p", "complex.prmtop", "-c", "complex.inpcrd",
-                           "-r", "min.rst", "-ref", "complex.inpcrd"],
-                   workdir, pmemd, 600)
-        _run_stage("heat", ["-O", "-i", "heat.in", "-o", "heat.out",
-                            "-p", "complex.prmtop", "-c", "min.rst",
-                            "-r", "heat.rst", "-ref", "min.rst", "-x", "heat.nc"],
-                   workdir, pmemd, 1200)
-        _run_stage("prod", ["-O", "-i", "prod.in", "-o", "prod.out",
-                            "-p", "complex.prmtop", "-c", "heat.rst",
-                            "-r", "prod.rst", "-ref", "heat.rst", "-x", "prod.nc"],
-                   workdir, pmemd, 3600)
+        if solvent == "explicit":
+            (workdir / "min.in").write_text(mdin_min_exp())
+            (workdir / "heat.in").write_text(mdin_heat_exp(heat_steps))
+            (workdir / "equil.in").write_text(mdin_npt_equil(equil_steps))
+            (workdir / "prod.in").write_text(mdin_prod_exp(nsteps))
+            _run_stage("min", ["-O", "-i", "min.in", "-o", "min.out", "-p", P,
+                               "-c", "complex.inpcrd", "-r", "min.rst",
+                               "-ref", "complex.inpcrd"], workdir, pmemd, 1800)
+            _run_stage("heat", ["-O", "-i", "heat.in", "-o", "heat.out", "-p", P,
+                                "-c", "min.rst", "-r", "heat.rst",
+                                "-ref", "min.rst"], workdir, pmemd, 3600)
+            _run_stage("equil", ["-O", "-i", "equil.in", "-o", "equil.out", "-p", P,
+                                 "-c", "heat.rst", "-r", "equil.rst",
+                                 "-ref", "heat.rst"], workdir, pmemd, 21600)
+            _run_stage("prod", ["-O", "-i", "prod.in", "-o", "prod.out", "-p", P,
+                                "-c", "equil.rst", "-r", "prod.rst",
+                                "-x", "prod.nc"], workdir, pmemd, 172800)
+        else:
+            (workdir / "min.in").write_text(mdin_min())
+            (workdir / "heat.in").write_text(mdin_heat(heat_steps))
+            (workdir / "prod.in").write_text(mdin_prod(nsteps))
+            _run_stage("min", ["-O", "-i", "min.in", "-o", "min.out", "-p", P,
+                               "-c", "complex.inpcrd", "-r", "min.rst",
+                               "-ref", "complex.inpcrd"], workdir, pmemd, 600)
+            _run_stage("heat", ["-O", "-i", "heat.in", "-o", "heat.out", "-p", P,
+                                "-c", "min.rst", "-r", "heat.rst",
+                                "-ref", "min.rst", "-x", "heat.nc"], workdir, pmemd, 1200)
+            _run_stage("prod", ["-O", "-i", "prod.in", "-o", "prod.out", "-p", P,
+                                "-c", "heat.rst", "-r", "prod.rst",
+                                "-ref", "heat.rst", "-x", "prod.nc"], workdir, pmemd, 3600)
     except Exception as exc:
         log.warning("Amber pmemd run failed for %s: %s", candidate_id, exc)
         return MDResult(candidate_id=candidate_id, status="failed",
@@ -328,7 +404,7 @@ def run_md_amber(cx: Complex, candidate_id: str, cfg: MDConfig, workdir: Path,
     status = "unstable" if (lig and lig[-1] > 5.0) else "ok"
     return MDResult(
         candidate_id=candidate_id, status=status,
-        protocol_level=cfg.protocol_level, solvent_mode="implicit",
+        protocol_level=cfg.protocol_level, solvent_mode=solvent,
         simulation_time_ns=round(actual_ns, 6),
         minimized_pdb=str(workdir / "min.rst"),
         trajectory_path=str(workdir / "prod.nc"),

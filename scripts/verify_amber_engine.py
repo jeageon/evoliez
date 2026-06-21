@@ -83,8 +83,11 @@ cx = Complex(structure=ProteinStructure(sequence=seq, pdb_path=str(cpdb)),
 print(f"[setup] protein {len(prot)} atoms | ligand {LIG_SMILES} | catalytic {cat}")
 
 # --- run the Amber tier-3 backend -------------------------------------------
+import os
 cfg = MDConfig(enabled=True, engine="amber", protocol_level=1,
-               solvent="implicit", production_ns=0.002)
+               solvent=os.environ.get("VERIFY_SOLVENT", "implicit"),
+               production_ns=0.002, equilibration_ps=2.0)
+print(f"[setup] solvent={cfg.solvent}")
 r = run_md_amber(cx, "verify_amber", cfg, WORK,
                  catalytic_positions=cat, dry_run=False)
 
