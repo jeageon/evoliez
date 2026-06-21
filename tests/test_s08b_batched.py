@@ -32,6 +32,7 @@ from evoliez.config import ComplexPredictionConfig
 from evoliez.stages.s08b_mutant_boltz import (
     _parse_mutant_worker,
     _run_mutant_batch_chunk,
+    _shared_msa_a3m,
 )
 from evoliez.stages.s06b_interaction_model import _lpt_partition
 from evoliez.types import Ligand, LigandAtom
@@ -112,6 +113,7 @@ def _drive_two_phase(tmp_path, cand_ids, gpu_list, lig, cp, msa_path=None,
     assemble {cand_id: Complex} dropping any stem that parsed to None. Returns
     (predicted, n_launches_per_chunk_list)."""
     muts_meta_all = [(cid, "AGS") for cid in cand_ids]
+    msa_path = _shared_msa_a3m(msa_path, tmp_path)  # mirror _run_batched_mutants
     buckets = _lpt_partition(muts_meta_all, len(gpu_list),
                              weight=lambda m: len(m[1]) ** 2)
     chunks = [
@@ -202,3 +204,34 @@ def test_phase1_writes_mutant_yamls_into_chunk_in_dir(tmp_path, monkeypatch):
     assert (in_dir / "mut_00002_boltz_input.yaml").exists()
     # IN_DIR and OUT_DIR are distinct (Boltz errors if OUT nests under IN).
     assert Path(results_dir).is_relative_to(tmp_path / "_batch_out_gpu0")
+
+
+def test_batched_fasta_msa_not_left_in_chunk_dir(tmp_path, monkeypatch):
+    """A FASTA WT MSA (what s03 writes) must be pre-converted to an a3m that lives
+    OUTSIDE the chunk IN_DIR. Left as FASTA, write_batch_input rewrites a stray
+    <label>_msa.a3m INTO the chunk dir, and ``boltz predict <chunk_dir>`` globs it
+    as an input and aborts the chunk ("Unable to parse filetype .a3m"). Regression:
+    the chunk IN_DIR must hold ONLY <cand>_boltz_input.yaml — no stray .a3m."""
+    folded_log: list = []
+    _install_fake_boltz_run(monkeypatch, folded_log)
+    cp = ComplexPredictionConfig(diffusion_samples=1, use_msa_server=False)
+    # s03-style aligned FASTA MSA (equal-length, '-' gaps -> a3m-rewritable).
+    fasta = tmp_path / "wt_msa.fasta"
+    fasta.write_text(">wt\nAGS\n>hom1\nAG-\n>hom2\nA-S\n")
+
+    shared = _shared_msa_a3m(fasta, tmp_path)
+    # Converted to an a3m that lives NEXT TO (not inside) the chunk dirs.
+    assert shared is not None and Path(shared).suffix == ".a3m"
+    assert Path(shared).parent == tmp_path
+
+    chunk = ("0", [("mut_00001", "AGS"), ("mut_00002", "AGS")],
+             _ligand(), cp, str(tmp_path), 1234, None, shared)
+    _gpu, results_dir, _muts = _run_mutant_batch_chunk(chunk)
+
+    in_dir = tmp_path / "_batch_in_gpu0"
+    yamls = sorted(p.name for p in in_dir.glob("*.yaml"))
+    strays = sorted(p.name for p in in_dir.iterdir() if p.suffix != ".yaml")
+    assert yamls == ["mut_00001_boltz_input.yaml", "mut_00002_boltz_input.yaml"]
+    assert strays == [], f"chunk IN_DIR must hold only YAMLs; stray inputs: {strays}"
+    # The mutant YAML references the shared a3m BY PATH (outside the chunk dir).
+    assert str(shared) in (in_dir / "mut_00001_boltz_input.yaml").read_text()

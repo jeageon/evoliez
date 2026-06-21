@@ -120,6 +120,28 @@ def _parse_mutant_worker(payload):
     return cand_id, cx
 
 
+def _shared_msa_a3m(msa_path, outdir, log=None):
+    """Return an MSA path safe to hand to EVERY batch chunk: an a3m that lives
+    OUTSIDE the per-GPU chunk IN_DIRs so it is referenced BY PATH, never copied in.
+
+    s03 writes an aligned FASTA MSA. Left as FASTA, ``write_batch_input`` ->
+    ``_build_spec`` rewrites a stray ``<label>_msa.a3m`` INTO each chunk IN_DIR
+    (boltz.py:235), and ``boltz predict <chunk_dir>`` then globs that .a3m as an
+    input and ABORTS the whole chunk ("Unable to parse filetype .a3m"). Converting
+    the FASTA to an a3m one level UP (next to the chunk dirs, not in them) makes
+    ``_build_spec`` use it as-is (boltz.py:232 — no rewrite into in_dir).
+    Already-a3m/csv MSAs (e.g. s06b's local rep MSAs) and ``None`` pass through
+    untouched — which is exactly why s06b's batch never hit this."""
+    if msa_path is None or Path(msa_path).suffix.lower() in (".a3m", ".csv"):
+        return msa_path
+    from evoliez.adapters.boltz import _to_a3m
+    a3m = _to_a3m(Path(msa_path), Path(outdir) / "_wt_shared_msa.a3m")
+    if a3m is None and log is not None:
+        log.warning("s08b: WT MSA %s could not be rewritten to a3m; mutant Boltz "
+                    "runs without an MSA (Δ may be confounded)", msa_path)
+    return a3m
+
+
 def _run_batched_mutants(payloads, gpu_list, ligand, cp_cfg, outdir, seed,
                          extra_ligands, msa_path, log):
     """GPU-batched mutant prediction: Phase 1 (one batched Boltz process per GPU)
@@ -138,6 +160,11 @@ def _run_batched_mutants(payloads, gpu_list, ligand, cp_cfg, outdir, seed,
     # spawn-time libomp double-load segfault. macOS -> spawn (local tests only).
     mpctx = mp.get_context("spawn" if sys.platform == "darwin" else "fork")
 
+    # Convert the shared WT MSA to an a3m OUTSIDE the per-GPU chunk IN_DIRs ONCE
+    # (see _shared_msa_a3m) and pass THAT a3m to every chunk, so a stray FASTA→a3m
+    # rewrite never lands inside a chunk dir for `boltz predict <chunk_dir>` to glob.
+    shared_msa = _shared_msa_a3m(msa_path, outdir, log)
+
     # payload layout: (cand_id, mut_seq, ligand, cp_cfg, outdir, backend, seed,
     # dry_run, msa_path, extra_ligands). LPT-balance mutants across GPUs by fold
     # cost (~O(seq_len^2)) — the WT-length-equal mutant seqs make this ~even, but
@@ -147,7 +174,7 @@ def _run_batched_mutants(payloads, gpu_list, ligand, cp_cfg, outdir, seed,
                                  weight=lambda m: len(m[1]) ** 2)
     chunks = [
         (g, mut_buckets[gi], ligand, cp_cfg, str(outdir),
-         seed, extra_ligands, msa_path)
+         seed, extra_ligands, shared_msa)
         for gi, g in enumerate(gpu_list)
     ]
 
