@@ -189,7 +189,7 @@ class DockingConfig(_Base):
 
 
 class StabilityConfig(_Base):
-    method: str = "foldx"  # foldx | rosetta | ml
+    method: str = "foldx"  # foldx | rosetta | thermompnn | ml
     max_ddg_allowed: float = 2.5
 
 

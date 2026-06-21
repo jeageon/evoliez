@@ -11,7 +11,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
-from evoliez.adapters import foldx, rosetta
+from evoliez.adapters import foldx, rosetta, thermompnn
 from evoliez.adapters.base import het_chains_in_pdb
 from evoliez.context import RunContext
 from evoliez.features.geometry import catalytic_distances, rmsd
@@ -186,6 +186,12 @@ class NonMDValidationStage(Stage):
                 stab = rosetta.estimate_stability(
                     cand.candidate_id, mc.structure, cand.mutations,
                     ctx.paths.validation / "rosetta", backend=backend,
+                    dry_run=ctx.dry_run,
+                )
+            elif scfg.method == "thermompnn":
+                stab = thermompnn.estimate_stability(
+                    cand.candidate_id, mc.structure, cand.mutations, scfg,
+                    ctx.paths.validation / "thermompnn", backend=backend,
                     dry_run=ctx.dry_run,
                 )
             else:
@@ -437,6 +443,32 @@ class NonMDValidationStage(Stage):
         ctx.put("candidates", candidates)
         ctx.put("validated_candidates", kept)
         ctx.put("md_candidates", md_top)
+        # Persist per-candidate validation scores (report + reproducibility + audit;
+        # previously ctx.put in-memory only, so the s09 results were lost after the
+        # run and could not be verified against stored data). The s09 report and the
+        # anti-regression verification read this provenance.
+        import json as _json
+        _prov = ctx.paths.reports / "provenance"
+        _prov.mkdir(parents=True, exist_ok=True)
+        _kept_ids = {c.candidate_id for c in kept}
+        _md_ids = {c.candidate_id for c in md_top}
+        (_prov / "validated_candidates.json").write_text(_json.dumps([{
+            "candidate_id": c.candidate_id,
+            "mutation_string": ";".join(f"{m.wt}{m.position}{m.mut}" for m in c.mutations),
+            "ddg_fold": c.scores.get("ddg_fold"),
+            "stability_score": c.scores.get("stability_score"),
+            "stability_unavailable": c.details.get("stability_unavailable", False),
+            "redocking_consistency": c.scores.get("redocking_consistency"),
+            "docking_uncertainty": c.scores.get("docking_uncertainty"),
+            "catalytic_geometry_penalty": c.scores.get("catalytic_geometry_penalty"),
+            "redock": c.details.get("redock"),
+            "redock_context_chains": c.details.get("redock_context_chains", []),
+            "mechanism_source": c.details.get("mechanism_source"),
+            "catalytic_geometry_source": c.details.get("catalytic_geometry_source"),
+            "boltz_delta_source": c.details.get("boltz_delta_source"),
+            "passed": c.candidate_id in _kept_ids,
+            "for_md": c.candidate_id in _md_ids,
+        } for c in candidates], indent=2, default=str))
         ctx.persist_meta("n_after_nonmd", len(kept))
         ctx.persist_meta("n_for_md", len(md_top))
         mode = ("dry-run preview" if ctx.dry_run
