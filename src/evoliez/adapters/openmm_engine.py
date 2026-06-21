@@ -155,11 +155,25 @@ def _ligand_rdkit_at_pose(pdb_path: Path, smiles: str):
 
 def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
     """OpenFF Molecule for the ligand at the Boltz pose (thin wrapper over
-    the RDKit builder; OpenFF is conda-only so this line is server-only)."""
+    the RDKit builder; OpenFF is conda-only so this line is server-only).
+
+    The RDKit mol read from the PDB carries PDB hierarchy metadata (residue
+    name "LIG", atom/chain names). openmmforcefields' GAFFTemplateGenerator
+    then FAILS to residue-match the molecule against its OWN to_openmm()
+    topology - server-confirmed: a chemically-isomorphic SMILES-built molecule
+    parameterizes, the metadata-carrying PDB one does NOT ("No template found
+    for residue 0 (LIG) ... matches ACE/ILE but missing N H atoms"). This was a
+    real, silent s10 blocker: EVERY pose-built ligand fell to
+    skipped_parameterization regardless of the small molecule. Clearing the
+    per-atom metadata restores the match while keeping the pose conformer.
+    """
     from openff.toolkit import Molecule
 
     rd = _ligand_rdkit_at_pose(pdb_path, smiles)
-    return Molecule.from_rdkit(rd, allow_undefined_stereo=True)
+    mol = Molecule.from_rdkit(rd, allow_undefined_stereo=True)
+    for atom in mol.atoms:          # drop PDB hierarchy metadata (see above)
+        atom.metadata.clear()
+    return mol
 
 
 def _protein_only_pdbfixed(pdb_path: Path):
@@ -297,7 +311,7 @@ def run_md(
             log.warning("MD failed for %s (%s); recording failure", candidate_id, exc)
             return MDResult(
                 candidate_id=candidate_id, status="failed",
-                protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+                protocol_level=cfg.protocol_level, solvent_mode="implicit",
                 simulation_time_ns=0.0, integration_failed=True,
                 failure_reason=str(exc),
             )
@@ -421,7 +435,7 @@ def _run_real(
         return MDResult(
             candidate_id=candidate_id,
             status="skipped_no_full_atom_structure",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            protocol_level=cfg.protocol_level, solvent_mode=actual_solvent,
             simulation_time_ns=0.0,
             failure_reason="MD requires a full-atom protein (got CA-only); "
                            "run s04_complex real or supply a full-atom PDB",
@@ -446,7 +460,7 @@ def _run_real(
         return MDResult(
             candidate_id=candidate_id,
             status="skipped_no_mutant_structure",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            protocol_level=cfg.protocol_level, solvent_mode=actual_solvent,
             simulation_time_ns=0.0,
             failure_reason=(f"{nmut} residue(s) differ: the full-atom PDB is "
                             "WT, not this candidate's mutant - real per-mutant "
@@ -466,7 +480,7 @@ def _run_real(
         )
         return MDResult(
             candidate_id=candidate_id, status="skipped_parameterization",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            protocol_level=cfg.protocol_level, solvent_mode=actual_solvent,
             simulation_time_ns=0.0, failure_reason=str(exc),
         )
 
@@ -487,7 +501,7 @@ def _run_real(
         log.warning("MD ligand build failed for %s (%s)", candidate_id, exc)
         return MDResult(
             candidate_id=candidate_id, status="failed",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            protocol_level=cfg.protocol_level, solvent_mode=actual_solvent,
             simulation_time_ns=0.0, integration_failed=True,
             failure_reason=f"ligand build: {exc}",
         )
@@ -513,7 +527,7 @@ def _run_real(
         )
         return MDResult(
             candidate_id=candidate_id, status="skipped_parameterization",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            protocol_level=cfg.protocol_level, solvent_mode=actual_solvent,
             simulation_time_ns=0.0,
             failure_reason=f"ligand FF unsupported (cofactor): {exc}",
         )
@@ -558,7 +572,7 @@ def _run_real(
         )
         return MDResult(
             candidate_id=candidate_id, status="failed",
-            protocol_level=cfg.protocol_level, solvent_mode=cfg.solvent,
+            protocol_level=cfg.protocol_level, solvent_mode=actual_solvent,
             simulation_time_ns=0.0, integration_failed=True,
             failure_reason=f"protein+ligand assembly / system "
                            f"creation: {exc}",
@@ -573,7 +587,10 @@ def _run_real(
     # site responds to the mutation. (The previous build added a strong
     # restraint to EVERY CA, pinning the pocket and making the core
     # MD-stability signal meaningless.)
-    pos_nm = np.array([[p.x, p.y, p.z] for p in modeller.positions])
+    # modeller.positions is a Quantity that, in this OpenMM build, wraps a
+    # numpy array (no per-element .x/.y/.z) once an OpenFF conformer has been
+    # added - value_in_unit gives a clean (N,3) array either way.
+    pos_nm = np.array(modeller.positions.value_in_unit(unit.nanometer))
     _lig_idx0 = [a.index for a in modeller.topology.atoms()
                  if a.residue.name in ("LIG", "UNL", "UNK")]
     _ca_atoms = [a for a in modeller.topology.atoms() if a.name == "CA"]
