@@ -341,6 +341,48 @@ def _boltz_consensus_fp(records):
     return np.median(np.vstack(fps), axis=0)
 
 
+def _holdout_groups(records):
+    """The sorted Boltz (role == "") homolog groups eligible to be held out.
+
+    The subfamily holdout/CV pick the held group from BOLTZ rows ONLY (docking
+    rows carry no homolog subfamily), so the candidate group set is exactly the
+    distinct ``group_id``s of the Boltz records. Shared by the single-holdout and
+    the full CV so both iterate the identical group universe."""
+    boltz = [r for r in records if not getattr(r, "role", "")]
+    return sorted({r.group_id for r in boltz})
+
+
+def _holdout_one_auroc(records, held, sel_kw, cfg):
+    """One leave-one-subfamily-out fold: train on every record EXCEPT the held
+    group's Boltz poses and any docking rows derived from it, then AUROC of the
+    held group's Boltz poses vs that group's decoys. This is the EXACT body the
+    single-holdout used (extracted verbatim so ``_subfamily_holdout`` and
+    ``_subfamily_cv`` share one implementation); returns ``None`` for a fold with
+    no train/held rows or a held set that is not 2-class."""
+    # Drop from TRAIN both the held rep's Boltz poses AND any docking rows derived
+    # from it ("dock_<engine>_rep_<idx>_*") — otherwise the model trains on the
+    # held structure's own docking poses and the AUROC leaks. WT docking rows
+    # ("dock_<engine>_wt_*") have no held subfamily -> kept.
+    held_dock_tag = f"_rep_{held.split('_')[-1]}_"     # "_rep_149_"
+    train_recs = [r for r in records
+                  if r.group_id != held and held_dock_tag not in r.group_id]
+    held_recs = [r for r in records
+                 if not getattr(r, "role", "") and r.group_id == held]
+    if not train_recs or not held_recs:
+        return None
+    sel = select_poses(train_recs, **sel_kw)
+    m = InteractionModel(
+        cutoff=cfg.contact_cutoff, k_nearest=cfg.k_nearest_residues
+    ).fit(sel)
+    held_sel = select_poses(held_recs, **{**sel_kw, "seed": sel_kw["seed"] + 1})
+    if held_sel.X.shape[0] == 0 or len(set(held_sel.y.tolist())) < 2:
+        return None
+    from evoliez.ml.benchmark import _auroc
+
+    scores = [m.score_vector(x) for x in held_sel.X]
+    return _auroc(scores, [int(v) for v in held_sel.y.tolist()])
+
+
 def _safe_key(s: str) -> str:
     return "".join(c if c.isalnum() or c in "._-" else "_" for c in str(s))
 
@@ -1235,28 +1277,50 @@ class InteractionModelStage(Stage):
         # derived from it ("dock_<engine>_rep_<idx>_*") — otherwise the model
         # trains on the held structure's own docking poses and the AUROC leaks.
         # WT docking rows ("dock_<engine>_wt_*") have no held subfamily -> kept.
-        boltz = [r for r in records if not getattr(r, "role", "")]
-        groups = sorted({r.group_id for r in boltz})
+        groups = _holdout_groups(records)
         if len(groups) < 3:
             return None
         held = groups[-1]                                  # e.g. "hom_149"
-        held_dock_tag = f"_rep_{held.split('_')[-1]}_"     # "_rep_149_"
-        train_recs = [r for r in records
-                      if r.group_id != held and held_dock_tag not in r.group_id]
-        held_recs = [r for r in boltz if r.group_id == held]  # Boltz-only holdout
-        if not train_recs or not held_recs:
-            return None
-        sel = select_poses(train_recs, **sel_kw)
-        m = InteractionModel(
-            cutoff=cfg.contact_cutoff, k_nearest=cfg.k_nearest_residues
-        ).fit(sel)
-        held_sel = select_poses(held_recs, **{**sel_kw, "seed": sel_kw["seed"] + 1})
-        if held_sel.X.shape[0] == 0 or len(set(held_sel.y.tolist())) < 2:
-            return None
-        from evoliez.ml.benchmark import _auroc
+        return _holdout_one_auroc(records, held, sel_kw, cfg)
 
-        scores = [m.score_vector(x) for x in held_sel.X]
-        return _auroc(scores, [int(v) for v in held_sel.y.tolist()])
+    def _subfamily_cv(self, records, sel_kw, cfg):
+        """FULL leave-one-subfamily-out cross-validation of the single-holdout
+        check: run the SAME per-fold logic as :meth:`_subfamily_holdout` (held =
+        each Boltz group in turn, identical train/eval construction) over EVERY
+        eligible group, returning the per-group AUROC dict + summary stats.
+
+        This is the robust generalisation of the single 0.99 holdout (held =
+        groups[-1]) an external reviewer asked for: it shares
+        :func:`_holdout_one_auroc` with the single-holdout path verbatim, so the
+        single fold reproduces ``_subfamily_holdout`` exactly. Returns ``None``
+        when subfamily holdout is disabled or there are too few groups; otherwise
+        a dict with ``per_group`` (group_id -> AUROC for the folds that yielded a
+        2-class held set), ``mean``, ``std``, ``median``, ``min``, ``max`` and
+        ``n_folds``. Read-only: never persisted, never mutates ``records``."""
+        if not cfg.subfamily_holdout:
+            return None
+        groups = _holdout_groups(records)
+        if len(groups) < 3:
+            return None
+        import numpy as np
+
+        per_group: Dict[str, float] = {}
+        for held in groups:
+            a = _holdout_one_auroc(records, held, sel_kw, cfg)
+            if a is not None:
+                per_group[held] = a
+        vals = np.array(list(per_group.values()), dtype=float)
+        if vals.size == 0:
+            return {"per_group": {}, "n_folds": 0}
+        return {
+            "per_group": per_group,
+            "mean": float(vals.mean()),
+            "std": float(vals.std(ddof=1)) if vals.size > 1 else 0.0,
+            "median": float(np.median(vals)),
+            "min": float(vals.min()),
+            "max": float(vals.max()),
+            "n_folds": int(vals.size),
+        }
 
     def _artifacts_path(self, ctx: RunContext):
         return ctx.paths.interaction_graphs / "s06b_artifacts.json"
