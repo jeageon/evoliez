@@ -197,11 +197,49 @@ def _no_align_rmsd(prb, ref) -> Optional[float]:
 
 
 # --------------------------------------------------------------------------- #
-def compute_docking_stats(run_dir: str, db_path: str, methods: List[str], *,
-                          candidate: str = "wt",
-                          ligand_smiles: Optional[str] = None) -> dict:
-    dock = os.path.join(run_dir, "docking")
+# Multi-ligand candidate-id parsing (GENERIC — never hardcode a ligand identity)
+# --------------------------------------------------------------------------- #
+def _split_candidate(cand_id: str) -> tuple:
+    """``'<base>'`` -> ``(base, None)``; ``'<base>__<cof>'`` -> ``(base, cof)``.
 
+    s05 names a context variant ``'<base>__<cofactor>'`` = the base candidate
+    redocked with ``<cofactor>`` held as fixed receptor context. Split on the
+    FIRST ``'__'`` so a cofactor id may itself contain underscores. The suffix is
+    parsed at runtime; nothing about a specific cofactor is assumed."""
+    base, sep, cof = cand_id.partition("__")
+    return (base, cof if sep else None)
+
+
+def _candidate_label(cand_id: str) -> str:
+    base, cof = _split_candidate(cand_id)
+    if cof is None:
+        return base
+    return f"{base} + {cof} as receptor context"
+
+
+def _list_db_candidates(db_path: str) -> List[str]:
+    """All candidate_ids present in ``docking_pose`` (so the report discovers the
+    multi-ligand variants instead of assuming a fixed set)."""
+    out: List[str] = []
+    try:
+        con = sqlite3.connect(str(db_path), timeout=15)
+        out = [row[0] for row in con.execute(
+            "select distinct candidate_id from docking_pose "
+            "order by candidate_id")]
+        con.close()
+    except sqlite3.Error:
+        pass
+    return out
+
+
+# --------------------------------------------------------------------------- #
+def _compute_one_candidate(dock: str, db_path: str, methods: List[str],
+                           candidate: str, tmpl) -> dict:
+    """Per-candidate docking stats: DB scores, the best pose per method, the
+    DiffDock landscape, ligand normalization QC, and the symmetry-corrected
+    heavy-atom RMSD pairs (incl. vs the reference). ``candidate`` may be a base
+    (``'wt'``) or a context variant (``'wt__<cof>'``); the artifact paths are
+    keyed by the FULL candidate id either way."""
     scores: Dict[str, dict] = {}
     try:
         con = sqlite3.connect(str(db_path), timeout=15)
@@ -234,15 +272,12 @@ def compute_docking_stats(run_dir: str, db_path: str, methods: List[str], *,
     gnina_props = _sdf_props(gnina_sdf)
 
     # --- ligand normalization + symmetry-corrected heavy-atom RMSD ---
-    tmpl = _template(ligand_smiles)
     mols, qc = {}, {}
     for m, sdf in poses.items():
         mols[m], qc[m] = _pose_mol(sdf, "sdf", tmpl)
     if ref_pdb:
         mols["reference"], qc["reference"] = _pose_mol(ref_pdb, "pdb", tmpl)
 
-    names = [n for n in ["gnina", "diffdock"] if n in mols] + \
-            (["reference"] if "reference" in mols else [])
     pairs = []  # (a, b, heavy_rmsd, centroid_dist)
     cen = {}
     for n, sdf in poses.items():
@@ -257,22 +292,135 @@ def compute_docking_stats(run_dir: str, db_path: str, methods: List[str], *,
             pairs.append((a, b, _no_align_rmsd(mols[a], mols[b]),
                           _dist(cen.get(a), cen.get(b))))
 
+    base, cof = _split_candidate(candidate)
     rdkit_ok = any(q.get("heavy") for q in qc.values())
+    # best heavy-atom RMSD vs the reference (the per-candidate accuracy number)
+    ref_rmsds = [r for a, b, r, _ in pairs if b == "reference" and r is not None]
     return {
         "candidate": candidate,
+        "base": base,
+        "cofactor": cof,
+        "is_variant": cof is not None,
+        "label": _candidate_label(candidate),
         "methods": [m for m in methods if m in scores] or list(scores),
         "scores": scores,
         "gnina_props": gnina_props,
         "landscape": landscape,
         "receptor": receptor,
         "poses": poses,
+        "pose_mols": mols,          # used for base↔variant pose RMSD (in-memory)
         "reference_pdb": ref_pdb,
         "rmsd_pairs": pairs,
+        "best_ref_rmsd": min(ref_rmsds) if ref_rmsds else None,
         "ligand_qc": qc,
         "rdkit_ok": rdkit_ok,
-        "ligand_smiles": ligand_smiles,
         "n_diffdock_poses": len(landscape),
     }
+
+
+def _build_multi_ligand(per_candidate: Dict[str, dict]) -> Optional[dict]:
+    """Pair every base candidate with its ``__<cof>`` context variants and surface
+    the EFFECT of the co-modelled cofactor on the design-ligand pose.
+
+    For each (base, variant, method): the design-ligand RMSD-to-reference for the
+    base vs the variant side by side (does the cofactor context shift the pose?),
+    plus — when both poses are available in-memory — the cheap base-pose↔variant-
+    pose heavy-atom RMSD (the direct pose displacement). Returns None when no base
+    has any variant, so a base-only run renders exactly as before."""
+    bases = {c for c, st in per_candidate.items() if not st["is_variant"]}
+    rows = []  # (base, cofactor, variant_id, method, base_rmsd, var_rmsd, shift)
+    variants_seen = set()
+    for var_id, vst in per_candidate.items():
+        if not vst["is_variant"]:
+            continue
+        base_id = vst["base"]
+        if base_id not in bases:
+            continue  # variant whose base wasn't docked: nothing to compare
+        variants_seen.add(var_id)
+        bst = per_candidate[base_id]
+        methods = sorted(set(bst["scores"]) | set(vst["scores"]))
+        for m in methods:
+            b_ref = bst["scores"].get(m, {}).get("rmsd")
+            v_ref = vst["scores"].get(m, {}).get("rmsd")
+            # direct base-pose -> variant-pose heavy-atom RMSD (no re-alignment;
+            # both poses are in the SAME receptor frame). Cheap when both mols
+            # parsed; otherwise None and the side-by-side RMSD-to-reference stands.
+            shift = _no_align_rmsd(vst["pose_mols"].get(m),
+                                   bst["pose_mols"].get(m))
+            rows.append((base_id, vst["cofactor"], var_id, m,
+                         b_ref, v_ref, shift))
+    if not variants_seen:
+        return None
+    cofactors = sorted({per_candidate[v]["cofactor"] for v in variants_seen})
+    return {"rows": rows, "cofactors": cofactors,
+            "bases": sorted(bases), "variants": sorted(variants_seen)}
+
+
+# --------------------------------------------------------------------------- #
+def compute_docking_stats(run_dir: str, db_path: str, methods: List[str], *,
+                          candidate: str = "wt",
+                          candidates: Optional[List[str]] = None,
+                          ligand_smiles: Optional[str] = None) -> dict:
+    """Docking stats for the s05 report.
+
+    Computes the PRIMARY ``candidate`` (default ``'wt'`` — the design ligand
+    docked alone) and flattens its stats at the top level (back-compatible with
+    the single-candidate report). Also discovers every other candidate_id in
+    ``docking_pose`` — including the s05 multi-ligand context variants named
+    ``'<base>__<cofactor>'`` — computes each, and (when any variant exists)
+    assembles a ``'multi_ligand'`` block surfacing how each co-modelled cofactor
+    shifts the design-ligand pose. ``candidates`` overrides DB discovery (testing).
+    """
+    dock = os.path.join(run_dir, "docking")
+    tmpl = _template(ligand_smiles)
+
+    discovered = candidates if candidates is not None else _list_db_candidates(db_path)
+    # Always include the primary candidate; keep a stable order (primary first,
+    # then the rest as discovered).
+    ordered: List[str] = [candidate] + [c for c in discovered if c != candidate]
+    per_candidate: Dict[str, dict] = {}
+    for cand in ordered:
+        st = _compute_one_candidate(dock, db_path, methods, cand, tmpl)
+        # Only keep candidates that actually have something (scores or poses); a
+        # bare primary 'wt' with no rows still passes through (its empty 'scores'
+        # is what the caller checks to decide whether to write the report).
+        if cand == candidate or st["scores"] or st["poses"]:
+            per_candidate[cand] = st
+
+    primary = per_candidate[candidate]
+    multi = _build_multi_ligand(per_candidate)
+
+    # Per-candidate view for the tables (drop the in-memory pose_mols — not JSON
+    # and not needed by the renderer; the multi_ligand rows already carry the
+    # derived shift).
+    cand_summaries = []
+    for cand in ordered:
+        st = per_candidate.get(cand)
+        if st is None:
+            continue
+        cand_summaries.append({
+            k: v for k, v in st.items() if k != "pose_mols"})
+
+    out = {
+        # --- back-compatible flattened PRIMARY-candidate stats ---
+        "candidate": primary["candidate"],
+        "methods": primary["methods"],
+        "scores": primary["scores"],
+        "gnina_props": primary["gnina_props"],
+        "landscape": primary["landscape"],
+        "receptor": primary["receptor"],
+        "poses": primary["poses"],
+        "reference_pdb": primary["reference_pdb"],
+        "rmsd_pairs": primary["rmsd_pairs"],
+        "ligand_qc": primary["ligand_qc"],
+        "rdkit_ok": primary["rdkit_ok"],
+        "ligand_smiles": ligand_smiles,
+        "n_diffdock_poses": primary["n_diffdock_poses"],
+        # --- multi-ligand additions ---
+        "candidate_summaries": cand_summaries,
+        "multi_ligand": multi,
+    }
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -281,14 +429,115 @@ def compute_docking_stats(run_dir: str, db_path: str, methods: List[str], *,
 _POSECOL = {"gnina": "#1D9E75", "diffdock": "#BA7517", "reference": "#3b7dd8"}
 
 
+def _build_multi_ligand_html(s: dict, g, fnum) -> str:
+    """The 'multi-ligand co-modelling' section: a per-candidate score + RMSD-to-
+    reference table (base vs each '<base>__<cof>' context variant as DISTINCT
+    rows) and a base-vs-variant EFFECT table (does the co-modelled cofactor shift
+    the design-ligand pose?). Returns '' when the run has no context variants, so
+    a base-only run renders with no multi-ligand section at all."""
+    ml = s.get("multi_ligand")
+    if not ml:
+        return ""
+    summaries = s.get("candidate_summaries") or []
+    cofactors = ml.get("cofactors") or []
+    cof_list = ", ".join(g(c) for c in cofactors) or "the co-modelled cofactor(s)"
+
+    # (1) per-candidate score + RMSD-to-reference (one row per candidate x method)
+    crows = ""
+    for st in summaries:
+        sc = st.get("scores") or {}
+        if not sc:
+            continue
+        cof = st.get("cofactor")
+        kind = ("design ligand alone" if cof is None
+                else f"+ {g(str(cof))} as receptor context")
+        first = True
+        for m in sorted(sc):
+            d = sc[m]
+            rm = d.get("rmsd")
+            sccell = fnum(d.get("score"), "{:.2f}")
+            label_cell = (f'<td rowspan="{len(sc)}">'
+                          f'<code>{g(st["candidate"])}</code>'
+                          f'<div class="sub2">{kind}</div></td>') if first else ""
+            crows += (f"<tr>{label_cell}<td>{g(m)}</td>"
+                      f"<td>{sccell}</td>"
+                      f"<td>{fnum(rm, '{:.2f} A')}</td></tr>")
+            first = False
+    if not crows:
+        crows = ("<tr><td colspan=4 class=ck>no per-candidate scores"
+                 "</td></tr>")
+
+    # (2) base vs context-variant EFFECT — RMSD-to-ref side by side + pose shift
+    erows = ""
+    for base_id, cof, var_id, m, b_ref, v_ref, shift in ml.get("rows", []):
+        # does the cofactor context move the design-ligand pose vs the reference?
+        delta = (None if (b_ref is None or v_ref is None)
+                 else round(v_ref - b_ref, 2))
+        if delta is None:
+            eff = "—"
+        elif abs(delta) < 0.5:
+            eff = "pose essentially unchanged"
+        else:
+            eff = ("variant closer to ref" if delta < 0
+                   else "variant shifted from ref")
+        erows += (f"<tr><td><b>{g(base_id)}</b></td><td>{g(str(cof))}</td>"
+                  f"<td>{g(m)}</td>"
+                  f"<td>{fnum(b_ref, '{:.2f} A')}</td>"
+                  f"<td>{fnum(v_ref, '{:.2f} A')}</td>"
+                  f"<td>{fnum(delta, '{:+.2f} A')}</td>"
+                  f"<td class=ck>{fnum(shift, '{:.2f} A')}</td>"
+                  f"<td>{eff}</td></tr>")
+    if not erows:
+        erows = ("<tr><td colspan=8 class=ck>no base/variant pair shared a method"
+                 "</td></tr>")
+
+    return (
+        '<h2>Multi-ligand co-modelling — design ligand alone vs. with cofactor '
+        'context</h2>'
+        '<div class="concl">The design ligand was redocked both <b>alone</b> and '
+        '<b>with each co-modelled cofactor (' + cof_list + ') held as fixed '
+        'receptor context</b> (the cofactor stays at its s04 placed pose and is '
+        'part of the receptor during the redock). Each context variant is the '
+        'candidate id <code>&lt;base&gt;__&lt;cofactor&gt;</code>. The point is '
+        'whether the cofactor’s presence in the pocket changes where the '
+        'docker places the design ligand.</div>'
+        '<table><thead><tr><th>candidate</th><th>method</th>'
+        '<th>score</th><th>RMSD&nbsp;to&nbsp;ref</th></tr></thead>'
+        '<tbody>' + crows + '</tbody></table>'
+        '<p class="note">Score is the DB docking score per method (GNINA '
+        'minimizedAffinity kcal/mol, DiffDock confidence log-odds) and is not '
+        'comparable across methods; RMSD-to-ref is the symmetry-corrected '
+        'heavy-atom RMSD of the design ligand to the s04 Boltz reference, after '
+        'the same largest-fragment normalization used everywhere in this report.</p>'
+        '<h2>Effect of cofactor context on the design-ligand pose</h2>'
+        '<table><thead><tr><th>base</th><th>cofactor context</th><th>method</th>'
+        '<th>RMSD-to-ref (alone)</th><th>RMSD-to-ref (with cofactor)</th>'
+        '<th>Δ RMSD</th><th>pose shift</th><th>verdict</th></tr></thead>'
+        '<tbody>' + erows + '</tbody></table>'
+        '<p class="note"><b>RMSD-to-ref alone vs. with cofactor</b> are placed '
+        'side by side so a context-driven pose change is visible directly; '
+        '<b>Δ RMSD</b> &gt; 0 means the design ligand sits further from '
+        'the Boltz reference once the cofactor is co-modelled. <b>Pose shift</b> '
+        'is the direct heavy-atom RMSD between the alone-pose and the '
+        'with-cofactor pose (same receptor frame, no re-alignment) when both '
+        'poses are available — a large shift with little Δ RMSD '
+        'means the cofactor moved the ligand sideways but not nearer/farther '
+        'from the reference. The ligand normalization (largest fragment / drop '
+        'co-modelled fragment) is unchanged — this section only makes the '
+        'setup visible.</p>'
+    )
+
+
 def build_docking_report_html(*, target_id: str, stats: dict,
                               conditions: List, generated: str,
-                              ligand_name: Optional[str] = None) -> str:
+                              ligand_name: Optional[str] = None,
+                              provenance: str = "") -> str:
     import html as _html
     import json as _json
     g = _html.escape
     s = stats
     lig = ligand_name or "the ligand"
+    subtitle = provenance or f"generated {g(generated)}"
     gp = s.get("gnina_props", {})
 
     def fnum(v, fmt="{:g}"):
@@ -378,6 +627,9 @@ def build_docking_report_html(*, target_id: str, stats: dict,
     cond_rows = "".join(f"<tr><td class=ck>{g(str(k))}</td><td>{g(str(v))}</td></tr>"
                         for k, v in conditions)
 
+    # --- multi-ligand co-modelling section (GENERIC; only if variants exist) --- #
+    multi_html = _build_multi_ligand_html(s, g, fnum)
+
     # 3D models
     blocks, model_js = [], []
     if s["receptor"]:
@@ -401,7 +653,7 @@ def build_docking_report_html(*, target_id: str, stats: dict,
             .replace("%%TITLE%%", g(f"{target_id} — reference docking (s05)"))
             .replace("%%TARGET%%", g(target_id))
             .replace("%%LIG%%", g(lig))
-            .replace("%%GENERATED%%", g(generated))
+            .replace("%%PROVSUB%%", subtitle)
             .replace("%%CARDS%%", cards_html)
             .replace("%%POSEBTNS%%", pose_btns)
             .replace("%%RROWS%%", rrows)
@@ -409,6 +661,7 @@ def build_docking_report_html(*, target_id: str, stats: dict,
             .replace("%%MROWS%%", mrows)
             .replace("%%MARGIN%%", g(margin) or "single ranked pose")
             .replace("%%CONDROWS%%", cond_rows)
+            .replace("%%MULTILIG%%", multi_html)
             .replace("%%SMILES%%", g((s.get("ligand_smiles") or "—")[:60]))
             .replace("%%TARGETID%%", g(target_id))
             .replace("%%BLOB%%", blob)
@@ -459,13 +712,13 @@ footer p{font-size:13.5px}.cite{font-size:12px;color:var(--mut);line-height:1.7}
 </style></head>
 <body><div class="wrap">
 <h1>%%TITLE%%</h1>
-<p class="sub">target %%TARGET%% · wild-type redocking of %%LIG%% vs the <b>s04 Boltz pose</b> ·
-<b>internal reproducibility</b> baseline for s09 (not experimental validation) · generated %%GENERATED%%</p>
+<p class="sub">target %%TARGET%% · reference-target redocking of %%LIG%% vs the <b>s04 Boltz pose</b> ·
+<b>internal reproducibility</b> baseline for s09 (not experimental validation) · %%PROVSUB%%</p>
 
 <div class="cards">%%CARDS%%</div>
 
 <div class="concl"><b>Conclusion (scoped).</b> GNINA and DiffDock converge to the
-same pocket around the s04 Boltz WT reference (heavy-atom RMSD shown below), so
+same pocket around the s04 Boltz reference pose (heavy-atom RMSD shown below), so
 this is usable as an <b>internal baseline pose</b>. The reference is a
 <b>computed (Boltz) structure, not an experimental one</b> — this measures
 reproducibility, not biological correctness. Before interpreting mutants (s09),
@@ -491,7 +744,7 @@ at the bottom).</div>
 </div>
 <div id="viewer"><div style="padding:1rem;color:var(--mut);font-size:13px">loading 3D viewer…</div></div>
 <p class="note">Each method's best pose is overlaid (whole-pose colour = method)
-on the WT receptor; the s04 Boltz pose is the <b>reference</b> (blue). Visual
+on the reference (target) receptor; the s04 Boltz pose is the <b>reference</b> (blue). Visual
 overlap is the qualitative check; the quantitative one is the RMSD below. 3Dmol.js.</p>
 
 <h2>Pose accuracy — symmetry-corrected heavy-atom RMSD</h2>
@@ -504,6 +757,7 @@ ligand's symmetric atom mappings. <b>Centroid Δ is only a coarse proxy</b> — 
 a large flexible ligand it stays small even when the ligand rotates or a tail
 twists, so a small centroid Δ alone does NOT prove the same pose.</div>
 
+%%MULTILIG%%
 <h2>Ligand normalization (QC)</h2>
 <table><thead><tr><th>pose</th><th>raw atoms</th><th>heavy (used)</th><th>fragments</th><th>bonds from SMILES</th></tr></thead>
 <tbody>%%QROWS%%</tbody></table>
@@ -549,7 +803,7 @@ exact conditions are not separately logged yet.</li>
 
 <footer>
 <h2>Methods</h2>
-<p><b>Reference docking.</b> The WT %%LIG%% pose was established by redocking the
+<p><b>Reference docking.</b> The reference %%LIG%% pose was established by redocking the
 ligand into the s04 Boltz receptor with each configured method (GNINA, McNutt et
 al. 2021 — AutoDock Vina search, Trott &amp; Olson 2010 / Eberhardt et al. 2021,
 + a 3D-CNN rescore; DiffDock, Corso et al. 2023 — diffusion generative pose

@@ -21,7 +21,6 @@ from evoliez.adapters.base import (
     lock_pose_to_reference,
     mock_redock_modes,
     parse_sdf_first_pose,
-    tool_version,
     write_min_pdb,
 )
 from evoliez.config import Backend, DockingConfig
@@ -37,26 +36,88 @@ SCORE_TYPE = "diffdock_confidence"
 # One batch task: (complex_id, receptor_structure, reference_atoms, smiles).
 BatchTask = Tuple[str, ProteinStructure, Sequence[LigandAtom], str]
 
-# Memoized DiffDock version string. ``tool_version`` here spawns a cold Python
-# interpreter (``python -c "import importlib.metadata..."``); the result is
-# constant for the life of the process, so compute it AT MOST ONCE. Sentinel
-# ``None`` = not yet computed (the version string itself may be "").
+# Memoized DiffDock version string. Resolving it can spawn a subprocess
+# (``git rev-parse``) and stat the inference script; the result is constant for
+# the life of the process, so compute it AT MOST ONCE. Sentinel ``None`` = not
+# yet computed (the resolved string itself is always a non-empty clean line).
 _DIFFDOCK_VERSION: Optional[str] = None
 
 
-def _diffdock_version() -> str:
-    """DiffDock version for the audit trail, computed at most once per process.
+def _diffdock_repo_dir() -> Optional[Path]:
+    """The DiffDock clone directory (``$EVOLIEZ_DIFFDOCK``), or None if unset.
 
-    Wraps the cold-interpreter ``tool_version`` subprocess so batch/per-target
-    runs don't pay it every call. Falls back to "" exactly as the inline call
-    did (provenance is best-effort, never a run-blocker)."""
+    This is the same dir used as ``cwd`` for ``python -m inference``; the
+    inference entry point is ``<repo>/inference.py``. Provenance is keyed off
+    THIS path so the recorded version matches the code that actually ran."""
+    d = os.environ.get("EVOLIEZ_DIFFDOCK")
+    if d and str(d).strip():
+        return Path(str(d).strip())
+    return None
+
+
+def _diffdock_version() -> str:
+    """A MEANINGFUL one-line DiffDock provenance string, computed at most once.
+
+    DiffDock has no clean ``--version`` and is run from a repo clone (not a pip
+    package), so the old ``importlib.metadata.version('diffdock')`` probe always
+    raised and the captured stderr stored the literal "Traceback (most recent
+    call last):" as the engine version. This resolves a real identifier instead,
+    with robust fallbacks (NEVER a traceback):
+
+      1. ``git -C <repo> rev-parse --short HEAD`` -> ``"DiffDock @ <sha>"`` (the
+         exact commit of the clone that produced the poses);
+      2. else the resolved ``inference.py`` path + its mtime ->
+         ``"DiffDock inference.py <path> (mtime <iso>)"``;
+      3. else a pinned ``"DiffDock"`` constant.
+
+    On ANY exception -> ``"unknown"``. The result is stripped to a single clean
+    line. Best-effort: provenance is recorded, never a run-blocker."""
     global _DIFFDOCK_VERSION
     if _DIFFDOCK_VERSION is None:
-        _DIFFDOCK_VERSION = tool_version(
-            "python", "-c",
-            "import importlib.metadata as m;"
-            "print('diffdock', m.version('diffdock'))") or ""
+        _DIFFDOCK_VERSION = _resolve_diffdock_version()
     return _DIFFDOCK_VERSION
+
+
+def _one_line(s: str, limit: int = 200) -> str:
+    """First non-empty line of ``s``, stripped and length-capped (no traceback
+    multi-line spill ever reaches ``Pose.engine_version``)."""
+    for ln in str(s).splitlines():
+        ln = ln.strip()
+        if ln:
+            return ln[:limit]
+    return ""
+
+
+def _resolve_diffdock_version() -> str:
+    from datetime import datetime, timezone
+
+    from evoliez.utils.subprocess_utils import run, which
+    try:
+        repo = _diffdock_repo_dir()
+        # 1) git short SHA of the clone (the most precise provenance).
+        if repo is not None and repo.exists() and which("git") is not None:
+            try:
+                res = run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+                          check=False)
+                sha = _one_line((res.stdout or "").strip(), limit=40)
+                # rev-parse prints the error to STDERR on failure, so a clean
+                # stdout line here is a real SHA, never a traceback/usage blurb.
+                if sha and res.returncode == 0:
+                    return f"DiffDock @ {sha}"
+            except Exception:
+                pass  # fall through to the path+mtime fallback
+        # 2) resolved inference.py path + mtime (works without git/.git).
+        if repo is not None:
+            inf = repo / "inference.py"
+            if inf.exists():
+                mtime = datetime.fromtimestamp(
+                    inf.stat().st_mtime, tz=timezone.utc
+                ).isoformat(timespec="seconds")
+                return _one_line(f"DiffDock inference.py {inf} (mtime {mtime})")
+        # 3) pinned constant (DiffDock is installed but unidentifiable).
+        return "DiffDock"
+    except Exception:
+        return "unknown"
 
 
 def redock(
@@ -388,12 +449,14 @@ def parse_all_ranks(
     ``rank`` = the parsed integer, docked ``ligand_atoms`` (locked onto the
     canonical reference), ``score`` = confidence (``score_type``=
     "diffdock_confidence", HIGHER is better), and ``command_args`` /
-    ``engine_version``. A bare ``rankN.sdf`` with no confidence token -> score
-    0.0 (unscored) with a warning, NEVER a fabricated affinity. Returned best
-    rank first (rank ascending)."""
+    ``engine_version``. When the confidence is genuinely ABSENT (a bare
+    ``rankN.sdf``, an unparseable token, or DiffDock's own ``-1000`` failure
+    sentinel) the pose ``score`` is set to ``None`` (with a short ``note`` and a
+    warning) — NEVER a fabricated ``-1000`` / ``0.0`` that would pollute the
+    score range and min/range stats downstream. Returned best rank first (rank
+    ascending)."""
     files = _rank_files(complex_out_dir)
     poses: List[Pose] = []
-    import re
 
     for rank_n, path in files:
         atoms = parse_sdf_first_pose(path)
@@ -401,22 +464,53 @@ def parse_all_ranks(
             atoms, reference_atoms,
             candidate_id=candidate_id, method=METHOD, logger=log,
         )
-        m = re.search(r"confidence(-?\d+\.?\d*)", path.name)
-        if m:
-            score = round(float(m.group(1)), 4)
-        else:
-            score = 0.0
+        score, note = _parse_confidence(path.name)
+        if score is None:
             log.warning(
-                "diffdock rank-%d pose %s has no confidence token; unscored",
-                rank_n, path.name,
+                "diffdock rank-%d pose %s: %s; recorded score=None (unscored)",
+                rank_n, path.name, note or "no confidence",
             )
         poses.append(Pose(
             candidate_id=candidate_id, method=METHOD, score=score,
             ligand_atoms=locked, rmsd_to_reference=rmsd,
             cluster=rank_n - 1, rank=rank_n, score_type=SCORE_TYPE,
             engine_version=engine_version, command_args=command_args,
+            note=note,
         ))
     return poses
+
+
+# DiffDock's confidence model emits ``-1000`` as a FAILURE sentinel (no usable
+# confidence). We must not treat it as a real (extremely negative) score: it
+# would dominate any min/range statistic. Anything at or below this is unscored.
+_DIFFDOCK_CONF_SENTINEL = -1000.0
+
+
+def _parse_confidence(filename: str):
+    """Parse the DiffDock ``confidence<float>`` token from a rank filename.
+
+    Returns ``(score, note)`` where ``score`` is the rounded float, or ``None``
+    when the confidence is genuinely absent / unusable (with a short ``note``
+    explaining why). Robust to a leading sign (``-``/``+``), a leading-dot
+    mantissa (``confidence-.53``), and scientific notation (``confidence1e-1``);
+    a missing token, a non-finite value, or DiffDock's ``-1000`` failure
+    sentinel all map to ``(None, <reason>)`` rather than a fabricated number."""
+    import math
+    import re
+
+    m = re.search(r"confidence([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)",
+                  str(filename))
+    if not m:
+        return None, "no confidence token"
+    try:
+        val = float(m.group(1))
+    except (TypeError, ValueError):
+        return None, "unparseable confidence token"
+    if not math.isfinite(val):
+        return None, "non-finite confidence"
+    if val <= _DIFFDOCK_CONF_SENTINEL:
+        return None, "diffdock -1000 confidence sentinel (no usable score)"
+    return round(val, 4), ""
 
 
 def _is_rank(p: Path) -> bool:
@@ -473,18 +567,19 @@ def _rank1_pose_files(out_dir):
 def _parse_diffdock(out_dir):
     """DiffDock writes `rank1_confidence-X.XX.sdf`; the confidence is encoded in
     the filename. Return it (higher = better; 0.0 if no pose). A pose with no
-    confidence token is treated as unscored (0.0) WITH a warning - never the old
-    fabricated -7.0, which looked like a real affinity paired with real coords."""
-    import re
-
+    usable confidence token is treated as unscored (0.0) WITH a warning - never
+    the old fabricated -7.0, which looked like a real affinity paired with real
+    coords. (Back-compat scalar helper kept for the single-pose path/tests; the
+    production rank parser :func:`parse_all_ranks` records ``None``, not 0.0, for
+    the unscored case so it never pollutes score statistics.)"""
     confs = _rank1_pose_files(out_dir)
     if not confs:
         return 0.0
-    m = re.search(r"confidence(-?\d+\.?\d*)", confs[0].name)
-    if m:
-        return round(float(m.group(1)), 4)
-    log.warning(
-        "diffdock rank-1 pose %s has no confidence token; treating as unscored",
-        confs[0].name,
-    )
-    return 0.0
+    score, note = _parse_confidence(confs[0].name)
+    if score is None:
+        log.warning(
+            "diffdock rank-1 pose %s: %s; treating as unscored",
+            confs[0].name, note or "no confidence",
+        )
+        return 0.0
+    return score

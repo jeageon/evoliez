@@ -222,12 +222,14 @@ def _band(v: float, good: float, ok: float) -> str:
 def build_complex_report_html(*, target_id: str, stats: dict,
                               conditions: List[Tuple[str, str]],
                               generated: str,
-                              ligand_names: Optional[List[str]] = None) -> str:
+                              ligand_names: Optional[List[str]] = None,
+                              provenance: str = "") -> str:
     import html as _html
     import json as _json
     g = _html.escape
     s = stats
     m = s["metrics"]
+    subtitle = provenance or f"generated {g(generated)}"
     # Ligand chains come from the structure (generic for ANY target); optional
     # human names are supplied by the caller in chain order (B, C, …). The Boltz
     # affinity binder is the first ligand. Nothing here is target-specific.
@@ -322,7 +324,7 @@ def build_complex_report_html(*, target_id: str, stats: dict,
     return (_COMPLEX_TEMPLATE
             .replace("%%TITLE%%", g(f"{target_id} — complex prediction (Boltz-2)"))
             .replace("%%TARGET%%", g(target_id))
-            .replace("%%GENERATED%%", g(generated))
+            .replace("%%PROVSUB%%", subtitle)
             .replace("%%BESTMODEL%%", str(s["best_model"]))
             .replace("%%CARDS%%", cards_html)
             .replace("%%BANDLEGEND%%", band_legend)
@@ -398,7 +400,7 @@ footer p{font-size:13.5px}.cite{font-size:12px;color:var(--mut);line-height:1.7}
 </style></head>
 <body><div class="wrap">
 <h1>%%TITLE%%</h1>
-<p class="sub">target %%TARGET%% · Boltz-2 co-folded complex · best = model_%%BESTMODEL%% of the diffusion ensemble · generated %%GENERATED%%</p>
+<p class="sub">target %%TARGET%% · Boltz-2 co-folded complex · best = model_%%BESTMODEL%% of the diffusion ensemble · %%PROVSUB%%</p>
 
 <div class="cards">%%CARDS%%</div>
 
@@ -519,7 +521,8 @@ a QC step before mutant design (s06+).</div>
 
 <footer>
 <h2>Methods</h2>
-<p><b>Complex prediction.</b> The wild-type protein–ligand complex was predicted
+<p><b>Complex prediction.</b> The target (reference) protein–ligand complex was
+predicted
 with <b>Boltz-2</b> (Wohlwend et al. 2024), an AlphaFold3-class (Abramson et al.
 2024) diffusion co-folding model, from the target sequence, the integrated
 multi-track MSA, and the ligand(s) (%%LIGDESCR%%). <b>%%NMODELS%% diffusion

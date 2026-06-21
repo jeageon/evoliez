@@ -99,11 +99,16 @@ def compute_input_stats(*, target_id: str, sequence: str,
 
 
 # --------------------------------------------------------------------------- #
-def build_input_report_html(*, stats: dict, generated: str) -> str:
+def build_input_report_html(*, stats: dict, generated: str,
+                            provenance: str = "") -> str:
     import html as _html
     import json as _json
     g = _html.escape
     s = stats
+    # Provenance stamp replaces the minimal "generated <date>" subtitle so
+    # same-day re-runs cannot be confused (run name + config fingerprint + git +
+    # per-ligand net charge). Falls back to the bare date when not supplied.
+    subtitle = provenance or f"generated {g(generated)}"
 
     def card(lab, val, sub):
         return (f'<div class="card"><div class="lab">{g(lab)}</div>'
@@ -187,7 +192,7 @@ def build_input_report_html(*, stats: dict, generated: str) -> str:
     return (_INPUT_TEMPLATE
             .replace("%%TITLE%%", g(f"{s['target_id']} — input & ligand QC (s01)"))
             .replace("%%TARGET%%", g(s["target_id"]))
-            .replace("%%GENERATED%%", g(generated))
+            .replace("%%PROVSUB%%", subtitle)
             .replace("%%CARDS%%", cards)
             .replace("%%PROVROWS%%", prov_rows)
             .replace("%%RESROWS%%", res_rows)
@@ -237,7 +242,7 @@ code{font-size:12.5px;word-break:break-all}
 </style></head>
 <body><div class="wrap">
 <h1>%%TITLE%%</h1>
-<p class="sub">target %%TARGET%% · input provenance + ligand chemistry QC · generated %%GENERATED%%</p>
+<p class="sub">target %%TARGET%% · input provenance + ligand chemistry QC · %%PROVSUB%%</p>
 
 <div class="cards">%%CARDS%%</div>
 

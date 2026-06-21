@@ -139,6 +139,7 @@ class MSAStage(Stage):
             from datetime import datetime
 
             from evoliez import __version__
+            from evoliez.io._provenance import stamp
             from evoliez.io.msa_report import (compute_msa_stats, effective_neff,
                                                write_msa_report)
             if len(msa) >= 2:
@@ -152,6 +153,7 @@ class MSAStage(Stage):
                     target_id=ctx.config.input.target_id, target_len=len(seq),
                     stats=mstats,
                     generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    provenance=stamp(ctx),
                     conditions=[
                         ("retrieval tracks (independent, merged)",
                          ", ".join(h.sources)),

@@ -485,15 +485,24 @@ def _score_gate_passes(poses, method: str):
         return []
     ranks = [max(1, int(getattr(p, "rank", i + 1) or (i + 1)))
              for i, p in enumerate(poses)]
+    # A pose may carry score=None (genuinely unscored, e.g. a DiffDock rank file
+    # with an absent/sentinel confidence). It is excluded from the best-score
+    # statistics and can never PASS the score gate (no score to gate on) — but it
+    # is not a crash and not a fabricated number.
+    def _sc(p):
+        s = getattr(p, "score", None)
+        return None if s is None else float(s)
+
     if method == "diffdock":
-        scored = [float(p.score) for p in poses if float(p.score) != 0.0]
+        scored = [s for p in poses if (s := _sc(p)) is not None and s != 0.0]
         best = max(scored) if scored else None
         return [
-            bool(best is not None and r <= 3 and float(p.score) >= best - 1.0)
+            bool(best is not None and _sc(p) is not None
+                 and r <= 3 and _sc(p) >= best - 1.0)
             for p, r in zip(poses, ranks)
         ]
 
-    scores = [float(p.score) for p in poses]
+    scores = [s for p in poses if (s := _sc(p)) is not None]
     best_score = min(scores) if scores else None
     cnn_scores = [float(p.cnn_score) for p in poses
                   if getattr(p, "cnn_score", None) is not None]
@@ -504,8 +513,8 @@ def _score_gate_passes(poses, method: str):
             out.append(False)
         elif best_cnn is not None and getattr(p, "cnn_score", None) is not None:
             out.append(float(p.cnn_score) >= max(0.0, best_cnn - 0.2))
-        elif best_score is not None:
-            out.append(float(p.score) <= best_score + 1.0)
+        elif best_score is not None and _sc(p) is not None:
+            out.append(_sc(p) <= best_score + 1.0)
         else:
             out.append(False)
     return out
@@ -523,7 +532,8 @@ def _classify_engine_poses(target, method: str, poses):
     dock_inputs = [
         me.DockingPoseInput(
             source=method, structure=target["structure"],
-            ligand_atoms=p.ligand_atoms, score=float(p.score),
+            ligand_atoms=p.ligand_atoms,
+            score=(None if p.score is None else float(p.score)),
             score_is_better_low=(method != "diffdock"),
             score_gate_pass=bool(gates[i]),
             primary_only=primary_only, candidate_id=target_key,
@@ -872,8 +882,14 @@ def _augment_with_docking(ctx, cfg, wt, records, rep_stem_dirs, reps, gpu_list,
         import json as _json
         audit = ctx.paths.interaction_graphs / "multi_engine_docking.json"
         import dataclasses as _dataclasses
+        from datetime import datetime
+
+        from evoliez.io._provenance import run_fingerprint_str
         rows = [_dataclasses.asdict(d) for d in diags]
+        # Tie this audit to the run that produced it (greppable, non-breaking).
         audit_data = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "run_fingerprint": run_fingerprint_str(ctx),
             "methods": methods, "n_targets": len(targets),
             "n_kept": len(all_kept), "n_classified": len(diags),
             "status": status_rows,
@@ -1074,6 +1090,13 @@ class InteractionModelStage(Stage):
         )
         model.fit(sel)
         model.save(ctx.paths.interaction_graphs / "interaction_model.json")
+        # Tie the model artifact to the run that produced it (non-breaking
+        # additive top-level keys: generated_at + run_fingerprint).
+        try:
+            from evoliez.io._provenance import tag_json
+            tag_json(ctx.paths.interaction_graphs / "interaction_model.json", ctx)
+        except Exception:  # provenance tagging is never allowed to fail the stage
+            pass
         ctx.put("interaction_model", model)
 
         meta = {
@@ -1142,6 +1165,7 @@ class InteractionModelStage(Stage):
             import dataclasses
             from datetime import datetime
 
+            from evoliez.io._provenance import stamp
             from evoliez.io.interaction_model_report import (
                 compute_interaction_stats, find_wt_complex_pdb,
                 write_interaction_report)
@@ -1161,13 +1185,27 @@ class InteractionModelStage(Stage):
             }
             wt_pdb = (getattr(wt.structure, "pdb_path", None)
                       or find_wt_complex_pdb(ctx.paths.complexes))
+            # Multi-engine docking audit (written by _augment_with_docking to
+            # interaction_graphs/multi_engine_docking.json). Absent when
+            # multi_engine is off -> the report skips that section cleanly.
+            me_audit = None
+            try:
+                me_path = (ctx.paths.interaction_graphs
+                           / "multi_engine_docking.json")
+                if me_path.exists():
+                    import json as _json
+                    me_audit = _json.loads(me_path.read_text())
+            except Exception:  # audit is optional; never block the report
+                me_audit = None
             out = ctx.paths.reports / "interaction_model_report.html"
             write_interaction_report(
                 out,
                 target_id=ctx.config.input.target_id,
                 stats=compute_interaction_stats(
-                    meta, artifacts, model_dict, wt_pdb),
+                    meta, artifacts, model_dict, wt_pdb,
+                    multi_engine_audit=me_audit),
                 generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                provenance=stamp(ctx),
                 conditions=[
                     ("representatives", rep_note),
                     ("Boltz samples / representative", str(n_samp)),

@@ -8,8 +8,9 @@ These cover the s06b perf fixes that must stay OUTPUT-identical:
   (the per-rep render runs once in the caller instead of once per engine/target).
 * With ``receptor_pdb=None`` the render path is unchanged (still calls
   ``full_atom_receptor_pdb``).
-* The DiffDock version string is memoized: the cold-interpreter ``tool_version``
-  subprocess fires AT MOST once per process across many batch calls.
+* The DiffDock version string is memoized: the resolver
+  (``_resolve_diffdock_version``: git short-SHA / inference.py path+mtime) fires
+  AT MOST once per process across many batch calls.
 
 All real-backend; the GPU tools (`gnina`, `python -m inference`) are mocked, so
 this runs on the CPU-only dev box.
@@ -183,7 +184,8 @@ def test_diffdock_single_receptor_pdb_skips_render(tmp_path, monkeypatch):
     rc = [0]
     _wire_diffdock(monkeypatch, rc)
     monkeypatch.setattr(diffdock, "_DIFFDOCK_VERSION", None, raising=False)
-    monkeypatch.setattr(diffdock, "tool_version", lambda *a, **k: "diffdock 1.1")
+    monkeypatch.setattr(diffdock, "_resolve_diffdock_version",
+                        lambda *a, **k: "DiffDock 1.1")
 
     workdir = tmp_path / "wd"
     poses = diffdock.redock_all(
@@ -205,7 +207,8 @@ def test_diffdock_batch_receptor_pdb_map_skips_render(tmp_path, monkeypatch):
     rc = [0]
     _wire_diffdock(monkeypatch, rc)
     monkeypatch.setattr(diffdock, "_DIFFDOCK_VERSION", None, raising=False)
-    monkeypatch.setattr(diffdock, "tool_version", lambda *a, **k: "diffdock 1.1")
+    monkeypatch.setattr(diffdock, "_resolve_diffdock_version",
+                        lambda *a, **k: "DiffDock 1.1")
 
     out_root = tmp_path / "out"
     struct = ProteinStructure(sequence="AG", residues=[])
@@ -229,7 +232,8 @@ def test_diffdock_batch_no_map_renders_all(tmp_path, monkeypatch):
     rc = [0]
     _wire_diffdock(monkeypatch, rc)
     monkeypatch.setattr(diffdock, "_DIFFDOCK_VERSION", None, raising=False)
-    monkeypatch.setattr(diffdock, "tool_version", lambda *a, **k: "diffdock 1.1")
+    monkeypatch.setattr(diffdock, "_resolve_diffdock_version",
+                        lambda *a, **k: "DiffDock 1.1")
     out_root = tmp_path / "out"
     struct = ProteinStructure(sequence="AG", residues=[])
     tasks = [("A", struct, _ref(), "CCO"), ("B", struct, _ref(), "CCN")]
@@ -242,8 +246,8 @@ def test_diffdock_batch_no_map_renders_all(tmp_path, monkeypatch):
 # diffdock VERSION MEMO
 # --------------------------------------------------------------------------- #
 def test_diffdock_version_memoized_across_batches(tmp_path, monkeypatch):
-    """The cold-interpreter version probe fires at most once per process even
-    across multiple batch runs."""
+    """The version probe (now ``_resolve_diffdock_version``: git/path stat) fires
+    at most once per process even across multiple batch runs."""
     rc = [0]
     _wire_diffdock(monkeypatch, rc)
     monkeypatch.setattr(diffdock, "_DIFFDOCK_VERSION", None, raising=False)
@@ -252,9 +256,9 @@ def test_diffdock_version_memoized_across_batches(tmp_path, monkeypatch):
 
     def _tv(*a, **k):
         tv_calls["n"] += 1
-        return "diffdock 1.1"
+        return "DiffDock @ abc1234"
 
-    monkeypatch.setattr(diffdock, "tool_version", _tv)
+    monkeypatch.setattr(diffdock, "_resolve_diffdock_version", _tv)
 
     struct = ProteinStructure(sequence="AG", residues=[])
     for i in range(3):
@@ -266,17 +270,18 @@ def test_diffdock_version_memoized_across_batches(tmp_path, monkeypatch):
 
 
 def test_diffdock_version_helper_memoizes(monkeypatch):
-    """_diffdock_version() itself: underlying tool_version called once."""
+    """_diffdock_version() itself: underlying resolver called once."""
     monkeypatch.setattr(diffdock, "_DIFFDOCK_VERSION", None, raising=False)
     n = {"v": 0}
 
     def _tv(*a, **k):
         n["v"] += 1
-        return "diffdock 9.9"
+        return "DiffDock @ deadbee"
 
-    monkeypatch.setattr(diffdock, "tool_version", _tv)
-    assert diffdock._diffdock_version() == "diffdock 9.9"
-    assert diffdock._diffdock_version() == "diffdock 9.9"
+    monkeypatch.setattr(diffdock, "_resolve_diffdock_version", _tv)
+    assert diffdock._diffdock_version() == "DiffDock @ deadbee"
+    assert diffdock._diffdock_version() == "DiffDock @ deadbee"
+    assert n["v"] == 1                               # resolver called exactly once
     assert n["v"] == 1
 
 

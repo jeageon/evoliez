@@ -93,7 +93,13 @@ class Complex:
 class Pose:
     candidate_id: str
     method: str
-    score: float
+    # ``score`` is the engine-native pose score (see ``score_type``). It is
+    # ``None`` when the engine produced a pose but NO parseable score — e.g. a
+    # DiffDock rank file with an absent/sentinel confidence token. ``None`` means
+    # "genuinely unscored": downstream must skip it from score statistics rather
+    # than inject a fabricated number that would pollute min/range (the old
+    # ``-1000.0`` / ``0.0`` sentinels did exactly that).
+    score: Optional[float]
     ligand_atoms: List[LigandAtom] = field(default_factory=list)
     rmsd_to_reference: Optional[float] = None
     cluster: int = 0
@@ -103,13 +109,15 @@ class Pose:
     # "minimizedAffinity" (gnina, lower=better) | "diffdock_confidence" (higher=
     # better). ``cnn_score``/``cnn_affinity`` are gnina's CNN tags (None for
     # diffdock/mock). ``engine_version`` / ``command_args`` record exactly how the
-    # pose was produced so a reviewer can reconstruct the run.
+    # pose was produced so a reviewer can reconstruct the run. ``note`` carries a
+    # short human-readable provenance remark (e.g. why ``score`` is None).
     rank: int = 1
     score_type: str = ""
     cnn_score: Optional[float] = None
     cnn_affinity: Optional[float] = None
     engine_version: str = ""
     command_args: str = ""
+    note: str = ""
 
 
 @dataclass

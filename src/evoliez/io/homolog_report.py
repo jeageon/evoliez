@@ -124,13 +124,15 @@ def _summary_rows(homologs, data) -> List[List[str]]:
 def build_homolog_report_html(
     *, target_id: str, target_len: int, homologs: Sequence,
     msa_depth, conditions: List[Tuple[str, str]], generated: str,
+    provenance: str = "",
 ) -> str:
     data = _chart_data(list(homologs), msa_depth)
     g_esc = html.escape
+    subtitle = provenance or f"generated {g_esc(generated)}"
 
     cards = [
         ("homologs", f"{data['n']:,}", "#111"),
-        ("subfamily clusters", f"{data['n_clusters']:,}", "#111"),
+        ("sequence (diversity) clusters", f"{data['n_clusters']:,}", "#111"),
         ("largest cluster", f"{data['largest_cluster']:,}", "#111"),
         ("MSA depth", f"{data['msa_depth']:,}" if data['msa_depth'] else "-", "#111"),
     ]
@@ -162,18 +164,21 @@ def build_homolog_report_html(
     nclu, nsing = data["n_clusters"], data.get("n_singletons", 0)
     spct = round(100 * nsing / nclu) if nclu else 0
     caveat = (
-        f"{nsing:,} of {nclu:,} subfamily clusters are SINGLETONS ({spct}%) while "
+        f"{nsing:,} of {nclu:,} sequence-diversity clusters are SINGLETONS "
+        f"({spct}%) while "
         f"the largest holds {data['largest_cluster']:,}. This is a singleton-"
         "DOMINATED distribution (one big bucket + a long singleton tail), NOT a "
         "balanced family decomposition — so 'n clusters' over-states the effective "
-        "family diversity, and s06b takes the LARGEST subfamilies first. "
+        "sequence diversity, and s06b takes the LARGEST clusters first. These are "
+        "sequence-identity (diversity) clusters, NOT validated biological "
+        "subfamilies. "
         "Pool note: this homolog count = deduplicated RETRIEVED sequences across "
         "the 5 tracks; the s03 “MSA depth” additionally includes the "
         "ColabFold remote-MSA base rows, so the two counts are not the same set.")
 
     return _TEMPLATE.format(
         title=g_esc(f"{target_id} — integrated homolog analysis"),
-        target=g_esc(target_id), tlen=target_len, generated=g_esc(generated),
+        target=g_esc(target_id), tlen=target_len, provsub=subtitle,
         cards=cards_html, summary_rows=srows, legend=legend,
         cond_rows=cond_rows, blob=blob, cluster_caveat=g_esc(caveat),
     )
@@ -216,7 +221,7 @@ footer{{margin-top:2.5rem;border-top:.5px solid var(--line);padding-top:1rem}}
 </style></head>
 <body><div class="wrap">
 <h1>{title}</h1>
-<p class="sub">target {target} · {tlen} aa · generated {generated}</p>
+<p class="sub">target {target} · {tlen} aa · {provsub}</p>
 
 <div class="cards">{cards}</div>
 
@@ -230,9 +235,9 @@ footer{{margin-top:2.5rem;border-top:.5px solid var(--line);padding-top:1rem}}
  aria-label="Identity distribution of homologs by source (log count)."></canvas></div>
 <p class="note">log count; bins auto-scaled to the observed identity range.</p>
 
-<h2>Subfamily cluster sizes</h2>
+<h2>Sequence (diversity) cluster sizes</h2>
 <div class="chartbox" style="height:260px"><canvas id="clChart" role="img"
- aria-label="Distribution of subfamily cluster sizes (log count)."></canvas></div>
+ aria-label="Distribution of sequence (diversity) cluster sizes (log count)."></canvas></div>
 <p class="note">how many clusters contain N members (log count). A single very
 large bucket means that source was not sub-clustered.</p>
 <div class="note" style="border-left:3px solid #BA7517;padding:.5rem .75rem;background:var(--surf);border-radius:4px;margin:.6rem 0">{cluster_caveat}</div>

@@ -42,6 +42,17 @@ _ITYPE_COLORS = {
     "hydrophobic": "#BA7517", "vdw": "#1D9E75", "none": "#888780",
 }
 
+# Multi-engine docking augmentation: the four pose ROLES the family-consensus
+# classifier assigns to each external docking pose, in display order, with a
+# fixed colour each (so the table/chart legend reads the same for any target).
+_ROLE_ORDER = ["weak_positive", "hard_negative", "strong_negative", "excluded"]
+_ROLE_COLORS = {
+    "weak_positive": "#1D9E75",    # corroborates the Boltz family consensus
+    "hard_negative": "#C0392B",    # plausible score, discordant family geometry
+    "strong_negative": "#993C1D",  # clearly off-consensus negative
+    "excluded": "#888780",         # dropped (failed a gate) — not a training row
+}
+
 
 # --------------------------------------------------------------------------- #
 # DATA layer
@@ -165,6 +176,118 @@ def _decode_consensus(consensus: Sequence[float], k_nearest: int,
             "summary": summary}
 
 
+def compute_multi_engine_stats(audit: Optional[dict]) -> Optional[dict]:
+    """Summarise the per-rep multi-engine docking audit
+    (``interaction_graphs/multi_engine_docking.json``) for the report.
+
+    The Boltz family ensemble is the POSITIVE teacher; each external docking
+    pose (GNINA / DiffDock / …) is classified against the family consensus by
+    RMSD-to-its-own-target-pose + family-fingerprint overlap + clash +
+    catalytic-contact preservation, with a score gate gating the hard-negatives.
+    This builds the cross-tabs the section renders, entirely from the ``rows``
+    list — generic over engines / roles / context modes, nothing target-specific.
+
+    Returns ``None`` when the audit is absent or carries no classified rows, so
+    the caller can SKIP the section cleanly (multi_engine off). Shape::
+
+        {"methods", "n_targets", "n_kept", "n_classified",
+         "engines":          [engine names actually present, in audit order],
+         "roles":            [role names present, canonical order first],
+         "role_by_engine":   {engine: {role: count, ..., "total": int}},
+         "role_totals":      {role: count, ..., "total": int},
+         "context_by_engine":{engine: [{"mode", "count"} ...]},
+         "hard_negatives":   [{source,candidate_id,rank,rmsd_to_consensus,
+                               fp_overlap,score,score_type,context_mode} ...],
+         "chart": {"engines", "roles", "colors", "matrix"}}  # role×engine counts
+    """
+    if not audit:
+        return None
+    rows = list(audit.get("rows", []) or [])
+    if not rows:
+        return None
+
+    # engines: audit-declared method order first, then any extra seen in rows.
+    methods = [str(m) for m in (audit.get("methods", []) or [])]
+    seen_eng: List[str] = []
+    for r in rows:
+        e = str(r.get("source", "") or "—")
+        if e not in seen_eng:
+            seen_eng.append(e)
+    engines = [m for m in methods if m in seen_eng]
+    engines += [e for e in seen_eng if e not in engines]
+
+    # roles: canonical order first, then any unexpected role kept (honest).
+    seen_roles = {str(r.get("role", "") or "—") for r in rows}
+    roles = [r for r in _ROLE_ORDER if r in seen_roles]
+    roles += sorted(r for r in seen_roles if r not in roles)
+
+    # role × engine cross-tab (+ per-engine and per-role totals).
+    role_by_engine: Dict[str, Dict[str, int]] = {
+        e: {r: 0 for r in roles} for e in engines}
+    role_totals: Dict[str, int] = {r: 0 for r in roles}
+    # context_mode breakdown per engine (the honest per-engine cofactor-context
+    # handling, e.g. one engine context_retained vs another context_dropped).
+    ctx_by_engine: Dict[str, Dict[str, int]] = {e: {} for e in engines}
+    for r in rows:
+        e = str(r.get("source", "") or "—")
+        role = str(r.get("role", "") or "—")
+        role_by_engine.setdefault(e, {}).setdefault(role, 0)
+        role_by_engine[e][role] += 1
+        role_totals[role] = role_totals.get(role, 0) + 1
+        cm = str(r.get("context_mode", "") or "—")
+        ctx_by_engine.setdefault(e, {}).setdefault(cm, 0)
+        ctx_by_engine[e][cm] += 1
+    for e in engines:
+        role_by_engine[e]["total"] = sum(
+            v for k, v in role_by_engine[e].items() if k != "total")
+    role_totals["total"] = sum(role_totals.get(r, 0) for r in roles)
+
+    context_by_engine = {
+        e: [{"mode": cm, "count": n}
+            for cm, n in sorted(ctx_by_engine.get(e, {}).items(),
+                                key=lambda kv: -kv[1])]
+        for e in engines}
+
+    # example HARD-NEGATIVES (top by engine score): a plausible engine score but
+    # discordant family geometry — the valuable augmentation signal.
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return float("-inf")
+
+    hard = [r for r in rows if str(r.get("role")) == "hard_negative"]
+    hard.sort(key=lambda r: _num(r.get("score")), reverse=True)
+    hard_negatives = [{
+        "source": str(r.get("source", "—")),
+        "candidate_id": str(r.get("candidate_id", "—")),
+        "rank": r.get("rank"),
+        "rmsd_to_consensus": r.get("rmsd_to_consensus"),
+        "fp_overlap": r.get("fp_overlap"),
+        "score": r.get("score"),
+        "score_type": str(r.get("score_type", "") or ""),
+        "context_mode": str(r.get("context_mode", "") or ""),
+    } for r in hard[:8]]
+
+    chart = {
+        "engines": engines, "roles": roles,
+        "colors": [_ROLE_COLORS.get(r, "#888780") for r in roles],
+        "matrix": [[role_by_engine[e].get(r, 0) for r in roles]
+                   for e in engines],
+    }
+    return {
+        "methods": methods,
+        "n_targets": int(audit.get("n_targets", 0) or 0),
+        "n_kept": int(audit.get("n_kept", 0) or 0),
+        "n_classified": int(audit.get("n_classified", len(rows)) or len(rows)),
+        "engines": engines, "roles": roles,
+        "role_by_engine": role_by_engine, "role_totals": role_totals,
+        "context_by_engine": context_by_engine,
+        "hard_negatives": hard_negatives,
+        "chart": chart,
+    }
+
+
 def _read_pdb_text(wt_pdb_path) -> Optional[str]:
     """Read the WT complex PDB for the 3D viewer (None if unavailable). Accepts a
     path or already-loaded text; never raises (the report degrades gracefully)."""
@@ -205,7 +328,8 @@ def find_wt_complex_pdb(complexes_dir) -> Optional[str]:
 
 
 def compute_interaction_stats(meta: dict, artifacts: dict, model: dict,
-                              wt_pdb_path=None) -> dict:
+                              wt_pdb_path=None,
+                              multi_engine_audit: Optional[dict] = None) -> dict:
     """Everything the s06b report needs, derived from the on-disk artifacts so it
     works BOTH wired into the stage and standalone.
 
@@ -215,6 +339,10 @@ def compute_interaction_stats(meta: dict, artifacts: dict, model: dict,
     ``model``     = ``interaction_model.json`` (consensus vector, thr, layout).
     ``wt_pdb_path`` = path to (or text of) the WT complex model PDB for the 3D
                     viewer; optional — the viewer is omitted if absent.
+    ``multi_engine_audit`` = contents of
+                    ``interaction_graphs/multi_engine_docking.json`` (the per-rep
+                    multi-engine docking audit); optional — when absent (or empty,
+                    i.e. multi_engine off) the multi-engine section is skipped.
     """
     meta = meta or {}
     artifacts = artifacts or {}
@@ -327,7 +455,7 @@ def compute_interaction_stats(meta: dict, artifacts: dict, model: dict,
     min_contact_distance = round(min(_dists), 3) if _dists else None
 
     # residues the ligand engages most reproducibly across the WT ensemble
-    # (max contact frequency >= 0.5); used for the 3D highlight in section 6
+    # (max contact frequency >= 0.5); used for the 3D highlight in section 7
     conserved_resis = sorted({d["residue_index"] for d in res_map
                               if d["max_freq"] >= 0.5})
 
@@ -384,6 +512,7 @@ def compute_interaction_stats(meta: dict, artifacts: dict, model: dict,
                       if model.get("thr") is not None else None),
         "model_scale": (round(float(model["scale"]), 4)
                         if model.get("scale") is not None else None),
+        "multi_engine": compute_multi_engine_stats(multi_engine_audit),
         "pdb": _read_pdb_text(wt_pdb_path),
     }
 
@@ -395,14 +524,222 @@ def _band(v: float, good: float, ok: float) -> str:
     return "#1D9E75" if v >= good else ("#BA7517" if v >= ok else "#C0392B")
 
 
+def _svg_role_share_bars(chart: dict, *, width: int = 560, row_h: int = 44,
+                         gap: int = 26, pad_t: int = 16, pad_l: int = 88,
+                         pad_r: int = 14) -> str:
+    """Self-contained inline-SVG 100%-STACKED horizontal bar chart (no external
+    libs / JS): one full-width bar per engine, segmented by each role's SHARE of
+    that engine's poses. Per-engine pose counts span wildly (e.g. 1500 vs 3), so a
+    linear COUNT axis collapses the small bars to 0 px — the share view keeps every
+    engine readable and shows the role *distribution* (absolute counts live in the
+    table above). Matches the report's inline-SVG idiom (CSS-var theming, reused
+    .legend/.lg/.sw)."""
+    import html as _h
+
+    engines = chart.get("engines", []) or []
+    roles = chart.get("roles", []) or []
+    colors = chart.get("colors", []) or []
+    matrix = chart.get("matrix", []) or []  # [engine][role] counts
+    if not engines or not roles:
+        return ""
+    n = len(engines)
+    plot_w = width - pad_l - pad_r
+    height = pad_t * 2 + n * (row_h + gap) - gap
+
+    parts: List[str] = [
+        f'<svg viewBox="0 0 {width} {height}" width="100%" '
+        f'preserveAspectRatio="xMidYMid meet" role="img" '
+        f'style="font:12px -apple-system,Segoe UI,Roboto,Arial,sans-serif">']
+    for gi, eng in enumerate(engines):
+        row = matrix[gi] if gi < len(matrix) else [0] * len(roles)
+        total = sum(row) or 1
+        y = pad_t + gi * (row_h + gap)
+        cy = y + row_h / 2.0
+        # engine label + n in the left gutter
+        parts.append(
+            f'<text x="{pad_l - 10}" y="{cy - 1:.1f}" text-anchor="end" '
+            f'fill="var(--fg)" font-size="12.5" font-weight="600">'
+            f'{_h.escape(str(eng))}</text>')
+        parts.append(
+            f'<text x="{pad_l - 10}" y="{cy + 13:.1f}" text-anchor="end" '
+            f'fill="var(--mut)" font-size="9.5">n={total:,}</text>')
+        # stacked role segments — each width = that role's share of the engine
+        x = float(pad_l)
+        for ri, role in enumerate(roles):
+            v = row[ri] if ri < len(row) else 0
+            w = plot_w * (v / total)
+            col = colors[ri] if ri < len(colors) else "#888780"
+            pct = 100.0 * v / total
+            parts.append(
+                f'<rect x="{x:.2f}" y="{y}" width="{max(0.0, w):.2f}" '
+                f'height="{row_h}" fill="{col}">'
+                f'<title>{_h.escape(str(eng))} · {_h.escape(str(role))}: '
+                f'{v:,} ({pct:.1f}%)</title></rect>')
+            if w >= 38 and v > 0:  # in-bar count + pct only where it fits
+                parts.append(
+                    f'<text x="{x + w / 2.0:.1f}" y="{cy - 1:.1f}" '
+                    f'text-anchor="middle" fill="#fff" font-size="11" '
+                    f'font-weight="600">{v:,}</text>')
+                parts.append(
+                    f'<text x="{x + w / 2.0:.1f}" y="{cy + 12:.1f}" '
+                    f'text-anchor="middle" fill="#fff" font-size="9" '
+                    f'opacity="0.9">{pct:.0f}%</text>')
+            x += w
+        # 100% frame outline around the bar
+        parts.append(
+            f'<rect x="{pad_l}" y="{y}" width="{plot_w}" height="{row_h}" '
+            f'fill="none" stroke="var(--line)" stroke-width="0.8" rx="2"/>')
+    parts.append("</svg>")
+    # role legend (same swatch idiom as the rest of the report)
+    leg = "".join(
+        f'<span class="lg"><span class="sw" style="background:'
+        f'{(colors[i] if i < len(colors) else "#888780")}"></span>'
+        f'{_h.escape(str(roles[i]))}</span>' for i in range(len(roles)))
+    return f'{"".join(parts)}<div class="legend">{leg}</div>'
+
+
+def _build_multi_engine_section(s: dict, section_no: int) -> str:
+    """The 'N · Multi-engine docking augmentation' section (or '' to skip it).
+
+    Renders: a role×engine cross-tab, a per-engine context_mode breakdown, a few
+    top hard-negative examples, an inline-SVG role-distribution-per-engine chart,
+    and a short methods paragraph. Returns '' when no multi-engine audit is present
+    so the section is skipped cleanly (no empty heading)."""
+    import html as _h
+
+    me = s.get("multi_engine")
+    if not me:
+        return ""
+    g = _h.escape
+    engines = me["engines"]
+    roles = me["roles"]
+    role_by_engine = me["role_by_engine"]
+    role_totals = me["role_totals"]
+
+    def _rl(role):  # pretty role label
+        return role.replace("_", " ")
+
+    # ---- role × engine cross-tab ----------------------------------------- #
+    head_cells = "".join(f"<th>{g(_rl(r))}</th>" for r in roles)
+    body_rows = ""
+    for e in engines:
+        cells = "".join(
+            f'<td>{role_by_engine.get(e, {}).get(r, 0):,}</td>' for r in roles)
+        body_rows += (
+            f'<tr><td><b>{g(str(e))}</b></td>{cells}'
+            f'<td><b>{role_by_engine.get(e, {}).get("total", 0):,}</b></td></tr>')
+    tot_cells = "".join(
+        f'<td><b>{role_totals.get(r, 0):,}</b></td>' for r in roles)
+    body_rows += (
+        f'<tr style="border-top:1.5px solid var(--line)"><td class=ck>all '
+        f'engines</td>{tot_cells}<td><b>{role_totals.get("total", 0):,}</b>'
+        f'</td></tr>')
+    role_table = (
+        f'<table><thead><tr><th>engine</th>{head_cells}<th>total</th></tr>'
+        f'</thead><tbody>{body_rows}</tbody></table>')
+
+    # ---- context_mode breakdown per engine ------------------------------- #
+    ctx_rows = ""
+    for e in engines:
+        modes = me["context_by_engine"].get(e, [])
+        if modes:
+            chips = " ".join(
+                f'<span class="lg"><span class="sw" style="background:'
+                f'#378ADD"></span>{g(m["mode"])} <b>{m["count"]:,}</b></span>'
+                for m in modes)
+        else:
+            chips = '<span class="ck">—</span>'
+        ctx_rows += (
+            f'<tr><td><b>{g(str(e))}</b></td>'
+            f'<td><div class="legend" style="margin:0">{chips}</div></td></tr>')
+    ctx_table = (
+        '<table><thead><tr><th>engine</th><th>cofactor-context handling '
+        '(pose count)</th></tr></thead><tbody>' + ctx_rows + '</tbody></table>')
+
+    # ---- example hard-negatives ------------------------------------------ #
+    def _f(v, suf="", nd=2):
+        try:
+            return f"{float(v):.{nd}f}{suf}"
+        except (TypeError, ValueError):
+            return "—"
+
+    hn = me["hard_negatives"]
+    hn_rows = "".join(
+        f'<tr><td>{g(d["source"])}</td><td>{g(str(d["candidate_id"]))}</td>'
+        f'<td>{("#" + str(d["rank"])) if d.get("rank") is not None else "—"}</td>'
+        f'<td>{_f(d["rmsd_to_consensus"], " Å")}</td>'
+        f'<td>{_f(d["fp_overlap"])}</td>'
+        f'<td><b>{_f(d["score"], nd=3)}</b></td></tr>'
+        for d in hn)
+    if not hn_rows:
+        hn_rows = ('<tr><td colspan=6 class=ck>no hard-negatives in this run '
+                   '(no pose passed the score gate with discordant geometry)'
+                   '</td></tr>')
+    hn_table = (
+        '<table><thead><tr><th>engine</th><th>target</th><th>rank</th>'
+        '<th>RMSD→consensus</th><th>fp overlap</th><th>score</th></tr></thead>'
+        '<tbody>' + hn_rows + '</tbody></table>')
+
+    chart_svg = _svg_role_share_bars(me["chart"])
+    n_hard = role_totals.get("hard_negative", 0)
+
+    return f"""
+<h2>{section_no} · Multi-engine docking augmentation</h2>
+<p class="note" style="margin:.1rem 0 .4rem">Beyond the Boltz diffusion ensemble,
+each docking target (WT + representatives) is re-docked with independent external
+engines (<b>{g(", ".join(str(e) for e in engines))}</b>) and every pose is
+classified <b>against the Boltz family consensus</b>. <b>{me['n_targets']:,}</b>
+targets were docked, <b>{me['n_classified']:,}</b> poses classified,
+<b>{me['n_kept']:,}</b> kept as extra training rows. The engines are
+<b>complementary</b>: one corroborates the consensus (weak-positives) while another
+supplies the valuable <b>{n_hard:,} hard-negatives</b> — plausible by their own
+score, yet geometrically off the family consensus.</p>
+<h2 style="font-size:15px;margin-top:1.2rem">Pose role × engine</h2>
+{role_table}
+<p class="note">Each external pose gets one of four roles vs the family consensus.
+<b>weak_positive</b> = corroborates the Boltz consensus (down-weighted positive);
+<b>hard_negative</b> = plausible engine score but discordant family geometry (passes
+the score gate — the prized signal); <b>strong_negative</b> = clearly off-consensus;
+<b>excluded</b> = failed a gate, not used as a training row. Reading the rows
+side-by-side surfaces the complementarity between engines.</p>
+<h2 style="font-size:15px;margin-top:1.2rem">Per-engine role distribution</h2>
+<div style="margin:.5rem 0 .3rem">{chart_svg}</div>
+<p class="note">Each bar is 100% of that engine's classified poses, split by role
+(absolute counts are in the table above; inline SVG, no external libraries). The
+<i>shapes</i> are the point: one engine's poses are almost entirely weak-positive — it
+<b>corroborates</b> the Boltz consensus — while another carries the hard-negative and
+excluded mass — it <b>contradicts</b> it. That complementarity is what makes the
+cross-engine augmentation informative rather than redundant.</p>
+<h2 style="font-size:15px;margin-top:1.2rem">Cofactor-context handling per engine</h2>
+{ctx_table}
+<p class="note">Honest per-engine record of how each engine handled the co-modelled
+cofactor / substrate context during docking (e.g. one engine retains the context,
+another drops it). Tagged per pose so the augmentation is fully auditable.</p>
+<h2 style="font-size:15px;margin-top:1.2rem">Example hard-negatives (top by engine score)</h2>
+{hn_table}
+<p class="note">Plausible engine score, discordant family geometry — <b>the valuable
+signal</b>. A high docking score paired with a large RMSD-to-its-own-target-pose and
+low family-fingerprint overlap is exactly the near-miss the consensus classifier
+should learn to reject.</p>
+<p class="note" style="margin-top:.6rem"><b>Method.</b> The <b>Boltz family
+consensus</b> is the positive teacher. Each docking pose is classified by
+<b>RMSD-to-its-own-target-pose</b> + <b>family-fingerprint overlap</b> + <b>clash</b>
+check + <b>catalytic-contact preservation</b>, with a <b>score gate</b> that gates
+the hard-negatives (only poses the engine itself scores plausibly can become
+hard-negatives). Every pose is tagged with its engine, rank, score type and
+context-mode for the audit trail (<code>multi_engine_docking.json</code>).</p>
+"""
+
+
 def build_interaction_report_html(*, target_id: str, stats: dict,
                                   conditions: List[Tuple[str, str]],
-                                  generated: str) -> str:
+                                  generated: str, provenance: str = "") -> str:
     import html as _html
     import json as _json
     g = _html.escape
     s = stats
     m = s["meta"]
+    subtitle = provenance or f"generated {g(generated)}"
     auroc = m["subfamily_holdout_auroc"]
 
     def card(lab, val, sub, color="#111"):
@@ -412,7 +749,8 @@ def build_interaction_report_html(*, target_id: str, stats: dict,
 
     cards = [
         card("holdout AUROC", f"{auroc:.3f}" if auroc is not None else "—",
-             "subfamily-held-out", _band(auroc or 0, 0.8, 0.65)
+             "consensus-vs-decoy geometry (not activity)",
+             _band(auroc or 0, 0.8, 0.65)
              if auroc is not None else "#111"),
         card("representatives", f"{m['representatives']:,}",
              "subfamily reps -> ensemble"),
@@ -519,6 +857,11 @@ def build_interaction_report_html(*, target_id: str, stats: dict,
             f'{mintxt} — physically implausible, flagged for PoseBusters / PLIP '
             f'QC before any binding-mode claim.</div>')
 
+    # ---- multi-engine docking augmentation section (skipped if no audit) ---- #
+    # Inserted as section 6, between Model performance (5) and 3D structure (now
+    # renumbered to 7 in the template). Empty string => the section vanishes.
+    me_section = _build_multi_engine_section(s, 6)
+
     # JSON blob for the client charts + 3D highlight
     blob = _json.dumps({
         "freq_hist": s["freq_hist"],
@@ -535,7 +878,7 @@ def build_interaction_report_html(*, target_id: str, stats: dict,
     return (_INTERACTION_TEMPLATE
             .replace("%%TITLE%%", g(f"{target_id} — family interaction-geometry model"))
             .replace("%%TARGET%%", g(target_id))
-            .replace("%%GENERATED%%", g(generated))
+            .replace("%%PROVSUB%%", subtitle)
             .replace("%%CARDS%%", cards_html)
             .replace("%%FUNNELROWS%%", funnel_rows)
             .replace("%%SELNOTE%%", g(sel_note))
@@ -558,6 +901,7 @@ def build_interaction_report_html(*, target_id: str, stats: dict,
             .replace("%%MODELKIND%%", g(m["model_kind"]))
             .replace("%%NCONSERVED%%", str(len(s["conserved_resis"])))
             .replace("%%CLASHQC%%", clash_qc)
+            .replace("%%MULTIENGINE%%", me_section)
             .replace("%%NCLASH%%", str(n_clash))
             .replace("%%TARGETID%%", g(target_id))
             .replace("%%PDBBLOCK%%", pdb_block)
@@ -622,7 +966,7 @@ footer p{font-size:13.5px}.cite{font-size:12px;color:var(--mut);line-height:1.7}
 </style></head>
 <body><div class="wrap">
 <h1>%%TITLE%%</h1>
-<p class="sub">target %%TARGET%% · self-supervised family interaction-geometry model · %%NREPS%% subfamily representatives × Boltz diffusion ensemble · generated %%GENERATED%%</p>
+<p class="sub">target %%TARGET%% · self-supervised family interaction-geometry model · %%NREPS%% subfamily representatives × Boltz diffusion ensemble · %%PROVSUB%%</p>
 
 <div class="cards">%%CARDS%%</div>
 
@@ -631,8 +975,8 @@ footer p{font-size:13.5px}.cite{font-size:12px;color:var(--mut);line-height:1.7}
 <b>computational PRIOR for prioritisation</b> — not a measured or validated binding
 mode. The <b>classifier</b> (sections 4–5) is family-based: it learns from pose
 fingerprints across %%NREPS%% homolog representatives. The <b>section-3 contact
-table / map</b>, however, is the <i>reproducibility of contacts across the wild-type's
-own diffusion samples</i> (WT-ensemble), <b>not</b> a per-homolog conservation
+table / map</b>, however, is the <i>reproducibility of contacts across the target's
+own diffusion samples</i> (target-ensemble), <b>not</b> a per-homolog conservation
 analysis. Read it as a learned prior over plausible interaction geometry for
 ranking, to be confirmed experimentally. See <b>Limitations &amp; QC</b> below.</div>
 
@@ -677,7 +1021,7 @@ a label).</p>
 
 <h2>3 · WT Boltz-ensemble contact frequency <span style="font-size:13px;color:var(--mut)">(priority-#1 feature)</span></h2>
 <p class="note" style="margin:.1rem 0 .4rem">The core signal: <b>WT-ensemble contact
-frequency</b> per (residue, ligand-atom) pair — the fraction of the <b>wild-type's own
+frequency</b> per (residue, ligand-atom) pair — the fraction of the <b>target's own
 Boltz diffusion samples</b> in which that atom contacts that residue within %%TARGETID%%'s
 interaction cutoff. This is <b>WT diffusion-sample reproducibility</b>, not a
 per-homolog conservation analysis (see Limitations &amp; QC). Contacts reproduced
@@ -755,10 +1099,17 @@ rest and must still rank that group's held-out consensus poses above its decoys
 (AUROC = %%AUROC%%). Because the held-out subfamily is unseen, a high score means the
 model learned <b>transferable interaction geometry</b>, not group-specific memorisation
 — it guards against evolutionary leakage and the consensus circularity above.</p>
+<p style="font-size:13px;margin:.2rem 0;border-left:3px solid #BA7517;padding:.4rem .6rem;background:var(--surf);border-radius:4px"><b>What this AUROC is — and is not.</b>
+It measures only the model's ability to <b>discriminate consensus (Boltz-pose) interaction
+geometries from decoy geometries</b> — i.e. a <b>geometry-prior sanity check</b> on the
+predicted poses. It is <b>NOT a measure of catalytic activity</b> and <b>does not predict
+mutant activity</b>: no enzyme-activity, k<sub>cat</sub>/K<sub>M</sub>, or
+binding-affinity labels enter this model. A high AUROC says the consensus poses are
+geometrically separable from decoys, nothing about how active any variant will be.</p>
 </div>
 </div>
-
-<h2>6 · 3D structure — high-frequency WT-ensemble contact residues</h2>
+%%MULTIENGINE%%
+<h2>7 · 3D structure — high-frequency WT-ensemble contact residues</h2>
 <div id="viewer"><div style="padding:1rem;color:var(--mut);font-size:13px">loading 3D viewer…</div></div>
 <div class="vctrl" id="vctrl" style="display:none">
  <div class="cg"><span class="cgl">protein</span>
@@ -790,7 +1141,7 @@ prioritisation, not a measured or validated binding mode.</b> Specific caveats:<
 %%CLASHQC%%
 <p style="font-size:13px;margin:.35rem 0"><b>(a) Section-3 is WT-ensemble
 reproducibility, not family conservation.</b> The contact table / map count the
-fraction of the <b>wild-type's own Boltz diffusion samples</b> in which each (residue,
+fraction of the <b>target's own Boltz diffusion samples</b> in which each (residue,
 ligand-atom) pair is in contact. They are <b>NOT</b> a per-representative contact-
 conservation matrix. A true family-conservation claim needs a residue × ligand-atom ×
 representative analysis, which is <b>not yet computed</b>. (The classifier in
@@ -807,9 +1158,11 @@ these require <b>PoseBusters / PLIP physical QC</b> before any publication or
 binding-mode claim. The count, when non-zero, is flagged above and in section 3.</p>
 <p style="font-size:13px;margin:.35rem 0"><b>(d) The holdout AUROC is internal
 cross-validation, not experimental validation.</b> The subfamily-holdout AUROC
-(section 5) measures self-supervised consensus-vs-decoy separation on a held-out
-homolog group. It is an <b>internal</b> guard against memorisation / circularity —
-<b>not</b> a measured binding affinity or an experimentally confirmed pose.</p>
+(section 5) measures self-supervised <b>discrimination of consensus (Boltz-pose)
+geometries from decoy geometries</b> on a held-out homolog group — a <b>geometry
+prior</b>, an <b>internal</b> guard against memorisation / circularity. It is
+<b>NOT a measure of catalytic activity and does not predict mutant activity</b>,
+nor is it a measured binding affinity or an experimentally confirmed pose.</p>
 </div>
 <h2>Methods</h2>
 <p><b>Family ensemble.</b> A diverse panel of subfamily representatives (one per MSA
@@ -823,8 +1176,8 @@ per-pose <b>sample weight</b>, never as a label.</p>
 ligand-size- and sequence-length-independent interaction fingerprint was extracted
 (per-ligand-atom nearest-residue distance histogram + interaction-type counts +
 k-nearest shell). For the <b>section-3 contact table / map</b> we computed, over the
-<b>wild-type's own diffusion samples only</b>, the <b>contact frequency</b> of each
-(residue, ligand-atom) pair — the fraction of WT samples in contact within the
+<b>target's own diffusion samples only</b>, the <b>contact frequency</b> of each
+(residue, ligand-atom) pair — the fraction of target samples in contact within the
 interaction cutoff. This measures <b>WT diffusion-sample reproducibility</b>, NOT
 conservation across the homolog representatives; a true family-conservation claim
 would require a residue × ligand-atom × representative analysis (not computed here).</p>

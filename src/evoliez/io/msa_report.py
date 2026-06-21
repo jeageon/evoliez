@@ -247,11 +247,13 @@ def effective_neff(seqs: Sequence[str], theta: float = 0.8,
 
 
 def build_msa_report_html(*, target_id: str, target_len: int, stats: dict,
-                          conditions: List[Tuple[str, str]], generated: str) -> str:
+                          conditions: List[Tuple[str, str]], generated: str,
+                          provenance: str = "") -> str:
     import html as _html
     import json as _json
     g = _html.escape
     s = stats
+    subtitle = provenance or f"generated {g(generated)}"
     neff80 = s.get("neff80")
     cards = [
         ("MSA depth", f"{s['n_seqs']:,}", "sequences"),
@@ -295,7 +297,7 @@ def build_msa_report_html(*, target_id: str, target_len: int, stats: dict,
             .replace("%%TITLE%%", g(f"{target_id} — integrated MSA analysis"))
             .replace("%%TARGET%%", g(target_id))
             .replace("%%TLEN%%", str(target_len))
-            .replace("%%GENERATED%%", g(generated))
+            .replace("%%PROVSUB%%", subtitle)
             .replace("%%DEPTH%%", f"{s['n_seqs']:,}")
             .replace("%%CARDS%%", cards_html)
             .replace("%%LEGEND%%", legend)
@@ -351,7 +353,7 @@ footer p{font-size:13.5px;color:var(--fg)}
 </style></head>
 <body><div class="wrap">
 <h1>%%TITLE%%</h1>
-<p class="sub">target %%TARGET%% · %%TLEN%% aa · %%DEPTH%% sequences · generated %%GENERATED%%</p>
+<p class="sub">target %%TARGET%% · %%TLEN%% aa · %%DEPTH%% sequences · %%PROVSUB%%</p>
 
 <div class="cards">%%CARDS%%</div>
 

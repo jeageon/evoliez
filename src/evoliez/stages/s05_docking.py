@@ -90,7 +90,10 @@ class DockingStage(Stage):
         self.log.info(
             "WT reference docking (%d ligand x %d method): %s",
             len(ligs), len(cfg.methods),
-            ", ".join(f"{lid}:{p.method}={p.score:.2f}" for _, lid, p in triples),
+            ", ".join(
+                f"{lid}:{p.method}="
+                + ("n/a" if p.score is None else f"{p.score:.2f}")
+                for _, lid, p in triples),
         )
         self._write_report(ctx)
 
@@ -101,6 +104,7 @@ class DockingStage(Stage):
         try:
             from datetime import datetime
 
+            from evoliez.io._provenance import stamp
             from evoliez.io.docking_report import (compute_docking_stats,
                                                    write_docking_report)
             cfg = ctx.config.validation.redocking
@@ -115,6 +119,7 @@ class DockingStage(Stage):
                 target_id=ctx.config.input.target_id, stats=stats,
                 ligand_name=ctx.config.input.ligand.id,
                 generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                provenance=stamp(ctx),
                 conditions=[
                     ("methods", ", ".join(cfg.methods)),
                     ("poses / method", cfg.poses_per_candidate),

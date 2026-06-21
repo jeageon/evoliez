@@ -74,6 +74,7 @@ class ComplexPredictionStage(Stage):
             import glob
             from datetime import datetime
 
+            from evoliez.io._provenance import stamp
             from evoliez.io.complex_report import (compute_complex_stats,
                                                    write_complex_report)
             preds = [p for p in glob.glob(str(
@@ -88,6 +89,7 @@ class ComplexPredictionStage(Stage):
                     stats=compute_complex_stats(preds[0]),
                     ligand_names=[ligand.id] + [e.id for e in extra_ligands],
                     generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    provenance=stamp(ctx),
                     conditions=[
                         ("model", f"{cp.primary_method}, "
                                   f"{cp.diffusion_samples} diffusion samples"),

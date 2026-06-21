@@ -37,6 +37,12 @@ from evoliez.ml.pose_selection import PoseRecord
 from evoliez.types import LigandAtom, ProteinStructure
 
 
+def _round_opt(v: Optional[float], ndigits: int = 4) -> Optional[float]:
+    """Round a score that may be ``None``. ``None`` (genuinely unscored) is
+    preserved as-is — never coerced to a number that would pollute statistics."""
+    return None if v is None else round(float(v), ndigits)
+
+
 @dataclass
 class DockingPoseInput:
     """One docking pose handed to :func:`classify_docking_poses`.
@@ -56,7 +62,10 @@ class DockingPoseInput:
     source: str
     structure: ProteinStructure
     ligand_atoms: Sequence[LigandAtom]
-    score: float = 0.0
+    # ``None`` = genuinely unscored (e.g. a DiffDock rank file with an absent /
+    # sentinel confidence). It is carried through as None — never coerced to a
+    # fabricated number that would skew score statistics.
+    score: Optional[float] = 0.0
     score_is_better_low: bool = True   # gnina affinity: lower is better
     score_gate_pass: bool = True       # required for discordant hard negatives
     primary_only: bool = False         # docked design ligand only (no cofactor)
@@ -82,7 +91,7 @@ class PoseClassification:
     fp_overlap: float
     clash: bool
     key_contacts_ok: bool
-    score: float
+    score: Optional[float]   # None = the docking pose was genuinely unscored
     sample_weight: float
     score_gate_pass: bool = True
     primary_only: bool = False
@@ -340,7 +349,7 @@ def classify_docking_poses(
             source=dp.source, role=role,
             rmsd_to_consensus=(round(r, 3) if r == r else float("nan")),
             fp_overlap=round(overlap, 3), clash=clash, key_contacts_ok=key_ok,
-            score=round(float(dp.score), 4), sample_weight=round(weight, 3),
+            score=_round_opt(dp.score, 4), sample_weight=round(weight, 3),
             score_gate_pass=bool(dp.score_gate_pass),
             primary_only=dp.primary_only, candidate_id=dp.candidate_id, note=note,
             rank=int(dp.rank), score_type=dp.score_type,
@@ -357,7 +366,12 @@ def classify_docking_poses(
             fingerprint=fp,
             msa_membership=0.0,             # not a homolog/MSA pose
             identity_to_target=0.0,
-            pred_score=round(float(dp.score), 4),
+            # Docking rows are role-tagged: select_poses takes their weight from
+            # ``sample_weight``, NOT pred_score (which is metadata for these rows
+            # and never enters the robust-z stats — those run on Boltz rows only).
+            # An unscored pose (score None) therefore carries a 0.0 placeholder
+            # here, not a fabricated number; only kept as a weak_positive anyway.
+            pred_score=(0.0 if dp.score is None else round(float(dp.score), 4)),
             source=dp.source,
             role=role,
             sample_weight=round(weight, 4),

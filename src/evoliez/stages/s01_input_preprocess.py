@@ -169,6 +169,7 @@ class InputPreprocessStage(Stage):
         try:
             from datetime import datetime
 
+            from evoliez.io._provenance import stamp
             from evoliez.io.input_report import (compute_input_stats,
                                                  write_input_report)
             cfg = ctx.config.input
@@ -195,7 +196,8 @@ class InputPreprocessStage(Stage):
             )
             write_input_report(
                 ctx.paths.reports / "input_report.html", stats=stats,
-                generated=datetime.now().strftime("%Y-%m-%d %H:%M"))
+                generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                provenance=stamp(ctx))
             self.log.info("input report: %s",
                           ctx.paths.reports / "input_report.html")
         except Exception as exc:  # report is secondary

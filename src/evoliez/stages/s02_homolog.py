@@ -92,6 +92,7 @@ def write_homolog_analysis_report(ctx, backend_value, seq, homologs,
     from datetime import datetime
 
     from evoliez import __version__
+    from evoliez.io._provenance import stamp
     from evoliez.io.homolog_report import write_homolog_report
 
     h, m = ctx.config.homologs, ctx.config.msa
@@ -134,5 +135,6 @@ def write_homolog_analysis_report(ctx, backend_value, seq, homologs,
         out, target_id=ctx.config.input.target_id, target_len=len(seq),
         homologs=homologs, msa_depth=msa_depth, conditions=conditions,
         generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        provenance=stamp(ctx),
     )
     return out

@@ -83,7 +83,36 @@ def test_parse_all_ranks_bare_rank_unscored(tmp_path):
     d.mkdir(parents=True)
     (d / "rank1.sdf").write_text(_sdf_3atoms(0.0))   # no confidence token
     poses = diffdock.parse_all_ranks(d, _ref())
-    assert len(poses) == 1 and poses[0].rank == 1 and poses[0].score == 0.0
+    # No confidence token -> genuinely unscored: score is None (NOT a fabricated
+    # 0.0 / -1000 that would pollute downstream min/range stats), with a note.
+    assert len(poses) == 1 and poses[0].rank == 1
+    assert poses[0].score is None
+    assert poses[0].note  # a short provenance remark explaining the None
+
+
+def test_parse_all_ranks_sentinel_minus1000_becomes_none(tmp_path):
+    """DiffDock's -1000 confidence FAILURE sentinel must NOT be read as a real
+    (extremely negative) score; it becomes score=None so it can't dominate any
+    min/range statistic. Covers the 2 production poses that had -1000."""
+    d = tmp_path / "sentinel"
+    d.mkdir(parents=True)
+    (d / "rank1_confidence-1000.00.sdf").write_text(_sdf_3atoms(0.0))
+    poses = diffdock.parse_all_ranks(d, _ref())
+    assert len(poses) == 1 and poses[0].rank == 1
+    assert poses[0].score is None
+    assert "sentinel" in poses[0].note.lower()
+
+
+def test_parse_all_ranks_signed_and_scinotation_confidence(tmp_path):
+    """Robust confidence parse: explicit '+', leading-dot, and sci-notation all
+    parse (the old r'confidence(-?\\d+\\.?\\d*)' missed them)."""
+    d = tmp_path / "signed"
+    d.mkdir(parents=True)
+    (d / "rank1_confidence+0.42.sdf").write_text(_sdf_3atoms(0.0))
+    (d / "rank2_confidence-.5.sdf").write_text(_sdf_3atoms(0.0))
+    by_rank = {p.rank: p for p in diffdock.parse_all_ranks(d, _ref())}
+    assert by_rank[1].score == 0.42
+    assert by_rank[2].score == -0.5
 
 
 def test_parse_all_ranks_empty(tmp_path):

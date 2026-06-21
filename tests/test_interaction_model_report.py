@@ -14,6 +14,7 @@ from __future__ import annotations
 from evoliez.io.interaction_model_report import (
     build_interaction_report_html,
     compute_interaction_stats,
+    compute_multi_engine_stats,
     find_wt_complex_pdb,
     write_interaction_report,
 )
@@ -91,9 +92,45 @@ _PDB = (
 )
 
 
+# ---- synthetic multi-engine docking audit (generic engines/roles/contexts) --
+# Two engines that are COMPLEMENTARY: "alpha" mostly corroborates the consensus
+# (weak_positive) while "beta" supplies the hard-negatives; each engine handles
+# the cofactor context differently (retained vs dropped). Shape mirrors the on-
+# disk multi_engine_docking.json the s06b stage writes.
+def _me_audit():
+    rows = []
+
+    def row(source, candidate, role, rmsd, fp, score, ctx, rank, score_type):
+        return {"candidate_id": candidate, "source": source, "role": role,
+                "rmsd_to_consensus": rmsd, "fp_overlap": fp, "clash": False,
+                "key_contacts_ok": role != "strong_negative", "score": score,
+                "sample_weight": 0.5, "score_gate_pass": role == "hard_negative",
+                "rank": rank, "score_type": score_type, "cnn_score": None,
+                "cnn_affinity": None, "context_mode": ctx,
+                "ligand_id": "L0", "ligand_role": "primary"}
+
+    # alpha: corroborates consensus (weak_positive), context retained
+    rows += [row("alpha", "wt", "weak_positive", 1.1, 0.82, -8.1,
+                 "context_retained", 1, "cnn_affinity"),
+             row("alpha", "rep_007", "weak_positive", 1.4, 0.77, -7.6,
+                 "context_retained", 1, "cnn_affinity"),
+             row("alpha", "rep_012", "excluded", 9.0, 0.10, -2.0,
+                 "context_retained", 5, "cnn_affinity")]
+    # beta: hard-negatives (plausible score, discordant geometry), context dropped
+    rows += [row("beta", "wt", "hard_negative", 6.4, 0.21, 0.94,
+                 "context_dropped", 1, "confidence"),
+             row("beta", "rep_007", "hard_negative", 5.8, 0.18, 0.88,
+                 "context_dropped", 2, "confidence"),
+             row("beta", "rep_021", "strong_negative", 8.9, 0.05, 0.30,
+                 "context_dropped", 7, "confidence")]
+    return {"methods": ["alpha", "beta"], "n_targets": 3, "n_kept": 4,
+            "n_classified": len(rows), "status": [], "rows": rows}
+
+
 def _build(**over):
-    stats = compute_interaction_stats(_META, _artifacts(), _MODEL,
-                                      over.pop("wt_pdb", _PDB))
+    stats = compute_interaction_stats(
+        _META, _artifacts(), _MODEL, over.pop("wt_pdb", _PDB),
+        multi_engine_audit=over.pop("multi_engine_audit", None))
     return build_interaction_report_html(
         target_id=over.pop("target_id", "xyz1"),
         stats=stats,
@@ -186,6 +223,84 @@ def test_section3_wording_not_overclaiming():
     assert "WT diffusion-sample reproducibility" in html
     # the section-3 contacts table is renamed to the honest, non-conservation title
     assert "High-frequency WT-ensemble contacts" in html
+
+
+# --------------------------------------------------------------------------- #
+# Multi-engine docking augmentation section
+# --------------------------------------------------------------------------- #
+def test_multi_engine_stats_crosstab():
+    # the DATA layer builds the role x engine cross-tab, per-engine context-mode
+    # breakdown and the top hard-negatives directly from the audit rows.
+    me = compute_multi_engine_stats(_me_audit())
+    assert me is not None
+    assert me["engines"] == ["alpha", "beta"]          # declared method order
+    # roles present, canonical order first
+    assert me["roles"][:3] == ["weak_positive", "hard_negative",
+                               "strong_negative"]
+    # role x engine counts: alpha=2 weak_positive + 1 excluded; beta=2 hard_neg
+    assert me["role_by_engine"]["alpha"]["weak_positive"] == 2
+    assert me["role_by_engine"]["alpha"]["excluded"] == 1
+    assert me["role_by_engine"]["alpha"]["total"] == 3
+    assert me["role_by_engine"]["beta"]["hard_negative"] == 2
+    assert me["role_by_engine"]["beta"]["strong_negative"] == 1
+    # hard-negatives come ONLY from beta here -> complementarity surfaced
+    assert me["role_totals"]["hard_negative"] == 2
+    assert me["role_by_engine"]["alpha"].get("hard_negative", 0) == 0
+    # per-engine context-mode: alpha retained vs beta dropped (honest)
+    a_ctx = {m["mode"]: m["count"] for m in me["context_by_engine"]["alpha"]}
+    b_ctx = {m["mode"]: m["count"] for m in me["context_by_engine"]["beta"]}
+    assert a_ctx == {"context_retained": 3}
+    assert b_ctx == {"context_dropped": 3}
+    # top hard-negative is beta/wt (highest score 0.94), with its geometry
+    assert me["hard_negatives"][0]["source"] == "beta"
+    assert me["hard_negatives"][0]["candidate_id"] == "wt"
+    assert me["hard_negatives"][0]["score"] == 0.94
+    # chart matrix is engine x role aligned to the role order
+    assert me["chart"]["engines"] == ["alpha", "beta"]
+    assert me["chart"]["matrix"][1][me["chart"]["roles"].index(
+        "hard_negative")] == 2
+
+
+def test_multi_engine_section_renders():
+    # the section renders: heading, role x engine table, per-engine counts, the
+    # context-mode breakdown, an inline-SVG chart, and a hard-negative example.
+    html = _build(multi_engine_audit=_me_audit())
+    assert "%%" not in html
+    assert "Multi-engine docking augmentation" in html      # the section heading
+    assert "Pose role &times; engine" in html or "Pose role × engine" in html
+    # both engines named + the complementary roles in the cross-tab
+    assert "alpha" in html and "beta" in html
+    assert "weak positive" in html and "hard negative" in html
+    # per-engine context-mode handling (retained vs dropped) is shown
+    assert "context_retained" in html and "context_dropped" in html
+    # a hard-negative example row: top is beta / wt with score 0.94
+    assert "0.940" in html                                  # score rendered (3dp)
+    assert "rep_007" in html                                # a per-rep target id
+    # the inline-SVG role-distribution chart (no external JS lib for it)
+    assert "<svg" in html and "viewBox" in html
+    assert "plausible engine score, discordant family geometry" in html \
+        or "discordant family geometry" in html
+    # methods trail: classification inputs + the audit-trail file name
+    assert "RMSD-to-its-own-target-pose" in html
+    assert "multi_engine_docking.json" in html
+
+
+def test_multi_engine_section_absent_when_no_audit():
+    # multi_engine off (no audit) -> the section is skipped CLEANLY: no heading,
+    # no empty section, and the rest of the report is unaffected.
+    html = _build()                                          # no audit passed
+    assert "%%" not in html
+    assert "Multi-engine docking augmentation" not in html
+    assert "Pose role" not in html
+    # the rest still renders (sections renumbered: 3D viewer is section 7)
+    assert "7 · 3D structure" in html
+    assert "0.9123" in html
+
+    # None / empty-rows audit also skips the section (no error)
+    assert compute_multi_engine_stats(None) is None
+    assert compute_multi_engine_stats({"methods": ["a"], "rows": []}) is None
+    html_empty = _build(multi_engine_audit={"methods": ["a"], "rows": []})
+    assert "Multi-engine docking augmentation" not in html_empty
 
 
 def test_limitations_qc_box_present():
