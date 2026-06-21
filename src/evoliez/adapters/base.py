@@ -269,21 +269,27 @@ def parse_sdf_all_poses(path: Path) -> List[List[LigandAtom]]:
     except OSError:
         return []
     poses: List[List[LigandAtom]] = []
-    # Trailing "$$$$\n" yields an empty final chunk; skip blocks with no header.
     for chunk in text.split("$$$$"):
-        block = chunk.splitlines()
-        # Drop leading blank lines so a record after a "$$$$" delimiter still has
-        # its title/counts line at the expected offset.
-        while block and not block[0].strip():
-            block.pop(0)
-        if len(block) < 4:
-            continue
+        lines = chunk.splitlines()
+        # Anchor on the V2000/V3000 COUNTS line, NOT a fixed offset after a
+        # blank-strip. gnina (RDKit-written) emits a BLANK molblock title, so the
+        # first record's real layout is "<blank>\n<prog>\n<comment>\n<counts>" —
+        # stripping ALL leading blanks then reading index 3 lands on an ATOM line
+        # and drops the whole record. That silently zeroed every gnina mode here
+        # (coords lost -> lock_pose_to_reference substituted the reference -> a
+        # false RMSD of 0 for 100% of gnina poses). The counts line is the
+        # unambiguous anchor; atoms are the natoms lines after it. Robust to a
+        # blank title AND to the leading "" the $$$$ split prepends.
+        ci = next((i for i, ln in enumerate(lines)
+                   if ln.rstrip().endswith(("V2000", "V3000"))), None)
+        if ci is None:
+            continue  # empty trailing chunk after the final "$$$$"
         try:
-            natoms = int(block[3][0:3])
+            natoms = int(lines[ci][0:3])
         except ValueError:
             continue
         atoms: List[LigandAtom] = []
-        for ln in block[4:4 + natoms]:
+        for ln in lines[ci + 1:ci + 1 + natoms]:
             tok = ln.split()
             if len(tok) < 4:
                 continue
@@ -375,6 +381,10 @@ def lock_pose_to_reference(
     candidate_id: str = "",
     method: str = "",
     logger=None,
+    pose_text: "str | None" = None,
+    pose_fmt: str = "sdf",
+    smiles: "str | None" = None,
+    template=None,
 ) -> tuple[List[LigandAtom], "float | None"]:
     """Relabel docked atoms onto the canonical reference (ids/chemistry kept,
     docked xyz adopted) and compute heavy-atom RMSD-to-reference. Shared by all
@@ -382,10 +392,38 @@ def lock_pose_to_reference(
     uniformly (gnina/diffdock previously discarded coords -> rmsd None -> a
     falsely 'perfect' redocking_consistency in s09). Mirrors the heavy-atom
     fallback Vina established. Returns (atoms, rmsd|None); on an unverified
-    lock, returns (reference, None)."""
-    from evoliez.features.ligand import relabel_to_canonical
+    lock, returns (reference, None).
+
+    SMILES-TEMPLATE PATH (preferred when available): pass the docked pose's raw
+    ``pose_text`` (a molblock with ``pose_fmt="sdf"`` or a PDB block with
+    ``"pdb"``) and the ligand ``smiles`` (or a pre-built ``template``). The lock
+    then maps the pose onto the reference through the RDKit template
+    (:func:`evoliez.features.ligand.relabel_to_canonical_template`) — bond orders
+    from the SMILES, so the atom-id correspondence is CORRECT regardless of the
+    docked conformer. This is what recovers the real docked coordinates for a
+    large flexible cofactor (NADP) whose coordinate-inferred chemistry graph the
+    legacy lock could not verify (it silently substituted the reference -> a
+    false RMSD of 0). On any template miss it falls back to the coordinate-graph
+    lock below (byte-identical to the historical behaviour), then to the
+    reference. The template path needs the reference HEAVY-atom order to match the
+    SMILES order (true for the pipeline's ``parse_ligand`` reference)."""
+    from evoliez.features.ligand import (relabel_to_canonical,
+                                         relabel_to_canonical_template,
+                                         rmsd_template)
 
     ref = list(reference)
+    # 1) Conformer-robust SMILES-template lock (only when the caller supplied the
+    #    raw pose text AND a template/SMILES). Adopts the REAL docked coords with
+    #    a correct atom-id correspondence; the legacy coord-graph lock is the
+    #    fallback so non-template callers (Vina) are completely unaffected.
+    tmpl = template if template is not None else (
+        rmsd_template(smiles) if smiles else None)
+    if pose_text and tmpl is not None and ref:
+        t_atoms, t_rmsd = relabel_to_canonical_template(
+            pose_text, pose_fmt, ref, tmpl)
+        if t_atoms:
+            return t_atoms, t_rmsd
+
     locked, ok = relabel_to_canonical(list(parsed), ref)
     if ok and locked:
         rref = ([a for a in ref if (a.element or "").upper() != "H"]

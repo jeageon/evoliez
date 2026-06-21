@@ -382,6 +382,93 @@ def relabel_to_canonical(parsed, canonical):
     return [replace(c, coord=p.coord) for c, p in zip(ce, pe)], False
 
 
+def relabel_to_canonical_template(pose_text, pose_fmt, canonical, template):
+    """Atom-index lock by an RDKit SMILES TEMPLATE (conformer-robust).
+
+    The coordinate-inferred chemistry-graph lock (:func:`relabel_to_canonical`)
+    re-derives bonds from each pose's 3D coords via covalent radii. For a large,
+    flexible cofactor (NADP: 48 heavy atoms, two ribose-phosphate arms) a docked
+    conformer can stretch/compress a bond just enough to flip an inferred edge,
+    so the two coord-built graphs are NOT isomorphic and the lock silently falls
+    back to the reference (coords lost; RMSD-to-reference -> a false 0). The
+    proven fix — already used to pick gnina's representative pose — assigns bond
+    orders from the ligand SMILES (:func:`normalize_pose_mol`), making the
+    chemistry graph CORRECT regardless of conformer, then maps the pose onto the
+    template by substructure match (symmetry handled via all matches).
+
+    ``pose_text`` is the docked pose as a molblock (``pose_fmt="sdf"``) or a PDB
+    block (``"pdb"``); ``canonical`` is the canonical reference ligand (its HEAVY
+    atoms must be in the SAME order as ``template``'s atoms — both come from the
+    same SMILES parse, which holds for the pipeline's ``parse_ligand`` output);
+    ``template`` is the RDKit template mol (``rmsd_template(smiles)``).
+
+    Returns ``(atoms, rmsd|None)`` where ``atoms`` are the canonical reference
+    HEAVY atoms (ids + chemistry kept) carrying the pose's DOCKED coordinates
+    through the template correspondence, and ``rmsd`` is the symmetry-corrected
+    heavy-atom RMSD to the reference (the match that minimises it). Returns
+    ``(None, None)`` when RDKit / the template / the match is unavailable so the
+    caller falls back to the coord-graph lock. NOTE the returned atoms are HEAVY
+    only (the template has no explicit H), matching the heavy-atom contract the
+    downstream interaction features already use."""
+    if template is None or not canonical or not pose_text:
+        return None, None
+    from dataclasses import replace
+
+    try:
+        import numpy as np
+    except Exception:
+        return None, None
+    ch = [a for a in canonical if _norm_elem(a.element) != "H"]
+    if not ch or len(ch) != template.GetNumAtoms():
+        # The template/reference heavy-atom counts must agree for the
+        # template-index == canonical-heavy-index identity to hold; otherwise
+        # this lock is not applicable -> let the caller fall back.
+        return None, None
+    prb, _qc = normalize_pose_mol(pose_text, pose_fmt, template)
+    if prb is None or prb.GetNumAtoms() != len(ch):
+        return None, None
+    try:
+        # match[k] = TEMPLATE atom index for pose atom k. uniquify=False keeps
+        # every symmetry-equivalent mapping so we can pick the lowest-RMSD one.
+        matches = template.GetSubstructMatches(prb, uniquify=False, maxMatches=5000)
+    except Exception:
+        return None, None
+    if not matches:
+        return None, None
+    conf = prb.GetConformer()
+    pose_xyz = np.array(
+        [[conf.GetAtomPosition(i).x, conf.GetAtomPosition(i).y,
+          conf.GetAtomPosition(i).z] for i in range(prb.GetNumAtoms())],
+        dtype=float,
+    )
+    ref_xyz = np.array([a.coord for a in ch], dtype=float)
+    n = len(ch)
+    best = None  # (rmsd, canonical_ordered_pose_xyz)
+    for m in matches:
+        if len(m) != n:
+            continue
+        canon = np.empty((n, 3), dtype=float)
+        seen = np.zeros(n, dtype=bool)
+        ok = True
+        for k, ti in enumerate(m):
+            if ti < 0 or ti >= n:
+                ok = False
+                break
+            canon[ti] = pose_xyz[k]
+            seen[ti] = True
+        if not ok or not seen.all():
+            continue
+        r = float(np.sqrt(((canon - ref_xyz) ** 2).sum(axis=1).mean()))
+        if best is None or r < best[0]:
+            best = (r, canon)
+    if best is None:
+        return None, None
+    rmsd, canon = best
+    atoms = [replace(ch[i], coord=(float(canon[i][0]), float(canon[i][1]),
+                                   float(canon[i][2]))) for i in range(n)]
+    return atoms, round(rmsd, 3)
+
+
 def _pharma(element: str, aromatic: bool) -> str:
     if aromatic:
         return "aromatic"

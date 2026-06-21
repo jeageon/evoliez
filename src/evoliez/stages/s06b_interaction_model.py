@@ -629,6 +629,7 @@ def _gnina_target_worker(payload, gpu):
             Path(target["docking_root"]) / f"me_{target['target_key']}_gnina",
             instability=0.05, backend=target["backend"], dry_run=False,
             context_chains=context_chains,
+            smiles=getattr(target.get("dock_ligand"), "smiles", None),
         )
         kept, diags, status = _classify_engine_poses(target, "gnina", poses)
     except Exception as exc:

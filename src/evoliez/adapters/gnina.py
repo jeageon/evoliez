@@ -93,6 +93,7 @@ def redock_all(
     dry_run: bool = False,
     context_chains=None,
     receptor_pdb: Optional[Path] = None,
+    smiles: Optional[str] = None,
 ) -> List[Pose]:
     """ALL gnina modes (best first), each a fully-provenanced :class:`Pose`.
 
@@ -100,6 +101,12 @@ def redock_all(
     :func:`parse_all_modes` over every mode. Mock backend: a deterministic
     N-mode ranked ensemble (descending plausibility) so tests need no real tool.
     Always returns a NON-EMPTY list (rank-1 at index 0).
+
+    ``smiles``: the ligand SMILES (bond-order template). When given, each mode's
+    docked atoms are locked onto the canonical reference through the RDKit
+    template rather than the coordinate-inferred chemistry graph — REQUIRED to
+    recover the real docked coordinates (and a true RMSD-to-reference) for a
+    large flexible cofactor whose graph the coord lock cannot verify.
 
     ``receptor_pdb``: an optional pre-rendered receptor PDB. When given AND the
     file exists it is COPIED to the per-candidate ``rec`` path verbatim instead
@@ -113,7 +120,7 @@ def redock_all(
         return _redock_real_all(
             candidate_id, structure, reference_atoms, cfg, workdir,
             dry_run=dry_run, context_chains=context_chains,
-            receptor_pdb=receptor_pdb,
+            receptor_pdb=receptor_pdb, smiles=smiles,
         )
     # CNN scoring tends to be a touch more optimistic than Vina; small offset.
     return mock_redock_modes(
@@ -145,13 +152,35 @@ def _redock_real_all(
     dry_run: bool,
     context_chains=None,
     receptor_pdb: Optional[Path] = None,
+    smiles: Optional[str] = None,
 ) -> List[Pose]:
     require("gnina")
-    apply_gpu_selection()
     workdir.mkdir(parents=True, exist_ok=True)
     rec = workdir / f"{candidate_id}_rec.pdb"
     lig = workdir / f"{candidate_id}_ref_lig.pdb"
     out = workdir / f"{candidate_id}_gnina_out.sdf"
+    # SKIP-IF-EXISTS (re-run reuse): a COMPLETE prior gnina output for this
+    # candidate is re-parsed instead of re-docked, so an s06b classification/
+    # retrain re-run reuses the existing SDFs (no GPU re-dock). "Complete" = the
+    # SDF exists AND parses to all cfg.poses_per_candidate scored modes (a
+    # truncated/partial SDF from an interrupted run is NOT reused — it falls
+    # through to a fresh dock). Deterministic: the parse is a pure function of the
+    # on-disk SDF, and the dock seed is candidate-keyed, so a reuse and a fresh
+    # dock of the same candidate yield identical modes.
+    if not dry_run and out.exists():
+        reused = parse_all_modes(
+            out, reference_atoms, candidate_id=candidate_id,
+            command_args="(reused existing gnina SDF)",
+            engine_version=tool_version("gnina"), smiles=smiles,
+        )
+        want = max(1, int(cfg.poses_per_candidate))
+        if len(reused) >= want:
+            log.info("gnina: reusing %d existing modes for %s (skip re-dock)",
+                     len(reused), candidate_id)
+            return reused
+        log.info("gnina: existing SDF for %s has %d/%d modes (incomplete); "
+                 "re-docking", candidate_id, len(reused), want)
+    apply_gpu_selection()
     # Full-atom Boltz receptor; keep the OTHER co-modelled ligands' chains as
     # fixed context (physics-based gnina docks this ligand around them). Honest
     # mock fallback if the upstream structure is a CA-only trace.
@@ -231,6 +260,7 @@ def parse_all_modes(
     candidate_id: str = "",
     command_args: str = "",
     engine_version: str = "",
+    smiles: Optional[str] = None,
 ) -> List[Pose]:
     """Parse EVERY mode in a gnina output SDF into a provenanced :class:`Pose`.
 
@@ -254,15 +284,24 @@ def parse_all_modes(
     ``engine_version``. A mode missing minimizedAffinity is SKIPPED (an
     unscorable mode must not enter ranking as 0.0)."""
     coords = parse_sdf_all_poses(sdf_path)
+    # Raw per-mode molblocks (anchored on the V2000 counts line, so they survive
+    # gnina's BLANK molblock title which the positional ``parse_sdf_all_poses``
+    # cannot — see _mode_molblocks). These feed the SMILES-template lock that
+    # recovers the real docked frame + a correct atom-id correspondence.
+    blocks = _mode_molblocks(sdf_path) if smiles else []
+    from evoliez.features.ligand import rmsd_template
+    tmpl = rmsd_template(smiles) if smiles else None
     tags = _parse_mode_tags(sdf_path)
     poses: List[Pose] = []
     for i, aff in enumerate(tags["minimizedAffinity"]):
         if aff is None:                       # unscored mode -> not a real pose
             continue
         atoms = coords[i] if i < len(coords) else []
+        block = blocks[i] if i < len(blocks) else None
         locked, rmsd = lock_pose_to_reference(
             atoms, reference_atoms,
             candidate_id=candidate_id, method=METHOD, logger=log,
+            pose_text=block, pose_fmt="sdf", template=tmpl,
         )
         cnn = tags["CNNscore"]
         cnn_aff = tags["CNNaffinity"]

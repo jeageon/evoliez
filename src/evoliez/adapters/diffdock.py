@@ -253,9 +253,25 @@ def _redock_batch_real(
     pre = receptor_pdb or {}
     rows: List[str] = ["complex_name,protein_path,ligand_description,protein_sequence"]
     refs: Dict[str, Sequence[LigandAtom]] = {}
+    smis: Dict[str, str] = {}
     result: Dict[str, List[Pose]] = {}
+    want = max(1, int(cfg.poses_per_candidate))
+    reuse_cids: set = set()
     for cid, structure, ref_atoms, smiles in tasks:
         refs[cid] = ref_atoms
+        smis[cid] = smiles
+        # SKIP-IF-EXISTS (re-run reuse): a COMPLETE prior DiffDock output for this
+        # complex is re-parsed instead of re-docked, so an s06b classification
+        # re-run reuses the existing rank SDFs (no GPU inference). "Complete" =
+        # the per-complex dir already holds >= samples_per_complex rank*.sdf
+        # files (a partial dir from an interrupted run is NOT reused — it is
+        # re-docked). DiffDock's per-complex output is deterministic given the
+        # same receptor+ligand, so reuse and a fresh run agree.
+        if not dry_run:
+            cdir = _complex_out_dir(out_root, cid)
+            if cdir is not None and len(_rank_files(cdir)) >= want:
+                reuse_cids.add(cid)
+                continue
         rec = out_root / f"{cid}_rec.pdb"
         # RENDER-ONCE: reuse a caller-supplied protein-only receptor if present.
         pre_rec = pre.get(cid)
@@ -278,8 +294,21 @@ def _redock_batch_real(
         # but resolve() keeps the path absolute for DiffDock's cwd-relative run.
         rows.append(f"{cid},{rec.resolve()},{smiles},")
 
+    if reuse_cids:
+        log.info("diffdock batch: reusing %d existing complex output(s) "
+                 "(skip re-dock)", len(reuse_cids))
+
     csv_targets = [r for r in rows[1:]]
-    if not csv_targets:               # every task degraded above -> nothing to run
+    if not csv_targets:               # every task reused/degraded -> nothing to run
+        version = _diffdock_version()
+        for cid in reuse_cids:
+            cdir = _complex_out_dir(out_root, cid)
+            poses = parse_all_ranks(
+                cdir, refs[cid], candidate_id=cid,
+                command_args="(reused existing DiffDock output)",
+                engine_version=version, smiles=smis[cid],
+            ) if cdir is not None else []
+            result[cid] = poses or _mock_all(cid, refs[cid], cfg)
         return result
 
     csv = out_root / "batch_input.csv"
@@ -318,7 +347,9 @@ def _redock_batch_real(
             continue
         poses = parse_all_ranks(
             complex_dir, ref_atoms, candidate_id=cid,
-            command_args=" ".join(cmd), engine_version=version,
+            command_args=("(reused existing DiffDock output)"
+                          if cid in reuse_cids else " ".join(cmd)),
+            engine_version=version, smiles=smiles,
         )
         result[cid] = poses or _mock_all(cid, ref_atoms, cfg)
     return result
@@ -385,7 +416,7 @@ def _redock_real_all(
     version = _diffdock_version()
     poses = parse_all_ranks(
         out, reference_atoms, candidate_id=candidate_id,
-        command_args=" ".join(cmd), engine_version=version,
+        command_args=" ".join(cmd), engine_version=version, smiles=smiles,
     )
     return poses or _mock_all(candidate_id, reference_atoms, cfg)
 
@@ -440,6 +471,7 @@ def parse_all_ranks(
     candidate_id: str = "",
     command_args: str = "",
     engine_version: str = "",
+    smiles: Optional[str] = None,
 ) -> List[Pose]:
     """Parse EVERY DiffDock rank for ONE complex into provenanced :class:`Pose`s.
 
@@ -457,12 +489,24 @@ def parse_all_ranks(
     ascending)."""
     files = _rank_files(complex_out_dir)
     poses: List[Pose] = []
+    from evoliez.features.ligand import rmsd_template
+    tmpl = rmsd_template(smiles) if smiles else None
 
     for rank_n, path in files:
         atoms = parse_sdf_first_pose(path)
+        # The raw SDF text feeds the SMILES-template lock: it recovers the real
+        # docked frame + a correct atom-id correspondence for a flexible cofactor
+        # (NADP) whose coordinate-inferred chemistry graph the legacy lock could
+        # not verify (it substituted the reference -> a false RMSD of 0 for ~27%
+        # of DiffDock NADP ranks). best-effort read; missing text -> coord lock.
+        try:
+            pose_text = Path(path).read_text()
+        except OSError:
+            pose_text = None
         locked, rmsd = lock_pose_to_reference(
             atoms, reference_atoms,
             candidate_id=candidate_id, method=METHOD, logger=log,
+            pose_text=pose_text, pose_fmt="sdf", template=tmpl,
         )
         score, note = _parse_confidence(path.name)
         if score is None:
