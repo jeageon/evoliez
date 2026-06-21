@@ -209,14 +209,30 @@ def attach_generated_counts(
                 counts[g] = counts.get(g, 0) + 1
     except (OSError, json.JSONDecodeError, AttributeError):
         counts = {}
+    seen_g = set()
     for row in report["per_generator"]:
         g = row["generator"]
+        seen_g.add(g)
         n_gen = counts.get(g)
         row["n_generated"] = n_gen
         row["survival_fraction"] = (
             round(row["n_in_ranked"] / n_gen, 4)
             if n_gen else None
         )
+    # A generator can produce candidates yet have NONE survive to ranking, so it
+    # never appears in ``ranked`` and gets no row above — but it still belongs in
+    # the survival table, else the per-generator n_generated can no longer
+    # reconstruct the full generated pool (audit: gen_total == n_generated). Add
+    # the missing generators with zero downstream survival.
+    for g, n_gen in sorted(counts.items()):
+        if g not in seen_g:
+            report["per_generator"].append({
+                "generator": g,
+                "n_generated": n_gen,
+                "n_in_ranked": 0,
+                "n_in_shortlist": 0,
+                "survival_fraction": 0.0,
+            })
     return report
 
 

@@ -143,6 +143,10 @@ class InputPreprocessStage(Stage):
             self.log.info("extra ligands (co-modelled in s04): %s",
                           ", ".join(f"{e.id}={e.smiles}" for e in extra_ligands))
         ctx.persist_meta("catalytic_positions", catalytic)
+        # pure explicitly-fixed positions (switch + structural; excludes catalytic)
+        # so the s07 design-space report can render the protected core distinctly
+        # from the catalytic core on a standalone (meta-only) reconstruction.
+        ctx.persist_meta("fixed_positions", sorted(set(fixed)))
 
         assert ctx.store is not None
         with ctx.store.session() as s:

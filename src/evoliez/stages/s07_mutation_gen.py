@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
 from evoliez.adapters.base import het_chains_in_pdb, parse_pdb_het_chain
@@ -606,23 +607,47 @@ class MutationGenStage(Stage):
         return out
 
     def _ligandmpnn(self, ctx, cx, designable, catalytic, fixed, res, mgcfg) -> _Pool:
-        """LigandMPNN designs, VALIDATED before they become candidates: keep only
-        designable-position edits, never catalytic/fixed, only where the WT
-        matches, and cap mutations per design (a focused active-site edit)."""
+        """LigandMPNN ligand-aware design, read as per-position marginals.
+
+        LigandMPNN redesigns EVERY designable position in one pass, so each raw
+        sample carries far more edits than a focused active-site candidate should
+        — a per-design mutation cap discards them all. Instead we treat the
+        sampled designs as an approximation of LigandMPNN's per-position
+        substitution marginals: for each designable position (never
+        catalytic/fixed, only where the WT matches) tally the residue it most
+        often substitutes and emit a single-point WT->consensus candidate, ranked
+        by the fraction of designs that support it (carried as ligandmpnn_logp).
+        The strongest positions are also combined into one bounded multi-point
+        "consensus active-site" candidate (<= ligandmpnn_max_mut_per_design).
+        Per-generator quotas then trim to budget."""
         designs = design_sequences(
             cx, designable, mgcfg, ctx.paths.mutations / "ligandmpnn",
             backend=ctx.config.backend_for("s07_mutation_gen"),
             dry_run=ctx.dry_run)
         dset = set(designable)
+        n = len(designs) or 1
+        tally: Dict[int, Counter] = {}
+        for muts, _logp in designs:
+            for m in muts:
+                if (m.position in dset and m.position not in catalytic
+                        and m.position not in fixed
+                        and res.get(m.position) is not None
+                        and res[m.position].aa == m.wt):
+                    tally.setdefault(m.position, Counter())[m.mut] += 1
+        consensus = []   # (position, wt, mut, support_fraction)
+        for pos, counts in tally.items():
+            mut, cnt = counts.most_common(1)[0]
+            consensus.append((pos, res[pos].aa, mut, cnt / n))
+        consensus.sort(key=lambda t: (-t[3], t[0]))   # strongest support first
         out: _Pool = []
-        for muts, logp in designs:
-            kept = [m for m in muts
-                    if m.position in dset and m.position not in catalytic
-                    and m.position not in fixed and res.get(m.position) is not None
-                    and res[m.position].aa == m.wt]
-            if kept and len(kept) <= mgcfg.ligandmpnn_max_mut_per_design:
-                out.append((kept, {"ligandmpnn_logp": logp,
-                                   "dropped_invalid": len(muts) - len(kept)}))
+        for pos, wt, mut, frac in consensus:
+            out.append(([Mutation(wt, pos, mut)],
+                        {"ligandmpnn_logp": round(frac, 4), "dropped_invalid": 0}))
+        top = consensus[:mgcfg.ligandmpnn_max_mut_per_design]
+        if len(top) >= 2:
+            out.append(([Mutation(wt, pos, mut) for pos, wt, mut, _f in top],
+                        {"ligandmpnn_logp": round(top[0][3], 4),
+                         "multipoint_order": len(top)}))
         return out
 
     def _multipoint(self, allowed, res, nearest, mgcfg) -> _Pool:
