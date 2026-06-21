@@ -76,8 +76,8 @@ cand_ids = [c["candidate"] for c in stats.get("candidate_summaries", [])]
 ml = stats.get("multi_ligand")
 print("candidates:", ", ".join(cand_ids) or "(primary only)")
 print("multi-ligand:",
-      ("%d cofactor context variant(s): %s"
-       % (len(ml["variants"]), ", ".join(ml["cofactors"]))) if ml else "none")
+      ("per-ligand reference docking, %d row(s), ligands: %s"
+       % (len(ml.get("rows", [])), ", ".join(map(str, ml.get("ligands", []))))) if ml else "none")
 
 # Provenance stamp: this script reconstructs only cfg + the run dir (no live
 # RunContext), so hand provenance_fields a minimal shim exposing .config + .root.
@@ -109,4 +109,4 @@ html = out.read_text()
 print("WROTE %d bytes -> %s | leftover-tokens=%s | 3Dmol=%s | charts=%s | "
       "multi-ligand-section=%s"
       % (os.path.getsize(out), out, "%%" in html, "3Dmol" in html,
-         "Chart" in html, "Multi-ligand co-modelling" in html))
+         "Chart" in html, "Per-ligand reference docking" in html))
