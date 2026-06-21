@@ -21,7 +21,7 @@ from evoliez.logging_utils import get_logger
 from evoliez.types import Complex, Mutation
 from evoliez.utils.gpu import apply_gpu_selection
 from evoliez.utils.seeds import derive_seed
-from evoliez.utils.subprocess_utils import require, run
+from evoliez.utils.subprocess_utils import require, run, tool_env
 
 log = get_logger("evoliez.ligandmpnn")
 
@@ -57,7 +57,11 @@ def _design_real(
     *,
     dry_run: bool,
 ) -> List[Tuple[List[Mutation], float]]:
-    require("python")  # LigandMPNN is invoked via its run.py
+    # Explicit interpreter for LigandMPNN's own conda env (EVOLIEZ_LIGANDMPNN_PYTHON)
+    # so a --resume that also runs a different bare-`python` tool (e.g. s09's
+    # DiffDock) doesn't collide on one PATH `python`. Falls back to PATH `python`.
+    _py = os.environ.get("EVOLIEZ_LIGANDMPNN_PYTHON") or "python"
+    require(_py)  # LigandMPNN is invoked via its run.py
     apply_gpu_selection()
     workdir.mkdir(parents=True, exist_ok=True)
     pdb = workdir / "input_complex.pdb"
@@ -73,7 +77,7 @@ def _design_real(
     fixed_str = " ".join(f"A{p}" for p in fixed)
     out = workdir / "lmpnn_out"
     cmd = [
-        "python", "run.py",
+        _py, "run.py",
         "--model_type", "ligand_mpnn",
         "--pdb_path", str(pdb),
         "--out_folder", str(out),
@@ -86,7 +90,7 @@ def _design_real(
     # LigandMPNN's run.py + its default ./model_params checkpoint paths are
     # relative to the repo, so run FROM there (like the DiffDock adapter) rather
     # than putting the repo on PYTHONPATH. EVOLIEZ_LIGANDMPNN points at the clone.
-    run(cmd, dry_run=dry_run, cwd=os.environ.get("EVOLIEZ_LIGANDMPNN"))
+    run(cmd, dry_run=dry_run, cwd=os.environ.get("EVOLIEZ_LIGANDMPNN"), env=tool_env(_py))
     if dry_run:
         return _design_mock(cx, designable, cfg)
     return _parse_lmpnn(out, cx.structure.sequence)

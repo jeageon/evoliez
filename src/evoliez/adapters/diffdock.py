@@ -27,7 +27,7 @@ from evoliez.config import Backend, DockingConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import LigandAtom, Pose, ProteinStructure
 from evoliez.utils.gpu import apply_gpu_selection
-from evoliez.utils.subprocess_utils import require, run
+from evoliez.utils.subprocess_utils import require, run, tool_env
 
 log = get_logger("evoliez.diffdock")
 METHOD = "diffdock"
@@ -243,7 +243,12 @@ def _redock_batch_real(
     gpu_device: Optional[int],
     receptor_pdb: Optional[Dict[str, Path]] = None,
 ) -> Dict[str, List[Pose]]:
-    require("python")
+    # Explicit interpreter for DiffDock's own conda env (EVOLIEZ_DIFFDOCK_PYTHON),
+    # so a --resume that also re-runs a DIFFERENT bare-`python` tool (e.g. s07's
+    # LigandMPNN, whose env differs) doesn't force one PATH `python` to satisfy
+    # both. Falls back to PATH `python` when unset (existing behaviour).
+    _py = os.environ.get("EVOLIEZ_DIFFDOCK_PYTHON") or "python"
+    require(_py)
     apply_gpu_selection()
     out_root.mkdir(parents=True, exist_ok=True)
     if gpu_device is not None:
@@ -318,7 +323,7 @@ def _redock_batch_real(
     # than putting it on PYTHONPATH globally. EVOLIEZ_DIFFDOCK points at the
     # clone; its model weights live under <repo>/workdir.
     cmd = [
-        "python", "-m", "inference",
+        _py, "-m", "inference",
         "--protein_ligand_csv", str(csv.resolve()),
         "--out_dir", str(out_root.resolve()),
         "--samples_per_complex", str(cfg.poses_per_candidate),
@@ -326,7 +331,7 @@ def _redock_batch_real(
     _bs = os.environ.get("EVOLIEZ_DIFFDOCK_BATCH")
     if _bs and str(_bs).strip():        # GPU packing (DiffDock default 10); quality-neutral
         cmd += ["--batch_size", str(int(_bs))]
-    run(cmd, cwd=os.environ.get("EVOLIEZ_DIFFDOCK"), dry_run=dry_run)
+    run(cmd, cwd=os.environ.get("EVOLIEZ_DIFFDOCK"), env=tool_env(_py), dry_run=dry_run)
     version = _diffdock_version()
 
     for cid, structure, ref_atoms, smiles in tasks:
@@ -366,7 +371,12 @@ def _redock_real_all(
     dry_run: bool,
     receptor_pdb: Optional[Path] = None,
 ) -> List[Pose]:
-    require("python")
+    # Explicit interpreter for DiffDock's own conda env (EVOLIEZ_DIFFDOCK_PYTHON),
+    # so a --resume that also re-runs a DIFFERENT bare-`python` tool (e.g. s07's
+    # LigandMPNN, whose env differs) doesn't force one PATH `python` to satisfy
+    # both. Falls back to PATH `python` when unset (existing behaviour).
+    _py = os.environ.get("EVOLIEZ_DIFFDOCK_PYTHON") or "python"
+    require(_py)
     apply_gpu_selection()
     workdir.mkdir(parents=True, exist_ok=True)
     rec = workdir / f"{candidate_id}_rec.pdb"
@@ -394,7 +404,7 @@ def _redock_real_all(
     )
     out = workdir / f"{candidate_id}_dd_out"
     cmd = [
-        "python", "-m", "inference",
+        _py, "-m", "inference",
         "--protein_ligand_csv", str(csv.resolve()),
         "--out_dir", str(out.resolve()),
         "--samples_per_complex", str(cfg.poses_per_candidate),
@@ -402,7 +412,7 @@ def _redock_real_all(
     _bs = os.environ.get("EVOLIEZ_DIFFDOCK_BATCH")
     if _bs and str(_bs).strip():        # GPU packing (DiffDock default 10); quality-neutral
         cmd += ["--batch_size", str(int(_bs))]
-    run(cmd, cwd=os.environ.get("EVOLIEZ_DIFFDOCK"), dry_run=dry_run)
+    run(cmd, cwd=os.environ.get("EVOLIEZ_DIFFDOCK"), env=tool_env(_py), dry_run=dry_run)
     if dry_run:
         return _mock_all(candidate_id, reference_atoms, cfg)
     if not out.exists():
