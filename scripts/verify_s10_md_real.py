@@ -15,7 +15,11 @@ analysis code under test is platform-independent.
 Usage:  python verify_s10_md_real.py /path/to/protein_model_0.pdb
 """
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""          # no GPU visible -> CPU platform
+# Default forces CPU (the conda OpenMM CUDA build is PTX-broken on the 12.4
+# driver). Set VERIFY_FORCE_CPU=0 (+ CUDA_VISIBLE_DEVICES=<gpu>) to let OpenMM
+# auto-select a GPU platform (it picks OpenCL, since CUDA fails to load).
+if os.environ.get("VERIFY_FORCE_CPU", "1") != "0":
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ.setdefault("OPENMM_CPU_THREADS", "4") # modest on the shared box
 
 import sys

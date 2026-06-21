@@ -632,6 +632,12 @@ def _run_real(
         cfg.timestep_fs * unit.femtoseconds,
     )
     sim = app.Simulation(modeller.topology, system, integrator)
+    # Record the platform actually selected. OpenMM auto-picks the fastest that
+    # initialises: on this box the conda CUDA build is PTX-broken (12.4 driver)
+    # so it falls through CUDA -> OpenCL (still GPU) -> CPU. Logging it makes
+    # "is the MD on the GPU?" answerable from the run log.
+    log.info("MD %s running on the %s platform", candidate_id,
+             sim.context.getPlatform().getName())
     sim.context.setPositions(modeller.positions)
     sim.minimizeEnergy(maxIterations=cfg.minimize_steps)
 
