@@ -327,9 +327,37 @@ def find_wt_complex_pdb(complexes_dir) -> Optional[str]:
     return sorted(wt or found)[0]
 
 
+def _read_cv_subfamily_auroc(run_dir) -> Optional[dict]:
+    """Read ``<run_dir>/reports/cv_subfamily_auroc.json`` — the FULL leave-one-
+    subfamily-out cross-validation AUROC persisted by
+    ``scripts/cv_subfamily_auroc.py``. This is the CANONICAL model-performance
+    estimate (vs the single subfamily-holdout, which is one example fold).
+
+    Returns the parsed dict (``mean``/``std``/``n_folds``/``min``/``median``/
+    ``max``/``per_fold``) or ``None`` when ``run_dir`` is not given or the file is
+    absent/unreadable, so older runs (no CV json) still render with the single
+    holdout only. Nothing here is target-specific — every number comes from disk.
+    """
+    if not run_dir:
+        return None
+    try:
+        p = os.path.join(str(run_dir), "reports", "cv_subfamily_auroc.json")
+        if not os.path.exists(p):
+            return None
+        import json as _json
+        with open(p, "r") as fh:
+            data = _json.load(fh)
+        if not isinstance(data, dict) or data.get("mean") is None:
+            return None
+        return data
+    except (OSError, ValueError):
+        return None
+
+
 def compute_interaction_stats(meta: dict, artifacts: dict, model: dict,
                               wt_pdb_path=None,
-                              multi_engine_audit: Optional[dict] = None) -> dict:
+                              multi_engine_audit: Optional[dict] = None,
+                              run_dir=None) -> dict:
     """Everything the s06b report needs, derived from the on-disk artifacts so it
     works BOTH wired into the stage and standalone.
 
@@ -343,6 +371,12 @@ def compute_interaction_stats(meta: dict, artifacts: dict, model: dict,
                     ``interaction_graphs/multi_engine_docking.json`` (the per-rep
                     multi-engine docking audit); optional — when absent (or empty,
                     i.e. multi_engine off) the multi-engine section is skipped.
+    ``run_dir``   = the run directory; when given, the FULL leave-one-subfamily-out
+                    CV AUROC at ``<run_dir>/reports/cv_subfamily_auroc.json`` is
+                    read and surfaced as the CANONICAL model-performance metric
+                    (the single subfamily-holdout becomes one example fold).
+                    Optional — older runs without the CV json fall back to the
+                    single-holdout-only display.
     """
     meta = meta or {}
     artifacts = artifacts or {}
@@ -502,6 +536,29 @@ def compute_interaction_stats(meta: dict, artifacts: dict, model: dict,
         model.get("consensus", []), k_nearest, n_bins)
 
     auroc = meta.get("subfamily_holdout_auroc", None)
+
+    # ---- CANONICAL model performance: full leave-one-subfamily-out CV ------ #
+    # When <run_dir>/reports/cv_subfamily_auroc.json exists, the report headlines
+    # this full 150-fold-style CV (mean ± std over every held-out subfamily) as the
+    # robust model-performance metric, and the single subfamily-holdout above
+    # becomes just ONE example fold. Absent -> graceful single-holdout-only.
+    cv = _read_cv_subfamily_auroc(run_dir)
+    cv_meta: Dict[str, object] = {}
+    if cv is not None:
+        def _r(key):
+            v = cv.get(key)
+            return round(float(v), 4) if isinstance(v, (int, float)) else None
+
+        nf = cv.get("n_folds")
+        cv_meta = {
+            "cv_auroc_mean": _r("mean"),
+            "cv_auroc_std": _r("std"),
+            "cv_n_folds": int(nf) if isinstance(nf, (int, float)) else None,
+            "cv_min": _r("min"),
+            "cv_median": _r("median"),
+            "cv_max": _r("max"),
+        }
+
     return {
         "meta": {
             "representatives": int(meta.get("representatives", len(groups)) or 0),
@@ -512,6 +569,7 @@ def compute_interaction_stats(meta: dict, artifacts: dict, model: dict,
             "subfamily_holdout_auroc": (round(float(auroc), 4)
                                         if auroc is not None else None),
             "cutoff": cutoff, "k_nearest": k_nearest, "n_bins": n_bins,
+            **cv_meta,
         },
         "funnel": funnel,
         "n_groups": len(groups),
@@ -770,17 +828,47 @@ def build_interaction_report_html(*, target_id: str, stats: dict,
     m = s["meta"]
     subtitle = provenance or f"generated {g(generated)}"
     auroc = m["subfamily_holdout_auroc"]
+    # CANONICAL model performance: full leave-one-subfamily-out CV (mean ± std over
+    # every held-out subfamily). When present, it HEADLINES the report and the
+    # single subfamily-holdout above is reframed as one example fold. All numbers
+    # are read from the data (no hardcoded values); absent -> single-holdout only.
+    cv_mean = m.get("cv_auroc_mean")
+    cv_std = m.get("cv_auroc_std")
+    cv_n = m.get("cv_n_folds")
+    cv_min = m.get("cv_min")
+    cv_median = m.get("cv_median")
+    cv_max = m.get("cv_max")
+    has_cv = cv_mean is not None
+    cv_fold_label = (f"{cv_n}-fold leave-one-subfamily-out"
+                     if cv_n is not None else "leave-one-subfamily-out")
+    cv_value = (f"{cv_mean:.3f} ± {cv_std:.3f}"
+                if has_cv and cv_std is not None else
+                (f"{cv_mean:.3f}" if has_cv else "—"))
 
     def card(lab, val, sub, color="#111"):
         return (f'<div class="card"><div class="lab">{g(lab)}</div>'
                 f'<div class="num" style="color:{color}">{g(val)}</div>'
                 f'<div class="sub2">{g(sub)}</div></div>')
 
-    cards = [
-        card("holdout AUROC", f"{auroc:.3f}" if auroc is not None else "—",
-             "consensus-vs-decoy geometry (not activity)",
-             _band(auroc or 0, 0.8, 0.65)
-             if auroc is not None else "#111"),
+    if has_cv:
+        # primary CANONICAL card = the full CV; the single holdout follows as one
+        # example fold (secondary, smaller sublabel — not the headline number).
+        perf_cards = [
+            card("CV AUROC", cv_value, cv_fold_label,
+                 _band(cv_mean, 0.8, 0.65)),
+            card("example fold AUROC",
+                 f"{auroc:.3f}" if auroc is not None else "—",
+                 "one held-out subfamily (of the CV above)",
+                 _band(auroc or 0, 0.8, 0.65) if auroc is not None else "#111"),
+        ]
+    else:
+        perf_cards = [
+            card("holdout AUROC", f"{auroc:.3f}" if auroc is not None else "—",
+                 "consensus-vs-decoy geometry (not activity)",
+                 _band(auroc or 0, 0.8, 0.65)
+                 if auroc is not None else "#111"),
+        ]
+    cards = perf_cards + [
         card("representatives", f"{m['representatives']:,}",
              "subfamily reps -> ensemble"),
         card("ensemble poses", f"{m['poses_total']:,}", "Boltz diffusion samples"),
@@ -789,6 +877,83 @@ def build_interaction_report_html(*, target_id: str, stats: dict,
         card("model", g(m["model_kind"]), "consensus classifier"),
     ]
     cards_html = "".join(cards)
+
+    # ---- section 5 performance block (canonical CV vs single-holdout) ------- #
+    # The CANONICAL model-performance metric is the FULL leave-one-subfamily-out
+    # CV (mean ± std over every held-out subfamily); the single subfamily-holdout
+    # is reframed as ONE example fold. %%CVHTML%% (decoded consensus fingerprint),
+    # %%MODELKIND%% and %%AUROCPCT%% (gauge pin) are filled by the outer token
+    # substitution. Degrades to the single-holdout-only block when no CV json.
+    auroc_txt = f"{auroc:.4f}" if auroc is not None else "—"
+    if has_cv:
+        cv_spread = ""
+        if cv_min is not None and cv_max is not None:
+            med_txt = (f", median {cv_median:.3f}"
+                       if cv_median is not None else "")
+            cv_spread = (f" Across the {cv_fold_label} folds the AUROC ranges "
+                         f"{cv_min:.3f}–{cv_max:.3f}{med_txt}.")
+        perf_block = f"""<div class="row2">
+<div>
+<div class="aurocbig" style="color:#1D9E75">{g(cv_value)}</div>
+<p class="note" style="margin:.1rem 0 .4rem"><b>CV AUROC</b> ({g(cv_fold_label)}) ·
+model = <b>%%MODELKIND%%</b></p>
+<div class="gauge"><div class="mid"></div><div class="pin" id="aurocpin"></div></div>
+<p class="note">0.5 = chance (mid mark), 1.0 = perfect ranking of held-out consensus
+poses above decoys. The pin marks the CV mean.</p>
+<p class="note" style="margin-top:.5rem">One example fold — single held-out
+subfamily: AUROC <b>{g(auroc_txt)}</b>.</p>
+%%CVHTML%%
+</div>
+<div>
+<p style="font-size:13.5px;margin:.2rem 0"><b>Subfamily / phylogenetic
+cross-validation (canonical).</b> Each homolog subfamily is held out in turn, the
+classifier refit on the rest, and AUROC measured on that group's held-out
+consensus-vs-decoy poses — a full <b>{g(cv_fold_label)}</b> CV. The headline
+<b>{g(cv_value)}</b> is the <b>mean ± std over all {cv_n} folds</b>: the robust
+generalisation estimate, not a single split.{g(cv_spread)} Because every held-out
+subfamily is unseen, high transfer means the model learned <b>transferable
+interaction geometry</b>, not group-specific memorisation — it guards against
+evolutionary leakage and the consensus circularity above.</p>
+<p style="font-size:13px;margin:.2rem 0;border-left:3px solid #BA7517;padding:.4rem .6rem;background:var(--surf);border-radius:4px"><b>One example fold.</b>
+A single held-out subfamily scores AUROC <b>{g(auroc_txt)}</b> — illustrative of one
+split, NOT the canonical metric; the full {g(cv_fold_label)} CV mean ± std above is
+what characterises the model.</p>
+<p style="font-size:13px;margin:.2rem 0;border-left:3px solid #BA7517;padding:.4rem .6rem;background:var(--surf);border-radius:4px"><b>What this AUROC is — and is not.</b>
+It measures only the model's ability to <b>discriminate consensus (Boltz-pose) interaction
+geometries from decoy geometries</b> — i.e. a <b>geometry-prior sanity check</b> on the
+predicted poses. It is <b>NOT a measure of catalytic activity</b> and <b>does not predict
+mutant activity</b>: no enzyme-activity, k<sub>cat</sub>/K<sub>M</sub>, or
+binding-affinity labels enter this model. A high AUROC says the consensus poses are
+geometrically separable from decoys, nothing about how active any variant will be.</p>
+</div>
+</div>"""
+    else:
+        perf_block = """<div class="row2">
+<div>
+<div class="aurocbig" style="color:#1D9E75">%%AUROC%%</div>
+<p class="note" style="margin:.1rem 0 .4rem">subfamily-holdout AUROC · model =
+<b>%%MODELKIND%%</b></p>
+<div class="gauge"><div class="mid"></div><div class="pin" id="aurocpin"></div></div>
+<p class="note">0.5 = chance (mid mark), 1.0 = perfect ranking of held-out consensus
+poses above decoys.</p>
+%%CVHTML%%
+</div>
+<div>
+<p style="font-size:13.5px;margin:.2rem 0"><b>Subfamily / phylogenetic holdout.</b>
+One whole homolog group is removed from training; the classifier is refit on the
+rest and must still rank that group's held-out consensus poses above its decoys
+(AUROC = %%AUROC%%). Because the held-out subfamily is unseen, a high score means the
+model learned <b>transferable interaction geometry</b>, not group-specific memorisation
+— it guards against evolutionary leakage and the consensus circularity above.</p>
+<p style="font-size:13px;margin:.2rem 0;border-left:3px solid #BA7517;padding:.4rem .6rem;background:var(--surf);border-radius:4px"><b>What this AUROC is — and is not.</b>
+It measures only the model's ability to <b>discriminate consensus (Boltz-pose) interaction
+geometries from decoy geometries</b> — i.e. a <b>geometry-prior sanity check</b> on the
+predicted poses. It is <b>NOT a measure of catalytic activity</b> and <b>does not predict
+mutant activity</b>: no enzyme-activity, k<sub>cat</sub>/K<sub>M</sub>, or
+binding-affinity labels enter this model. A high AUROC says the consensus poses are
+geometrically separable from decoys, nothing about how active any variant will be.</p>
+</div>
+</div>"""
 
     # ---- representative-selection funnel ---------------------------------- #
     fn = s["funnel"]
@@ -937,11 +1102,18 @@ def build_interaction_report_html(*, target_id: str, stats: dict,
         "cutoff": m["cutoff"],
     }, separators=(",", ":"))
 
+    # gauge pin points at the CANONICAL value: CV mean when present, else holdout.
+    pin_val = cv_mean if has_cv else auroc
+    aurocpct = f"{pin_val * 100:.1f}" if pin_val is not None else "—"
+
     return (_INTERACTION_TEMPLATE
             .replace("%%TITLE%%", g(f"{target_id} — family interaction-geometry model"))
             .replace("%%TARGET%%", g(target_id))
             .replace("%%PROVSUB%%", subtitle)
             .replace("%%CARDS%%", cards_html)
+            # PERFBLOCK first: its inner %%CVHTML%%/%%AUROC%%/%%AUROCPCT%%/
+            # %%MODELKIND%% tokens are resolved by the later replaces in this chain.
+            .replace("%%PERFBLOCK%%", perf_block)
             .replace("%%FUNNELROWS%%", funnel_rows)
             .replace("%%SELNOTE%%", g(sel_note))
             .replace("%%NREPS%%", f"{m['representatives']:,}")
@@ -959,7 +1131,7 @@ def build_interaction_report_html(*, target_id: str, stats: dict,
             .replace("%%NPOS%%", f"{pos:,}")
             .replace("%%NNEG%%", f"{s['n_train_neg']:,}")
             .replace("%%AUROC%%", f"{auroc:.4f}" if auroc is not None else "—")
-            .replace("%%AUROCPCT%%", f"{auroc * 100:.1f}" if auroc is not None else "—")
+            .replace("%%AUROCPCT%%", aurocpct)
             .replace("%%MODELKIND%%", g(m["model_kind"]))
             .replace("%%NCONSERVED%%", str(len(s["conserved_resis"])))
             .replace("%%CLASHQC%%", clash_qc)
@@ -1144,32 +1316,7 @@ circular if read as proof. The subfamily holdout (below) is what guards against 
 classifier simply memorising that circularity.</div>
 
 <h2>5 · Model performance</h2>
-<div class="row2">
-<div>
-<div class="aurocbig" style="color:#1D9E75">%%AUROC%%</div>
-<p class="note" style="margin:.1rem 0 .4rem">subfamily-holdout AUROC · model =
-<b>%%MODELKIND%%</b></p>
-<div class="gauge"><div class="mid"></div><div class="pin" id="aurocpin"></div></div>
-<p class="note">0.5 = chance (mid mark), 1.0 = perfect ranking of held-out consensus
-poses above decoys.</p>
-%%CVHTML%%
-</div>
-<div>
-<p style="font-size:13.5px;margin:.2rem 0"><b>Subfamily / phylogenetic holdout.</b>
-One whole homolog group is removed from training; the classifier is refit on the
-rest and must still rank that group's held-out consensus poses above its decoys
-(AUROC = %%AUROC%%). Because the held-out subfamily is unseen, a high score means the
-model learned <b>transferable interaction geometry</b>, not group-specific memorisation
-— it guards against evolutionary leakage and the consensus circularity above.</p>
-<p style="font-size:13px;margin:.2rem 0;border-left:3px solid #BA7517;padding:.4rem .6rem;background:var(--surf);border-radius:4px"><b>What this AUROC is — and is not.</b>
-It measures only the model's ability to <b>discriminate consensus (Boltz-pose) interaction
-geometries from decoy geometries</b> — i.e. a <b>geometry-prior sanity check</b> on the
-predicted poses. It is <b>NOT a measure of catalytic activity</b> and <b>does not predict
-mutant activity</b>: no enzyme-activity, k<sub>cat</sub>/K<sub>M</sub>, or
-binding-affinity labels enter this model. A high AUROC says the consensus poses are
-geometrically separable from decoys, nothing about how active any variant will be.</p>
-</div>
-</div>
+%%PERFBLOCK%%
 %%MULTIENGINE%%
 <h2>7 · 3D structure — high-frequency WT-ensemble contact residues</h2>
 <div id="viewer"><div style="padding:1rem;color:var(--mut);font-size:13px">loading 3D viewer…</div></div>

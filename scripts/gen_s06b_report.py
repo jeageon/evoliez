@@ -28,7 +28,21 @@ print("multi_engine audit:",
       ("%d rows" % len(me_audit.get("rows", []))) if me_audit else "absent")
 
 stats = compute_interaction_stats(meta, artifacts, model, wt_pdb,
-                                  multi_engine_audit=me_audit)
+                                  multi_engine_audit=me_audit,
+                                  run_dir=RD)
+# Validation label: prefer the canonical full leave-one-subfamily-out CV (read
+# from reports/cv_subfamily_auroc.json by compute_interaction_stats); fall back to
+# the single subfamily-holdout when no CV json is present.
+_cvm = stats["meta"]
+if _cvm.get("cv_auroc_mean") is not None:
+    validation_label = (
+        "%d-fold leave-one-subfamily-out CV AUROC %.4f ± %.4f (single holdout "
+        "%.4f as one example fold)"
+        % (_cvm.get("cv_n_folds") or 0, _cvm["cv_auroc_mean"],
+           _cvm.get("cv_auroc_std") or 0.0,
+           _cvm.get("subfamily_holdout_auroc") or 0.0))
+else:
+    validation_label = "subfamily-holdout AUROC"
 h = cfg.interaction_model
 conditions = [
     ("representatives", "%d (auto, by MSA cluster coverage)" % meta["representatives"]),
@@ -36,7 +50,7 @@ conditions = [
     ("rep MSA source", h.rep_msa),
     ("ensemble poses", str(meta["poses_total"])),
     ("interaction model", meta["model_kind"]),
-    ("validation", "subfamily-holdout AUROC"),
+    ("validation", validation_label),
     ("evoliez version", "0.1.0"),
 ]
 # Provenance stamp: standalone reconstruction (cfg + run dir only, no live

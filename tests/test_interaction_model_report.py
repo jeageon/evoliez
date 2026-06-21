@@ -426,6 +426,114 @@ def test_degrades_without_pdb():
     assert 'id="pdbdata"' not in html                # no PDB payload embedded
 
 
+# --------------------------------------------------------------------------- #
+# Canonical model performance: FULL leave-one-subfamily-out CV (the headline)
+# vs the single subfamily-holdout (one example fold).
+# --------------------------------------------------------------------------- #
+def _write_cv_json(tmp_path, **over):
+    # synthetic, GENERIC CV result (no FDH/NADP, no hardcoded headline) — the
+    # shape scripts/cv_subfamily_auroc.py persists to reports/cv_subfamily_auroc.json
+    cv = {
+        "mean": 0.9954, "std": 0.0138, "n_folds": 150,
+        "min": 0.8300, "median": 0.9990, "max": 1.0,
+        "per_fold": [
+            {"subfamily": "hom_001", "auroc": 0.8300, "n": 12},
+            {"subfamily": "hom_087", "auroc": 0.9990, "n": 8},
+            {"subfamily": "hom_149", "auroc": 1.0, "n": 9},
+        ],
+    }
+    cv.update(over)
+    rep = tmp_path / "reports"
+    rep.mkdir(parents=True, exist_ok=True)
+    import json
+    (rep / "cv_subfamily_auroc.json").write_text(json.dumps(cv))
+    return cv
+
+
+def test_cv_subfamily_auroc_headlines_when_present(tmp_path):
+    # with reports/cv_subfamily_auroc.json present, the FULL leave-one-subfamily-out
+    # CV is the CANONICAL headline metric (mean ± std + n_folds), and the single
+    # subfamily-holdout is reframed as one example fold.
+    cv = _write_cv_json(tmp_path)
+    s = compute_interaction_stats(_META, _artifacts(), _MODEL, _PDB,
+                                  run_dir=str(tmp_path))
+    # stats dict carries the CV fields read from disk
+    assert s["meta"]["cv_auroc_mean"] == 0.9954
+    assert s["meta"]["cv_auroc_std"] == 0.0138
+    assert s["meta"]["cv_n_folds"] == 150
+    assert s["meta"]["cv_min"] == 0.83 and s["meta"]["cv_max"] == 1.0
+    assert s["meta"]["cv_median"] == 0.999
+    # the single-holdout is still carried (now as "one example fold")
+    assert s["meta"]["subfamily_holdout_auroc"] == _META["subfamily_holdout_auroc"]
+
+    html = build_interaction_report_html(
+        target_id="xyz1", stats=s,
+        conditions=[("model", "xgboost")], generated="2026-06-20 12:00")
+    assert "%%" not in html
+    # CANONICAL headline: full CV mean ± std + the n_folds fold label
+    assert "CV AUROC" in html
+    assert "0.995 ± 0.014" in html                 # mean ± std (read from data)
+    assert "150-fold leave-one-subfamily-out" in html
+    # spread surfaced from the data (min–max, median), nothing hardcoded
+    assert "0.830" in html and "1.000" in html
+    assert "median 0.999" in html
+    # the single subfamily-holdout is RELABELLED as one example fold (secondary)
+    assert "example fold AUROC" in html            # the secondary card label
+    assert "One example fold" in html              # the section framing
+    assert f"{_META['subfamily_holdout_auroc']:.4f}" in html   # 0.9123 as the fold
+    # canonical framing words; NOT presented as the headline metric
+    assert "cross-validation (canonical)" in html
+    assert "NOT the canonical metric" in html
+
+
+def test_cv_subfamily_auroc_generic_reads_every_number(tmp_path):
+    # GENERIC: different CV numbers -> the headline reflects THEM (no baked-in
+    # 0.9954 / FDH / NADP). Confirms every value is read from the json.
+    _write_cv_json(tmp_path, mean=0.8770, std=0.0430, n_folds=42,
+                   min=0.5500, median=0.9100, max=0.9900, per_fold=[])
+    s = compute_interaction_stats(_META, _artifacts(), _MODEL, _PDB,
+                                  run_dir=str(tmp_path))
+    assert s["meta"]["cv_auroc_mean"] == 0.877
+    assert s["meta"]["cv_n_folds"] == 42
+    html = build_interaction_report_html(
+        target_id="some_dehydrogenase", stats=s,
+        conditions=[("model", "xgboost")], generated="2026-06-20 12:00")
+    assert "%%" not in html
+    assert "0.877 ± 0.043" in html                 # the NEW mean ± std
+    assert "42-fold leave-one-subfamily-out" in html
+    assert "0.9954" not in html                     # no hardcoded canonical value
+    low = html.lower()
+    for banned in ("fdh", "nadp", "formate"):
+        assert banned not in low
+
+
+def test_cv_subfamily_auroc_absent_degrades_to_single_holdout(tmp_path):
+    # no reports/cv_subfamily_auroc.json (older run) -> the report STILL builds
+    # with the single subfamily-holdout only (no CV headline, no error).
+    # (a) run_dir given but the file is absent
+    s_missing = compute_interaction_stats(_META, _artifacts(), _MODEL, _PDB,
+                                          run_dir=str(tmp_path))
+    assert s_missing["meta"].get("cv_auroc_mean") is None
+    html_missing = build_interaction_report_html(
+        target_id="xyz1", stats=s_missing,
+        conditions=[("model", "xgboost")], generated="2026-06-20 12:00")
+    assert "%%" not in html_missing
+    assert "CV AUROC" not in html_missing           # no canonical CV headline
+    assert "holdout AUROC" in html_missing          # single-holdout card intact
+    assert "subfamily-holdout AUROC" in html_missing
+    assert "0.9123" in html_missing                 # the single holdout still shown
+
+    # (b) no run_dir at all (the default) -> identical single-holdout-only render
+    s_none = compute_interaction_stats(_META, _artifacts(), _MODEL, _PDB)
+    assert s_none["meta"].get("cv_auroc_mean") is None
+    html_none = build_interaction_report_html(
+        target_id="xyz1", stats=s_none,
+        conditions=[("model", "xgboost")], generated="2026-06-20 12:00")
+    assert "%%" not in html_none
+    assert "CV AUROC" not in html_none
+    assert "0.9123" in html_none
+
+
 def test_find_wt_complex_pdb(tmp_path):
     # the on-disk locator globs the Boltz predictions tree and prefers the wt one
     base = (tmp_path / "complexes" / "boltz"

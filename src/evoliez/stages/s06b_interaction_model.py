@@ -1245,7 +1245,8 @@ class InteractionModelStage(Stage):
                 target_id=ctx.config.input.target_id,
                 stats=compute_interaction_stats(
                     meta, artifacts, model_dict, wt_pdb,
-                    multi_engine_audit=me_audit),
+                    multi_engine_audit=me_audit,
+                    run_dir=ctx.paths.root),
                 generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
                 provenance=stamp(ctx),
                 conditions=[

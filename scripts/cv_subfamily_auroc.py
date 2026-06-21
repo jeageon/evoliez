@@ -534,6 +534,13 @@ def main() -> int:
     # --- FULL leave-one-subfamily-out CV over ALL eligible groups ------------ #
     print("FULL leave-one-subfamily-out CV (retrain InteractionModel per fold)")
     per_group: Dict[str, float] = {}
+    # held-set size per group (the held subfamily's Boltz pose count) — the same
+    # ``held_recs`` _holdout_one_auroc trains/evaluates that fold on. Surfaced as
+    # the per-fold "n" so the report can show each fold's support.
+    held_n: Dict[str, int] = {}
+    for r in records:
+        if not getattr(r, "role", ""):
+            held_n[r.group_id] = held_n.get(r.group_id, 0) + 1
     skipped: List[str] = []
     for j, held in enumerate(boltz_groups, 1):
         a = _holdout_one_auroc(records, held, sel_kw, im)
@@ -592,6 +599,31 @@ def main() -> int:
     print("  highest folds: " + ", ".join(f"{g}={v:.3f}"
                                            for g, v in items[-5:]))
     print("=" * 72)
+
+    # --- persist the CANONICAL CV result for the s06b report ----------------- #
+    # The interaction-model report reads <run>/reports/cv_subfamily_auroc.json and
+    # headlines this full leave-one-subfamily-out CV as the model-performance
+    # metric (the single subfamily-holdout becomes one example fold). JSON-safe,
+    # generic (every number comes from the data), with per-fold AUROC + support.
+    report_result = {
+        "mean": result["mean"],
+        "std": result["std"],
+        "n_folds": result["n_folds"],
+        "min": result["min"],
+        "median": result["median"],
+        "max": result["max"],
+        "per_fold": [
+            {"subfamily": g, "auroc": round(float(per_group[g]), 4),
+             "n": int(held_n.get(g, 0))}
+            for g in sorted(per_group, key=lambda k: per_group[k])
+        ],
+    }
+    report_json = run / "reports" / "cv_subfamily_auroc.json"
+    report_json.parent.mkdir(parents=True, exist_ok=True)
+    report_json.write_text(json.dumps(report_result, indent=2))
+    print(f"[out] wrote canonical CV for the s06b report -> {report_json} "
+          f"(mean {report_result['mean']:.4f} +/- {report_result['std']:.4f}, "
+          f"n_folds={report_result['n_folds']})")
 
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
