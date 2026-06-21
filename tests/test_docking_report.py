@@ -406,3 +406,72 @@ def test_overlay_unchanged_when_no_comodelled_cofactor(tmp_path):
     # the cofactor control group is absent (the design-ligand overlay is intact)
     assert '<span class="cgl">cofactor</span>' not in html
     assert "%%" not in html
+
+
+# --- overlay embeds the GEOMETRY-SELECTED gnina mode, not the SDF's model 0 --- #
+def _aspirin(seed=7, dx=0.0):
+    smi = "CC(=O)Oc1ccccc1C(=O)O"          # asymmetric -> a flip really differs
+    m = Chem.AddHs(Chem.MolFromSmiles(smi))
+    AllChem.EmbedMolecule(m, randomSeed=seed)
+    m = Chem.RemoveHs(m)
+    if dx:
+        c = m.GetConformer()
+        for i in range(m.GetNumAtoms()):
+            p = c.GetAtomPosition(i)
+            c.SetAtomPosition(i, Point3D(p.x + dx, p.y, p.z))
+    return m
+
+
+def _gnina_rec(mol, aff):
+    return (Chem.MolToMolBlock(mol).rstrip("$\n")
+            + f"\n>  <minimizedAffinity>\n{aff}\n\n$$$$\n")
+
+
+def test_overlay_embeds_geometry_selected_gnina_mode(tmp_path):
+    # gnina SDF: mode 0 (CNN-rank-1) is FLIPPED 6 A off the reference with the BEST
+    # affinity; mode 2 sits ON the reference with the WORST affinity. The overlay +
+    # score + RMSD must reflect mode 2 (geometry), not the SDF's first model.
+    smi = "CC(=O)Oc1ccccc1C(=O)O"
+    dock = tmp_path / "docking"
+    (dock / "gnina").mkdir(parents=True)
+    (tmp_path / "reports").mkdir()
+    (dock / "gnina" / "wt_rec.pdb").write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n")
+    # multi-mode gnina output: rank-1 flipped (best aff), rank-3 on-reference (worst)
+    (dock / "gnina" / "wt_gnina_out.sdf").write_text(
+        _gnina_rec(_aspirin(7, 6.0), -12.182)
+        + _gnina_rec(_aspirin(7, 2.0), -9.0)
+        + _gnina_rec(_aspirin(7, 0.05), -7.5))
+    # reference ~ on mode 2 (a HETATM PDB, like the real ref_lig.pdb)
+    Chem.MolToPDBFile(_aspirin(7, 0.0), str(dock / "gnina" / "wt_ref_lig.pdb"),
+                      flavor=4)
+
+    db = tmp_path / "evoliez.sqlite"
+    con = sqlite3.connect(db)
+    con.execute("create table docking_pose (candidate_id text, method text, "
+                "score real, ligand_rmsd_to_reference real)")
+    con.execute("insert into docking_pose values ('wt','gnina',-7.5,0.0)")
+    con.commit()
+    con.close()
+
+    s = compute_docking_stats(str(tmp_path), str(db), ["gnina"], ligand_smiles=smi)
+    # the gnina pose surfaced to the overlay is a SINGLE mode (one $$$$ record)
+    assert s["poses"]["gnina"].count("$$$$") == 1
+    # its score tag is the SELECTED (on-reference) mode's minimizedAffinity, NOT
+    # the flipped rank-1's -12.182
+    assert s["gnina_props"]["minimizedAffinity"] == -7.5
+    # the recomputed RMSD-to-reference for gnina is SMALL (the on-reference mode),
+    # not the ~6 A of the flipped rank-1 it would have shown before
+    gref = [r for a, b, r, _ in s["rmsd_pairs"]
+            if a == "gnina" and b == "reference" and r is not None]
+    assert gref and gref[0] < 1.0
+
+    html = build_docking_report_html(
+        target_id="myprot", stats=s, ligand_name="aspirin",
+        generated="2026-06-21 09:00", conditions=[("methods", "gnina")])
+    assert "%%" not in html
+    # exactly one gnina model is embedded, and it is the selected single mode
+    assert 'id="m_gnina"' in html
+    # the SELECTED mode's minimizedAffinity (-7.5) is the value shown, never the
+    # flipped rank-1's -12.182
+    assert "-7.5" in html and "-12.182" not in html

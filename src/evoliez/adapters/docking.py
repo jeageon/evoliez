@@ -40,9 +40,11 @@ def dock_ensemble(
 
     # real: one best pose from the configured tool (K-mode parsing TODO)
     if method == "gnina":
+        # SMILES lets gnina pick the reference-consistent mode (min symmetry-
+        # corrected RMSD), not its CNN-rank-1 (flipped for large cofactors).
         pose = gnina.redock(candidate_id, structure, reference_atoms, cfg,
                             workdir, instability=0.1, backend=backend,
-                            dry_run=dry_run)
+                            dry_run=dry_run, smiles=smiles)
     elif method == "diffdock":
         pose = diffdock.redock(candidate_id, structure, reference_atoms, cfg,
                                workdir, instability=0.1, smiles=smiles,

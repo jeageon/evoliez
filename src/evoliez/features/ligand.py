@@ -392,3 +392,136 @@ def _pharma(element: str, aromatic: bool) -> str:
     if element in ("P", "S"):
         return "polar"
     return "hydrophobic"
+
+
+# --------------------------------------------------------------------------- #
+# Symmetry-corrected heavy-atom RMSD-to-reference (the CASF/PDBbind docking-power
+# metric). EXTRACTED here from the s05 docking report so the SAME proven method
+# selects gnina's representative pose AND scores the report. Faithful to the
+# report: build an RDKit template from the ligand SMILES, normalize each pose to
+# its LARGEST heavy-atom fragment with template bond orders (so a co-modelled
+# fragment such as formate is dropped and symmetry is well-defined), then take the
+# minimum RMSD over symmetry-equivalent atom mappings WITHOUT re-superposition
+# (the poses are already in the receptor frame). Needs RDKit; returns None when
+# RDKit/normalization is unavailable so callers fall back honestly.
+# --------------------------------------------------------------------------- #
+def rmsd_template(smiles):
+    """RDKit template mol from the ligand SMILES (bond-order donor for pose
+    normalization), or None when SMILES is missing / RDKit is unavailable."""
+    if not smiles:
+        return None
+    try:
+        from rdkit import Chem
+        return Chem.MolFromSmiles(smiles)
+    except Exception:
+        return None
+
+
+def normalize_pose_mol(text, fmt, template):
+    """Normalized ligand RDKit mol from a docked pose: the LARGEST fragment (so a
+    co-modelled formate is dropped), heavy atoms only, bond orders taken from the
+    SMILES ``template`` so symmetry is well-defined and shared across poses.
+    ``fmt`` is ``"sdf"`` (a molblock) or ``"pdb"`` (a PDB block). Returns
+    ``(mol|None, qc-dict)``."""
+    qc = {"raw": None, "heavy": None, "frags": None, "templated": False}
+    try:
+        from rdkit import Chem
+    except Exception:
+        return None, qc
+    full = (Chem.MolFromMolBlock(text, sanitize=False, removeHs=False) if fmt == "sdf"
+            else Chem.MolFromPDBBlock(text, sanitize=False, removeHs=False))
+    if full is None:
+        return None, qc
+    qc["raw"] = full.GetNumAtoms()
+    try:
+        m = Chem.RemoveHs(full, sanitize=False)
+    except Exception:
+        m = full
+    try:
+        frags = Chem.GetMolFrags(m, asMols=True, sanitizeFrags=False)
+    except Exception:
+        frags = [m]
+    qc["frags"] = len(frags)
+    m = max(frags, key=lambda f: f.GetNumAtoms())
+    qc["heavy"] = m.GetNumAtoms()
+    if template is not None:
+        try:
+            from rdkit.Chem import AllChem
+            m = AllChem.AssignBondOrdersFromTemplate(template, m)
+            qc["templated"] = True
+        except Exception:
+            pass
+    return m, qc
+
+
+def no_align_rmsd(prb, ref):
+    """Symmetry-corrected heavy-atom RMSD WITHOUT superposition — the poses are
+    already in the receptor frame, so we must NOT re-align (that would hide a
+    translation/rotation). Min over symmetry-equivalent atom mappings. ``prb`` /
+    ``ref`` are normalized RDKit mols (see :func:`normalize_pose_mol`)."""
+    if prb is None or ref is None:
+        return None
+    try:
+        import numpy as np
+        matches = ref.GetSubstructMatches(prb, uniquify=False, maxMatches=5000)
+        if not matches:
+            return None
+        cp, cr = prb.GetConformer(), ref.GetConformer()
+        pc = np.array([[cp.GetAtomPosition(i).x, cp.GetAtomPosition(i).y,
+                        cp.GetAtomPosition(i).z] for i in range(prb.GetNumAtoms())])
+        best = None
+        for mt in matches:
+            rc = np.array([[cr.GetAtomPosition(j).x, cr.GetAtomPosition(j).y,
+                            cr.GetAtomPosition(j).z] for j in mt])
+            r = float(np.sqrt(((pc - rc) ** 2).sum(1).mean()))
+            best = r if best is None or r < best else best
+        return round(best, 2) if best is not None else None
+    except Exception:
+        return None
+
+
+def _atoms_to_pdb_block(atoms) -> str:
+    """A minimal HETATM PDB block from a list of :class:`LigandAtom` — the SAME
+    representation the s05 report normalizes the reference ligand from (so the
+    selection RMSD and the report RMSD share one normalization path). Only the
+    fields RDKit's ``MolFromPDBBlock`` reads (record, serial, name, resname,
+    x/y/z, element) are filled; H atoms are kept (``normalize_pose_mol`` strips
+    them). Element-only atom names are zero-padded so RDKit infers the element."""
+    lines = []
+    for i, a in enumerate(atoms):
+        el = (a.element or "C").strip()
+        x, y, z = a.coord
+        # PDB atom name: right-justify a 1-char element into cols 13-16 the way a
+        # standard HETATM line does, so MolFromPDBBlock reads the element back.
+        name = f"{el:>2}" if len(el) <= 2 else el[:4]
+        lines.append(
+            f"HETATM{i + 1:>5} {name:<4} LIG A   1    "
+            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {el:>2}")
+    return ("\n".join(lines) + "\n") if lines else ""
+
+
+def symmetry_corrected_rmsd(pose_text, reference, smiles, *,
+                            pose_fmt: str = "sdf", template=None):
+    """Symmetry-corrected heavy-atom RMSD of a docked pose to a reference ligand.
+
+    The PROVEN s05-report metric, exposed for reuse (gnina representative-pose
+    selection + the report). ``pose_text`` is the pose as a molblock (``pose_fmt
+    ="sdf"``) or a PDB block (``"pdb"``). ``reference`` is the reference ligand,
+    either a PDB-block string or a list of :class:`LigandAtom` (the s05
+    ``reference_atoms``). ``smiles`` is the ligand SMILES (the bond-order
+    template); pass a pre-built ``template`` to avoid re-parsing it per pose.
+    Returns the RMSD in A, or None when RDKit/normalization fails for either side
+    (caller falls back). GENERIC — no ligand identity is assumed; symmetry and
+    fragment selection come entirely from the SMILES template."""
+    tmpl = template if template is not None else rmsd_template(smiles)
+    prb, _ = normalize_pose_mol(pose_text, pose_fmt, tmpl)
+    if prb is None:
+        return None
+    if isinstance(reference, str):
+        ref_text, ref_fmt = reference, "pdb"
+    else:
+        ref_text, ref_fmt = _atoms_to_pdb_block(reference), "pdb"
+    ref_mol, _ = normalize_pose_mol(ref_text, ref_fmt, tmpl)
+    if ref_mol is None:
+        return None
+    return no_align_rmsd(prb, ref_mol)

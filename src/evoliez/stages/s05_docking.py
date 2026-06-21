@@ -22,9 +22,14 @@ def redock_with(method: str, ctx: RunContext, cand_id, structure, ref_atoms,
     # diffdock ignores it).
     backend = ctx.config.backend_for(stage_name)
     if method == "gnina":
+        # Pass the ligand SMILES so gnina picks the REFERENCE-consistent mode
+        # (min symmetry-corrected RMSD to the Boltz reference), not its CNN-rank-1
+        # — which for large cofactors (e.g. NADP) can be an end-for-end-flipped
+        # pose with the reactive end far from the catalytic site.
         return gnina.redock(cand_id, structure, ref_atoms, cfg, workdir,
                             instability=instability, backend=backend,
-                            dry_run=ctx.dry_run, context_chains=context_chains)
+                            dry_run=ctx.dry_run, context_chains=context_chains,
+                            smiles=smiles)
     if method == "diffdock":
         return diffdock.redock(cand_id, structure, ref_atoms, cfg, workdir,
                                instability=instability, smiles=smiles,

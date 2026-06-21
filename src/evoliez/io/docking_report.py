@@ -148,77 +148,77 @@ def _sdf_props(sdf_text: Optional[str]) -> Dict[str, float]:
 
 
 # --------------------------------------------------------------------------- #
-# RDKit: ligand normalization + symmetry-corrected heavy-atom RMSD (optional)
+# RDKit: ligand normalization + symmetry-corrected heavy-atom RMSD (optional).
+# The proven implementations now live in evoliez.features.ligand so the SAME
+# metric scores this report AND selects gnina's representative pose (s05); these
+# module-local names are thin aliases — behaviour (and the report's numbers) is
+# byte-for-byte unchanged.
 # --------------------------------------------------------------------------- #
-def _template(smiles: Optional[str]):
-    if not smiles:
-        return None
-    try:
-        from rdkit import Chem
-        return Chem.MolFromSmiles(smiles)
-    except Exception:
-        return None
+from evoliez.features.ligand import (  # noqa: E402
+    no_align_rmsd as _no_align_rmsd,
+    normalize_pose_mol as _pose_mol,
+    rmsd_template as _template,
+)
 
 
-def _pose_mol(text: str, fmt: str, template):
-    """Normalized ligand RDKit mol from a docked pose: the LARGEST fragment (so a
-    co-modelled formate is dropped), heavy atoms only, bond orders taken from the
-    SMILES template so symmetry is well-defined and shared across poses. Returns
-    (mol|None, qc-dict)."""
-    qc = {"raw": None, "heavy": None, "frags": None, "templated": False}
-    try:
-        from rdkit import Chem
-    except Exception:
-        return None, qc
-    full = (Chem.MolFromMolBlock(text, sanitize=False, removeHs=False) if fmt == "sdf"
-            else Chem.MolFromPDBBlock(text, sanitize=False, removeHs=False))
-    if full is None:
-        return None, qc
-    qc["raw"] = full.GetNumAtoms()
-    try:
-        m = Chem.RemoveHs(full, sanitize=False)
-    except Exception:
-        m = full
-    try:
-        frags = Chem.GetMolFrags(m, asMols=True, sanitizeFrags=False)
-    except Exception:
-        frags = [m]
-    qc["frags"] = len(frags)
-    m = max(frags, key=lambda f: f.GetNumAtoms())
-    qc["heavy"] = m.GetNumAtoms()
-    if template is not None:
-        try:
-            from rdkit.Chem import AllChem
-            m = AllChem.AssignBondOrdersFromTemplate(template, m)
-            qc["templated"] = True
-        except Exception:
-            pass
-    return m, qc
+def _sdf_mode_blocks(sdf_text: Optional[str]) -> List[str]:
+    """Split a multi-mode gnina SDF into one FULL record per ``$$$$`` (file
+    order). gnina writes its N docked modes as N records in ONE SDF; the overlay
+    must show the SELECTED mode, not whichever 3Dmol loads as model 0. Each block
+    KEEPS its molblock AND the trailing gnina score tags (so ``_sdf_props`` reads
+    the selected mode's minimizedAffinity / CNN scores) and is re-terminated with
+    ``$$$$`` so it loads as its own single-record SDF (3Dmol parses the molblock,
+    ignores the data fields). A record is kept only if it carries a V2000/V3000
+    counts line (so an empty trailing chunk after the final ``$$$$`` is dropped);
+    the molblock title is NOT assumed non-blank, so the counts line is found by
+    the ``Vxxxx`` marker rather than a fixed line offset."""
+    if not sdf_text:
+        return []
+    blocks: List[str] = []
+    for chunk in sdf_text.split("$$$$"):
+        lines = chunk.splitlines()
+        # Anchor on the V2000/V3000 counts line: the molblock header is EXACTLY the
+        # three lines above it (title / program / comment) — and the title may be
+        # BLANK (RDKit emits an empty title). Anchoring this way is robust to a
+        # leading separator newline from the "$$$$" split AND to a blank title,
+        # both of which a fixed-offset / blanket-strip approach gets wrong.
+        ci = next((i for i, ln in enumerate(lines)
+                   if ln.rstrip().endswith(("V2000", "V3000"))), None)
+        if ci is None:
+            continue  # empty trailing chunk after the final "$$$$"
+        header = lines[max(0, ci - 3):ci]
+        while len(header) < 3:                 # pad a missing title/comment line
+            header.insert(0, "")
+        rec = "\n".join(header + lines[ci:]).rstrip("\n")
+        blocks.append(rec + "\n$$$$\n")
+    return blocks
 
 
-def _no_align_rmsd(prb, ref) -> Optional[float]:
-    """Symmetry-corrected heavy-atom RMSD WITHOUT superposition — the poses are
-    already in the receptor frame, so we must NOT re-align (that would hide a
-    translation/rotation). Min over symmetry-equivalent atom mappings."""
-    if prb is None or ref is None:
+def _select_gnina_mode(sdf_text: Optional[str], ref_pdb: Optional[str],
+                       tmpl) -> Optional[str]:
+    """The gnina mode (as a standalone single-model SDF block) whose RAW docked
+    geometry best matches the reference — the SAME min symmetry-corrected RMSD
+    rule s05 uses to pick gnina's representative pose. The 3D overlay embeds THIS
+    block so it shows the geometrically-correct pose rather than gnina's CNN-rank-1
+    (which for large cofactors can be end-for-end flipped). Falls back to the
+    first mode when there is no reference / no template / nothing scorable (so the
+    overlay is unchanged for the common, non-flipped case). Returns None when the
+    SDF has no parseable mode."""
+    blocks = _sdf_mode_blocks(sdf_text)
+    if not blocks:
         return None
-    try:
-        import numpy as np
-        matches = ref.GetSubstructMatches(prb, uniquify=False, maxMatches=5000)
-        if not matches:
-            return None
-        cp, cr = prb.GetConformer(), ref.GetConformer()
-        pc = np.array([[cp.GetAtomPosition(i).x, cp.GetAtomPosition(i).y,
-                        cp.GetAtomPosition(i).z] for i in range(prb.GetNumAtoms())])
-        best = None
-        for mt in matches:
-            rc = np.array([[cr.GetAtomPosition(j).x, cr.GetAtomPosition(j).y,
-                            cr.GetAtomPosition(j).z] for j in mt])
-            r = float(np.sqrt(((pc - rc) ** 2).sum(1).mean()))
-            best = r if best is None or r < best else best
-        return round(best, 2) if best is not None else None
-    except Exception:
-        return None
+    if ref_pdb is None or tmpl is None:
+        return blocks[0]
+    ref_mol, _ = _pose_mol(ref_pdb, "pdb", tmpl)
+    if ref_mol is None:
+        return blocks[0]
+    best_i, best_r = 0, None
+    for i, blk in enumerate(blocks):
+        prb, _ = _pose_mol(blk, "sdf", tmpl)
+        r = _no_align_rmsd(prb, ref_mol)
+        if r is not None and (best_r is None or r < best_r):
+            best_i, best_r = i, r
+    return blocks[best_i]
 
 
 # --------------------------------------------------------------------------- #
@@ -309,7 +309,14 @@ def _compute_one_candidate(dock: str, db_path: str, methods: List[str],
                or receptor)
     cofactor_pdb, cofactor_resns = _pdb_het_block(cof_src)
     ref_pdb = _read(os.path.join(dock, "gnina", f"{candidate}_ref_lig.pdb"))
-    gnina_sdf = _read(os.path.join(dock, "gnina", f"{candidate}_gnina_out.sdf"))
+    gnina_sdf_all = _read(os.path.join(dock, "gnina", f"{candidate}_gnina_out.sdf"))
+    # The gnina output SDF holds ALL modes (3Dmol would show model 0 = gnina's
+    # CNN-rank-1, which for large cofactors can be end-for-end flipped). Pick the
+    # mode best matching the reference (same min symmetry-corrected RMSD rule s05
+    # uses for the representative pose) and use THAT single mode for the overlay,
+    # the score tags, the RMSD-to-reference, and the centroid — so every number
+    # and the 3D view describe the SAME geometrically-correct pose.
+    gnina_sdf = _select_gnina_mode(gnina_sdf_all, ref_pdb, tmpl)
     dd_dir = os.path.join(dock, "diffdock", f"{candidate}_dd_out")
     landscape = _diffdock_landscape(dd_dir)
     r1 = sorted(glob.glob(os.path.join(dd_dir, "**", "rank1_confidence*.sdf"),
@@ -322,7 +329,8 @@ def _compute_one_candidate(dock: str, db_path: str, methods: List[str],
     if dd_sdf:
         poses["diffdock"] = dd_sdf
 
-    # GNINA's real sub-scores (the DB 'score' is minimizedAffinity)
+    # GNINA's real sub-scores of the SELECTED mode (the DB 'score' is the selected
+    # mode's minimizedAffinity).
     gnina_props = _sdf_props(gnina_sdf)
 
     # --- ligand normalization + symmetry-corrected heavy-atom RMSD ---

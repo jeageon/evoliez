@@ -50,18 +50,35 @@ def redock(
     dry_run: bool = False,
     context_chains=None,
     receptor_pdb: Optional[Path] = None,
+    smiles: Optional[str] = None,
 ) -> Pose:
-    """Back-compat single-pose entry point: the rank-1 (best) gnina mode.
+    """Single representative gnina pose, selected by REFERENCE-geometry consistency.
 
-    Kept verbatim for existing callers (s05, s06b, docking.py). Internally this
-    now just takes the first of ``redock_all`` so the parse/provenance path is
-    shared and rank-1 here is identical to ``redock_all(...)[0]``."""
+    gnina's CNN/affinity ranking is unreliable for large, flexible cofactors: for
+    e.g. NADP it can rank an end-for-end-flipped pose #1 (the nicotinamide
+    reactive end pointing AWAY from the catalytic site, far from the cofactor's
+    catalytic partner) while still sampling the correct placement at a lower rank.
+    So the representative is the mode with the MINIMUM symmetry-corrected
+    heavy-atom RMSD to the reference (the proven CASF/PDBbind docking-power
+    metric, measured on each mode's RAW docked geometry and shared with the s05
+    report — see :func:`select_reference_consistent`), tie-broken by the original
+    gnina rank for determinism, NOT blindly ``redock_all(...)[0]``. The chosen
+    Pose keeps its own gnina ``rank`` / ``cluster`` / ``minimizedAffinity``, so a
+    correct-but-poorly-ranked pick stays visible/honest in the provenance; it is
+    stamped with the recomputed ``rmsd_to_reference``. The selection needs the
+    ligand ``smiles`` (the bond-order template); without it (or without RDKit, or
+    for the mock backend which writes no SDF) it falls back to rank-1.
+
+    Callers: s05 WT docking, s09 mutant redock, docking.py. s06b's multi-engine
+    consumes ``redock_all`` (EVERY mode, classified vs the family consensus) and
+    is unaffected by this single-pose selection."""
     poses = redock_all(
         candidate_id, structure, reference_atoms, cfg, workdir,
         instability=instability, backend=backend, dry_run=dry_run,
         context_chains=context_chains, receptor_pdb=receptor_pdb,
     )
-    return poses[0]
+    sdf_path = Path(workdir) / f"{candidate_id}_gnina_out.sdf"
+    return select_reference_consistent(poses, sdf_path, reference_atoms, smiles)
 
 
 def redock_all(
@@ -261,6 +278,113 @@ def parse_all_modes(
             engine_version=engine_version, command_args=command_args,
         ))
     return poses
+
+
+def _mode_molblocks(sdf_path) -> List[str]:
+    """Per-mode RDKit molblocks from a gnina output SDF, in file order — one
+    string per ``$$$$``-delimited record, ALIGNED to :func:`parse_all_modes`'s
+    mode order. Used to score each mode's RAW docked geometry against the
+    reference (the Pose's ``ligand_atoms`` are relabelled onto the canonical
+    reference, which discards the docked frame for any ligand whose chemistry
+    graph could not be verified — exactly the large flexible cofactors this
+    selection exists for).
+
+    A record is anchored on its V2000/V3000 COUNTS line: the molblock header is the
+    three lines above it (title / program / comment), and the molblock title may
+    be BLANK (RDKit emits an empty title). Anchoring this way — rather than a
+    fixed line offset with a blanket leading-blank strip — is robust to both a
+    leading separator newline from the ``$$$$`` split and a blank title (the old
+    fixed-offset parse silently dropped every RDKit-written record). Each returned
+    block keeps the molblock through ``M  END`` (the trailing gnina score tags are
+    dropped); RDKit's ``MolFromMolBlock`` then parses it."""
+    try:
+        text = Path(sdf_path).read_text()
+    except OSError:
+        return []
+    blocks: List[str] = []
+    for chunk in text.split("$$$$"):
+        lines = chunk.splitlines()
+        ci = next((i for i, ln in enumerate(lines)
+                   if ln.rstrip().endswith(("V2000", "V3000"))), None)
+        if ci is None:
+            continue  # empty trailing chunk after the final "$$$$"
+        header = lines[max(0, ci - 3):ci]
+        while len(header) < 3:                 # pad a missing title/comment line
+            header.insert(0, "")
+        body: List[str] = []
+        for ln in lines[ci:]:
+            body.append(ln)
+            if ln.strip() == "M  END":
+                break
+        if not body or body[-1].strip() != "M  END":
+            body.append("M  END")
+        blocks.append("\n".join(header + body) + "\n")
+    return blocks
+
+
+def select_reference_consistent(
+    poses: List[Pose], sdf_path, reference_atoms: Sequence[LigandAtom],
+    smiles: Optional[str],
+) -> Pose:
+    """Pick the gnina mode whose RAW docked geometry best matches the reference.
+
+    gnina's CNN/affinity ranking is unreliable for large, flexible cofactors: for
+    e.g. NADP it can rank an end-for-end-FLIPPED pose #1 (the nicotinamide
+    reactive end pointing AWAY from the catalytic site) while still SAMPLING the
+    correct placement at a lower rank. So the representative is the mode with the
+    MINIMUM symmetry-corrected heavy-atom RMSD to the reference (the proven
+    CASF/PDBbind metric, shared with the s05 report via
+    :func:`evoliez.features.ligand.symmetry_corrected_rmsd`), tie-broken by the
+    original gnina rank for determinism.
+
+    The RMSD is measured on each mode's RAW SDF molblock (``_mode_molblocks``),
+    NOT the Pose's ``ligand_atoms`` (those are relabelled onto the canonical
+    reference and lose the docked frame for any ligand whose chemistry graph
+    isomorphism could not be verified — which is precisely the flipped-cofactor
+    case). The chosen Pose KEEPS its own gnina ``rank`` / ``cluster`` /
+    ``minimizedAffinity`` (honest provenance: a correct-but-low-CNN-ranked pick
+    stays visible) and is stamped with the recomputed ``rmsd_to_reference`` so the
+    DB no longer carries the 0.0 placeholder for it. Falls back to rank-1 when no
+    mode carries a computable reference RMSD (no SMILES template, RDKit absent, or
+    normalization failed for every mode). GENERIC — no ligand identity assumed;
+    fragment selection + symmetry come entirely from the SMILES template."""
+    from dataclasses import replace
+
+    from evoliez.features.ligand import (rmsd_template,
+                                         symmetry_corrected_rmsd)
+
+    if not poses:
+        raise ValueError("select_reference_consistent: empty pose list")
+    blocks = _mode_molblocks(sdf_path)
+    tmpl = rmsd_template(smiles)
+    scored = []  # (rmsd, rank, pose, rmsd_value)
+    for p in poses:
+        idx = p.cluster  # 0-based file order, == mode index in parse_all_modes
+        rmsd = None
+        if tmpl is not None and 0 <= idx < len(blocks):
+            rmsd = symmetry_corrected_rmsd(
+                blocks[idx], list(reference_atoms), smiles,
+                pose_fmt="sdf", template=tmpl)
+        if rmsd is not None:
+            scored.append((rmsd, p.rank, p, rmsd))
+    if not scored:
+        # No mode carries a computable reference RMSD -> honest fallback to the
+        # engine's own rank-1 (unchanged from the historical behaviour).
+        log.warning(
+            "gnina: reference-RMSD selection unavailable (no SMILES template / "
+            "RDKit / parseable modes); falling back to rank-1 for %s",
+            poses[0].candidate_id)
+        return poses[0]
+    best_rmsd, _rank, best, rmsd_val = min(scored, key=lambda t: (t[0], t[1]))
+    if best.rank != 1:
+        log.info(
+            "gnina: representative pose for %s is mode %d (rank %d, "
+            "minimizedAffinity %s) by reference RMSD %.2f A — NOT CNN-rank-1 "
+            "(gnina's top mode disagrees with the reference geometry)",
+            best.candidate_id, best.cluster, best.rank, best.score, best_rmsd)
+    # Stamp the recomputed symmetry-corrected RMSD so the stored pose carries an
+    # honest reference distance (it was None for graph-unverifiable ligands).
+    return replace(best, rmsd_to_reference=round(rmsd_val, 3))
 
 
 def _parse_mode_tags(out) -> dict:

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from evoliez.adapters import gnina
 from evoliez.config import Backend, DockingConfig
 from evoliez.types import LigandAtom, ProteinStructure
@@ -135,11 +137,113 @@ def test_mock_redock_all_synthesizes_ranked_modes():
 
 
 def test_mock_redock_back_compat_returns_rank1():
-    # the single-pose redock() must equal redock_all()[0].
+    # the single-pose redock() must equal redock_all()[0]. The mock backend writes
+    # no SDF, so the reference-RMSD selection has nothing to score and falls back
+    # to rank-1 (unchanged behaviour).
     cfg = DockingConfig()
     one = gnina.redock("c", _structure(), _ref(), cfg, Path("/unused"),
-                       instability=0.1, backend=Backend.mock)
+                       instability=0.1, backend=Backend.mock, smiles="CCO")
     first = gnina.redock_all("c", _structure(), _ref(), cfg, Path("/unused"),
                              instability=0.1, backend=Backend.mock)[0]
     assert one.rank == 1
     assert one.score == first.score and one.method == "gnina"
+
+
+# ---------------- reference-consistent single-pose selection ---------------- #
+# The core fix: gnina's CNN/affinity rank-1 can be an end-for-end-FLIPPED pose for
+# a large/flexible ligand. The representative must be the mode whose RAW docked
+# geometry best matches the reference (min symmetry-corrected RMSD), keeping its
+# OWN gnina rank + minimizedAffinity (honest provenance). Built with a real RDKit
+# ligand so the symmetry-corrected RMSD is meaningful.
+rdkit = pytest.importorskip("rdkit")
+from rdkit import Chem            # noqa: E402
+from rdkit.Chem import AllChem    # noqa: E402
+from rdkit.Geometry import Point3D  # noqa: E402
+
+from evoliez.types import LigandAtom as _LA  # noqa: E402
+
+_SMI = "CC(=O)Oc1ccccc1C(=O)O"   # aspirin: asymmetric, so a flip really differs
+
+
+def _real_mol(seed=7, dx=0.0):
+    m = Chem.AddHs(Chem.MolFromSmiles(_SMI))
+    AllChem.EmbedMolecule(m, randomSeed=seed)
+    m = Chem.RemoveHs(m)
+    if dx:
+        c = m.GetConformer()
+        for i in range(m.GetNumAtoms()):
+            p = c.GetAtomPosition(i)
+            c.SetAtomPosition(i, Point3D(p.x + dx, p.y, p.z))
+    return m
+
+
+def _ref_atoms_from(mol):
+    conf = mol.GetConformer()
+    return [_LA(id=f"{a.GetSymbol()}{i}", element=a.GetSymbol(),
+               coord=(conf.GetAtomPosition(i).x, conf.GetAtomPosition(i).y,
+                      conf.GetAtomPosition(i).z))
+            for i, a in enumerate(mol.GetAtoms())]
+
+
+def _gnina_record(mol, aff, cnn, cnn_aff):
+    """A gnina-style SDF record: a real molblock + the three score tags."""
+    return (Chem.MolToMolBlock(mol).rstrip("$\n")
+            + f"\n>  <minimizedAffinity>\n{aff}\n"
+              f"\n>  <CNNscore>\n{cnn}\n"
+              f"\n>  <CNNaffinity>\n{cnn_aff}\n\n$$$$\n")
+
+
+def test_select_reference_consistent_picks_geometry_not_cnn_rank1(tmp_path):
+    ref = _real_mol(seed=7, dx=0.0)
+    ref_atoms = _ref_atoms_from(ref)
+    # mode 0 = gnina CNN-rank-1 but FLIPPED far (6 A translation) -> best affinity;
+    # mode 1 = moderate (2 A); mode 2 = matches the reference (~0 A) but WORST aff.
+    flipped = _real_mol(seed=7, dx=6.0)
+    middle = _real_mol(seed=7, dx=2.0)
+    onref = _real_mol(seed=7, dx=0.0)
+    sdf = tmp_path / "c_gnina_out.sdf"
+    sdf.write_text(_gnina_record(flipped, -12.182, 0.95, 6.6)    # rank 1
+                   + _gnina_record(middle, -9.0, 0.70, 5.5)       # rank 2
+                   + _gnina_record(onref, -7.5, 0.40, 4.8))       # rank 3
+    poses = gnina.parse_all_modes(sdf, ref_atoms, candidate_id="c")
+    assert [p.rank for p in poses] == [1, 2, 3]
+    chosen = gnina.select_reference_consistent(poses, sdf, ref_atoms, _SMI)
+    # the rank-3 mode (on the reference) is chosen, NOT the rank-1 flipped pose
+    assert chosen.rank == 3 and chosen.cluster == 2
+    # it KEEPS its own gnina minimizedAffinity (the worse value, honest provenance)
+    assert chosen.score == -7.5
+    # and is stamped with the recomputed (small) symmetry-corrected RMSD-to-ref
+    assert chosen.rmsd_to_reference is not None and chosen.rmsd_to_reference < 1.0
+    # sanity: the rank-1 flipped pose really is far from the reference
+    from evoliez.features.ligand import symmetry_corrected_rmsd
+    blocks = gnina._mode_molblocks(sdf)
+    r0 = symmetry_corrected_rmsd(blocks[0], ref_atoms, _SMI)
+    assert r0 is not None and r0 > 4.0          # rank-1 is the far/flipped one
+
+
+def test_select_reference_consistent_falls_back_to_rank1_without_smiles(tmp_path):
+    ref = _real_mol(seed=7, dx=0.0)
+    ref_atoms = _ref_atoms_from(ref)
+    sdf = tmp_path / "c_gnina_out.sdf"
+    sdf.write_text(_gnina_record(_real_mol(7, 6.0), -12.182, 0.95, 6.6)
+                   + _gnina_record(_real_mol(7, 0.0), -7.5, 0.40, 4.8))
+    poses = gnina.parse_all_modes(sdf, ref_atoms, candidate_id="c")
+    # no SMILES template -> nothing scorable -> honest fallback to rank-1
+    chosen = gnina.select_reference_consistent(poses, sdf, ref_atoms, None)
+    assert chosen.rank == 1 and chosen.score == -12.182
+
+
+def test_mode_molblocks_aligns_with_parse_all_modes(tmp_path):
+    # the molblock splitter must be index-aligned with parse_all_modes' mode order
+    sdf = tmp_path / "c_gnina_out.sdf"
+    sdf.write_text(_gnina_record(_real_mol(7, 0.0), -9.0, 0.9, 6.0)
+                   + _gnina_record(_real_mol(7, 3.0), -8.0, 0.7, 5.0))
+    blocks = gnina._mode_molblocks(sdf)
+    poses = gnina.parse_all_modes(sdf, _ref_atoms_from(_real_mol(7, 0.0)))
+    assert len(blocks) == len(poses) == 2
+    # each block parses to the right heavy-atom count via the shared normalizer
+    from evoliez.features.ligand import normalize_pose_mol, rmsd_template
+    tmpl = rmsd_template(_SMI)
+    for b in blocks:
+        _m, qc = normalize_pose_mol(b, "sdf", tmpl)
+        assert qc["heavy"] == 13          # aspirin heavy-atom count
