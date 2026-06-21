@@ -301,6 +301,25 @@ def run_md(
     when not supplied."""
     workdir.mkdir(parents=True, exist_ok=True)
     if backend is Backend.real:
+        # tier-3 confirmatory engine: dispatch to the Amber pmemd.cuda backend
+        # (md.engine: amber). Lazy import — amber_engine imports from here.
+        if getattr(cfg, "engine", "openmm") == "amber":
+            from evoliez.adapters.amber_engine import run_md_amber
+            try:
+                return run_md_amber(
+                    cx, candidate_id, cfg, workdir,
+                    catalytic_positions=catalytic_positions, dry_run=dry_run,
+                    ligand_cache_dir=ligand_cache_dir,
+                )
+            except Exception as exc:
+                log.warning("Amber MD failed for %s (%s); recording failure",
+                            candidate_id, exc)
+                return MDResult(
+                    candidate_id=candidate_id, status="failed",
+                    protocol_level=cfg.protocol_level, solvent_mode="implicit",
+                    simulation_time_ns=0.0, integration_failed=True,
+                    failure_reason=str(exc),
+                )
         try:
             return _run_real(
                 cx, candidate_id, cfg, workdir,
@@ -417,6 +436,12 @@ def _run_real(
         )
 
     apply_gpu_selection()
+    # OpenFF AM1-BCC charging needs antechamber/sqm on PATH; inject
+    # EVOLIEZ_AMBERTOOLS_BIN if the launcher didn't (else EVERY ligand silently
+    # falls to skipped_parameterization — the real cause of the "s10 skips
+    # everything" bug, not the cofactor).
+    from evoliez.adapters.amber_engine import ensure_amber_on_path
+    ensure_amber_on_path()
     src = getattr(cx.structure, "pdb_path", None)
     if src and Path(src).exists() and is_full_atom_pdb(Path(src)):
         pdb_path = Path(src)                       # real full-atom structure
