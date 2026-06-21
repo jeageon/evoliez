@@ -274,7 +274,6 @@ _PROV_FEATURE_COLS = (
     ("ligandmpnn_logp", "MPNN logp"),
     ("risk_flag", "risk"),
     ("disallowed_reason", "reason"),
-    ("forbidden_check", "forbidden"),
 )
 
 
@@ -424,7 +423,7 @@ def _fmt(v, suffix: str = "", nd: int = 2) -> str:
 
 def _svg_design_heatmap(design_rows: Sequence[dict], *, width: int = 760,
                         cell: int = 26, pad_l: int = 64, pad_t: int = 58,
-                        pad_b: int = 8, max_cols: int = 22) -> str:
+                        pad_b: int = 8, max_cols: int = 64) -> str:
     """Self-contained inline-SVG HEATMAP (no JS) of the designable positions ×
     four design-space metrics (ligand contact, nearest-ligand closeness, MSA
     permissiveness, candidates touching). One column per position (ligand-central
@@ -451,6 +450,10 @@ def _svg_design_heatmap(design_rows: Sequence[dict], *, width: int = 760,
                            else max(0.0, min(1.0, 1.0 - (md / 8.0))))
         d["_cand_norm"] = d["n_candidates"] / maxc
     n = len(rows)
+    # adaptive cell width: shrink columns so ALL designable positions fit the base
+    # width instead of clipping the design space to a fixed column cap (the prior
+    # max_cols=22 silently dropped positions 23+); floored so labels stay legible.
+    cell = max(12, min(cell, (width - pad_l - 10) // max(1, n)))
     plot_w = n * cell
     total_w = max(width, pad_l + plot_w + 10)
     height = pad_t + len(metrics) * cell + pad_b
@@ -618,7 +621,7 @@ def build_mutation_report_html(*, target_id: str, stats: dict,
     for rec in prov[:MAX_PROV]:
         tr_cls = ' class="riskrow"' if rec["risk"] else ""
         cells = [f'<td><code>{g(rec["candidate_id"])}</code></td>',
-                 f'<td><b>{g(rec["mutation_string"])}</b></td>']
+                 f'<td class="mut"><b>{g(rec["mutation_string"])}</b></td>']
         for key, _label in _PROV_FEATURE_COLS:
             cells.append(_prov_cell(rec, key))
         for key in extra_cols:
@@ -723,6 +726,7 @@ h2{font-size:18px;font-weight:500;margin:2.2rem 0 .5rem}
 .card{background:var(--surf);border-radius:8px;padding:.7rem .85rem}
 .lab{font-size:12px;color:var(--mut)}.num{font-size:22px;font-weight:500;margin-top:1px}.sub2{font-size:11px;color:var(--mut)}
 table{width:100%;border-collapse:collapse;font-size:14px}
+td.mut{max-width:168px;white-space:normal;overflow-wrap:anywhere;line-height:1.35}
 th,td{text-align:left;padding:7px 10px;border-bottom:.5px solid var(--line)}
 th{color:var(--mut);font-weight:500;font-size:13px}
 td.ck{color:var(--mut)}
@@ -829,8 +833,9 @@ check). Risk-flagged rows are tinted and sorted last.</p>
 <p class="note">Showing up to 60 of <b>%%NCAND%%</b> candidates (<b>%%NMORE%%</b>
 more in <code>reports/provenance/generated_candidates.csv</code>); the budget-tier
 files (<code>generated_candidates_{single,multipoint,risky}.csv</code>) carry the
-same columns per tier. <b>forbidden</b> = <code>ok</code> on every row by
-construction — the generators exclude catalytic / fixed positions and an
+same columns per tier. The <b>forbidden-position check</b> is <code>ok</code> for
+every candidate by construction (so it is omitted as a column) — the generators
+exclude catalytic / fixed positions and an
 independent post-assembly assertion re-verifies it. A blank cell = the generator
 did not record that feature (e.g. a chemistry-rules candidate has no MSA
 frequency), shown honestly rather than fabricated.</p>
