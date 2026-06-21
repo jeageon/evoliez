@@ -52,8 +52,12 @@ def negative_penalties(
         catalytic_geometry_deviation(wt_mech, mut_mech)
         if mut_mech is not None else 0.0
     )
-    # over-binding: very strong predicted binding can slow product release
-    overbinding = max(0.0, (-docking_score) - 11.0) / 4.0
+    # over-binding: very strong predicted binding can slow product release.
+    # ``docking_score`` may be None (an unscored pose, e.g. a DiffDock rank with
+    # absent/sentinel confidence): with NO score we cannot claim over-binding, so
+    # the penalty is 0 — never a fabricated number from arithmetic on None.
+    overbinding = (0.0 if docking_score is None
+                   else max(0.0, (-docking_score) - 11.0) / 4.0)
     pose_inversion = max(0.0, 1.0 - redocking_consistency)
 
     return {

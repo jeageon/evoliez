@@ -139,6 +139,12 @@ def test_geometry_penalty_uses_real_mutant_pose(tmp_path):
     for c in cands:
         assert (c.details.get("catalytic_geometry_source")
                 == c.details.get("redock_structure_source"))
+        # CHANGE (audit P2 #6): the mechanism is annotated on the SAME structure
+        # as the geometry penalty — the real s08b mutant pose when one exists, the
+        # WT proxy otherwise (negative_design is on by default for this config).
+        if "mechanism_source" in c.details:
+            assert (c.details["mechanism_source"]
+                    == c.details.get("redock_structure_source"))
     # the real mutant backbone+pose actually moves the active site -> at least one
     # real-pose candidate has a strictly positive penalty (the inert proxy could
     # not produce this).

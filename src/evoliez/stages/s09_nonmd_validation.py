@@ -7,15 +7,44 @@ proxy, and per-mutant redocking consistency vs the WT reference pose.
 from __future__ import annotations
 
 import copy
+import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import List
+from typing import Dict, List, Optional
 
 from evoliez.adapters import foldx, rosetta
+from evoliez.adapters.base import het_chains_in_pdb
 from evoliez.context import RunContext
 from evoliez.features.geometry import catalytic_distances, rmsd
 from evoliez.stages.base import Stage
 from evoliez.stages.s05_docking import redock_with
-from evoliez.types import Candidate, Complex
+from evoliez.types import Candidate, Complex, Pose
+
+
+def _context_chains_for(redock_structure) -> Optional[List[str]]:
+    """The co-modelled context-ligand chains to keep as FIXED receptor context
+    when redocking the design ligand (audit P1 #1).
+
+    The s04/s08b complex PDB carries the design (primary) ligand at chain B and
+    each co-modelled extra (cofactor / substrate, e.g. formate) at C/D/...
+    (Boltz input order: protein A, primary ligand B, extras after). The design
+    ligand is the one being REDOCKED, so it is removed from the receptor and
+    re-added by the docker; the OTHERS stay as context. So the context chains are
+    every HETATM chain EXCEPT the first (the design/primary ligand) — exactly the
+    ``[c for c in all_chains if c != design_chain]`` derivation s05 uses.
+
+    Returns ``None`` (no context) when the redock structure has no real PDB (the
+    WT-coords proxy is CA-only -> ``full_atom_receptor_pdb`` degrades honestly
+    anyway) or carries at most the design ligand. gnina/vina keep these chains;
+    diffdock receives-but-ignores them (protein-only), matching ``redock_with``.
+    """
+    pdb = getattr(redock_structure, "pdb_path", None)
+    if not pdb:
+        return None
+    chains = het_chains_in_pdb(pdb)
+    if len(chains) <= 1:
+        return None
+    # chain[0] = the design/primary ligand being redocked; keep the rest.
+    return [c for c in chains[1:]] or None
 
 
 def _mutant_complex(wt: Complex, cand: Candidate) -> Complex:
@@ -97,6 +126,37 @@ class NonMDValidationStage(Stage):
         capped_cpu = (min(user_cpu, CPU_PER_DOCK) if user_cpu > 0 else CPU_PER_DOCK)
         dcfg = dcfg.model_copy(update={"cpu": capped_cpu})
 
+        # --- GPU-batched redocking (audit P1 #3) ----------------------------
+        # The naive per-candidate loop runs each GPU docker (gnina/diffdock) once
+        # PER CANDIDATE, so ~600 candidates -> ~600 DiffDock model loads + ~600
+        # gnina launches. Instead, reuse the SAME GPU-amortising skeleton s06b's
+        # per-rep augmentation uses (diffdock.redock_batch one-model-load-per-GPU
+        # + a gnina per-GPU worker queue) to redock all candidates with ONE model
+        # load per GPU. Gated EXACTLY like s06b's batched ensemble — real backend
+        # + >1 pinned GPU — because the mock backend's batch vs per-target
+        # base_instability differ (see diffdock.redock_batch), so mock / single-
+        # GPU keep the per-candidate path (byte-identical to before). The poses
+        # are numerically identical per candidate; only model loads drop.
+        gpu_list = [g for g in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if g]
+        batch_methods = {"gnina", "diffdock"} & set(dcfg.methods)
+        use_batch = (backend.value == "real" and len(gpu_list) > 1
+                     and not ctx.dry_run and bool(batch_methods))
+        # {candidate_id: {method: Pose}} pre-docked across GPUs; read by
+        # _process_candidate instead of a per-candidate redock_with for the
+        # batched methods. Non-batched methods (e.g. vina, CPU) still run inline.
+        batched_poses: Dict[str, Dict[str, Pose]] = {}
+
+        def _redock_structure_for(cand: Candidate):
+            """The receptor + design-ligand reference + context chains for ONE
+            candidate's redock. Shared by the inline path and the batch
+            precompute so both dock the IDENTICAL target. Returns
+            (redock_structure, ref_atoms, context_chains)."""
+            redock_cx = mutant_complexes.get(cand.candidate_id)
+            redock_structure = (redock_cx.structure if redock_cx is not None
+                                else _mutant_complex(wt, cand).structure)
+            cx_chains = _context_chains_for(redock_structure)
+            return redock_structure, ref_atoms, cx_chains
+
         def _process_candidate(cand: Candidate) -> Candidate:
             """Validate ONE candidate (stability + redocking + geometry). Run by
             the ThreadPoolExecutor below. Thread-safe: each call mutates only its
@@ -112,6 +172,15 @@ class NonMDValidationStage(Stage):
                                 else mc.structure)
             cand.details["redock_structure_source"] = (
                 "mutant_boltz" if redock_cx is not None else "wt_proxy")
+            # Co-modelled context-ligand chains kept as FIXED receptor context
+            # when redocking the design ligand (audit P1 #1): without this the
+            # full-atom receptor drops EVERY HETATM, so e.g. NADP is redocked into
+            # a formate-LESS pocket and the catalytic-geometry consistency is
+            # measured against the wrong context. gnina/vina keep these chains;
+            # diffdock receives-but-ignores them (protein-only) — same contract as
+            # redock_with / s05.
+            cx_chains = _context_chains_for(redock_structure)
+            cand.details["redock_context_chains"] = list(cx_chains or [])
 
             if scfg.method == "rosetta":
                 stab = rosetta.estimate_stability(
@@ -155,22 +224,35 @@ class NonMDValidationStage(Stage):
             # AGREEMENT is real: a candidate counts as a consistent redock only
             # if EVERY method reproduces the reference pose. Per-method score +
             # RMSD are recorded for the validation table; the cross-method spread
-            # surfaces disagreement.
+            # surfaces disagreement. The batched methods (real multi-GPU) are
+            # served from the pre-docked map; everything else runs inline — the
+            # resulting Pose per (candidate, method) is identical either way.
+            pre = batched_poses.get(cand.candidate_id, {})
             poses = {
-                method: redock_with(
+                method: (pre[method] if method in pre else redock_with(
                     method, ctx, cand.candidate_id, redock_structure,
                     ref_atoms, dcfg, ctx.paths.validation / "redock", inst,
                     wt.ligand.smiles, stage_name=self.name,
-                )
+                    context_chains=cx_chains,
+                ))
                 for method in dcfg.methods
             }
+            # A Pose.score is None when the engine produced a pose but NO
+            # parseable score (DiffDock absent/sentinel confidence — diffdock.py).
+            # Keep None in the provenance dict (genuinely unscored) and NEVER feed
+            # it to round()/arithmetic; downstream stats must skip it, never read
+            # it as 0 (audit P1 #3).
             cand.details["redock"] = {
-                m: {"score": round(p.score, 3),
+                m: {"score": (round(p.score, 3) if p.score is not None else None),
                     "rmsd_to_reference": (round(p.rmsd_to_reference, 3)
                                           if p.rmsd_to_reference is not None else None)}
                 for m, p in poses.items()
             }
-            cand.scores["docking_score"] = poses[dcfg.methods[0]].score
+            # docking_score = the primary method's pose score, or None when that
+            # pose is unscored. Recorded as-is; the kept-filter / MD selection /
+            # over-binding numerics below all treat None as UNKNOWN (never 0).
+            primary_pose = poses[dcfg.methods[0]]
+            cand.scores["docking_score"] = primary_pose.score
             rmsds = [p.rmsd_to_reference for p in poses.values()]
             # worst (largest) RMSD across methods; an unverifiable pose (None)
             # propagates as unknown -> neutral consistency, never a free pass.
@@ -213,19 +295,35 @@ class NonMDValidationStage(Stage):
                 from evoliez.features.mechanism import annotate
                 from evoliez.ranking.negative_design import negative_penalties
 
+                # Annotate the mechanism on the REAL s08b mutant complex when one
+                # exists (audit P2 #6), consistent with the catalytic-geometry
+                # path above: ``mc`` is only WT coords + a residue-identity swap,
+                # so its TS geometry ~= WT and the mutation's mechanistic effect
+                # is invisible. The Boltz mutant has its own backbone + pose, so
+                # ts_geometry_score / catalytic_geometry_deviation are meaningful.
+                # Fall back to the WT proxy when no real mutant complex exists.
+                mech_cx = redock_cx if redock_cx is not None else mc
                 mut_mech = annotate(
-                    mc, catalytic_positions=catalytic,
+                    mech_cx, catalytic_positions=catalytic,
                     cofactor=ctx.config.input.cofactor,
                     annotation_file=adv.mechanism_annotation_file,
                 )
+                cand.details["mechanism_source"] = (
+                    "mutant_boltz" if redock_cx is not None else "wt_proxy")
                 cand.scores["ts_geometry_score"] = mut_mech.ts_geometry_score
+                # docking_score may be None (unscored primary pose). Pass 0.0 to
+                # the over-binding numeric ONLY as "no over-binding evidence" — we
+                # cannot claim a candidate over-binds without a score (treating
+                # None as a real, very-negative affinity would fabricate a
+                # penalty). redocking_consistency is always a real float here.
+                ds = cand.scores["docking_score"]
                 negp = negative_penalties(
                     cand, wt_mech=wt_mech, mut_mech=mut_mech,
                     position_features=pfeats,
                     catalytic_positions=catalytic,
                     buried_fraction=cand.details.get("features", {}).get(
                         "buried_fraction", 0.5),
-                    docking_score=cand.scores["docking_score"],
+                    docking_score=(ds if ds is not None else 0.0),
                     redocking_consistency=consistency,
                 )
                 cand.scores.update(negp)
@@ -243,6 +341,49 @@ class NonMDValidationStage(Stage):
             if reasons:
                 cand.details["nonmd_rejected"] = "; ".join(reasons)
             return cand
+
+        # GPU-BATCH PRECOMPUTE (audit P1 #3): on the real multi-GPU server, dock
+        # the batched engines (gnina/diffdock) for ALL candidates up front with
+        # ONE model load per GPU, reusing s06b's diffdock-batch + gnina-queue
+        # schedulers (factored into adapters.redock_batch). _process_candidate
+        # then reads each pose from ``batched_poses`` instead of redocking per
+        # candidate. The pose per (candidate, method) is identical to the inline
+        # path; only model loads drop (~600 -> n_GPUs). Wrapped so a batch failure
+        # falls back to the per-candidate inline path rather than crashing the
+        # stage (the inline redock_with still runs for any method not pre-docked).
+        if use_batch:
+            try:
+                from evoliez.adapters import redock_batch as _rb
+
+                tasks = []
+                for cand in candidates:
+                    struct, ref, cxc = _redock_structure_for(cand)
+                    tasks.append((cand.candidate_id, struct, ref,
+                                  wt.ligand.smiles, cxc))
+                root = ctx.paths.validation / "redock"
+                if "diffdock" in batch_methods:
+                    dd = _rb.run_diffdock_batches(
+                        tasks, gpu_list, dcfg, backend=backend, root=root,
+                        log=self.log)
+                    for cid, plist in dd.items():
+                        if plist:  # best rank first == redock_with's [0]
+                            batched_poses.setdefault(cid, {})["diffdock"] = plist[0]
+                if "gnina" in batch_methods:
+                    gq = _rb.run_gnina_queue(
+                        tasks, gpu_list, dcfg, backend=backend, root=root,
+                        log=self.log)
+                    for cid, pose in gq.items():
+                        batched_poses.setdefault(cid, {})["gnina"] = pose
+                self.log.info(
+                    "s09 GPU-batched redock: %d candidate(s) x %s over %d GPU(s) "
+                    "-> %d model load(s)/engine (was per-candidate)",
+                    len(candidates), sorted(batch_methods), len(gpu_list),
+                    len(gpu_list))
+            except Exception as exc:
+                self.log.warning(
+                    "s09 GPU-batched redock failed (%s); falling back to the "
+                    "per-candidate inline redock path", exc)
+                batched_poses.clear()
 
         # Fan the per-candidate work out across a BOUNDED thread pool. Each
         # candidate is independent (own scores/details + own scoped workdir) and
@@ -265,15 +406,33 @@ class NonMDValidationStage(Stage):
             c for c in candidates if "nonmd_rejected" not in c.details
         ]
 
-        # advance the best survivors to MD
-        kept.sort(
-            key=lambda c: (
+        # advance the best survivors to MD. Base score = ML rank + redocking
+        # consistency - ddG penalty (the proxy-only formula). When s08b spent a
+        # REAL mutant-Boltz re-prediction on a candidate (top-N; boltz_delta_source
+        # == "real"), FOLD that real Δ into the selection so the MD budget is spent
+        # on the candidates the real Boltz says actually improved/worsened, not on
+        # what the cheap proxy guessed (audit P2 #4). d_ligand_iptm > 0 = the
+        # mutant binds the design-target ligand better than WT (same sign as
+        # ranking.score's mutant_boltz_gain); d_key_distance > 0 = catalytic
+        # contacts drifted (penalised). Candidates WITHOUT a real Δ (proxy / mock /
+        # dry-run / none) fall back to exactly the proxy-only base — never mixing a
+        # proxy Δ into this selection. Weights match ranking.score's scale
+        # (mutant_boltz_gain) so MD selection and final scoring agree in spirit.
+        _W_REAL_DLIGAND = 2.0     # reward real ΔBoltz binding gain
+        _W_REAL_DKEYDIST = 0.5    # penalise real catalytic-geometry drift
+
+        def _md_key(c: Candidate) -> float:
+            base = (
                 c.scores.get("ml_score", 0.0)
                 + c.scores.get("redocking_consistency", 0.0)
                 - 0.2 * max(0.0, c.scores.get("ddg_fold", 0.0))
-            ),
-            reverse=True,
-        )
+            )
+            if c.details.get("boltz_delta_source") == "real":
+                base += _W_REAL_DLIGAND * c.scores.get("d_ligand_iptm", 0.0)
+                base -= _W_REAL_DKEYDIST * abs(c.scores.get("d_key_distance", 0.0))
+            return base
+
+        kept.sort(key=_md_key, reverse=True)
         md_top = kept[: ctx.config.validation.md.top_candidates]
         ctx.put("candidates", candidates)
         ctx.put("validated_candidates", kept)
