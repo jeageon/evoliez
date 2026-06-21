@@ -105,6 +105,12 @@ class DockingPose(Base):
     # DiffDock rank file with an absent/sentinel confidence). NULL = genuinely
     # unscored, never a fabricated sentinel.
     score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # What ``score`` IS (paper-grade provenance, so a GNINA Vina energy can never
+    # be misread as a CNNscore): "minimizedAffinity" (gnina, kcal/mol, lower=
+    # better) | "diffdock_confidence" (higher=better) | "" when unknown/legacy.
+    # Nullable + defaulted so pre-existing run DBs (created before this column)
+    # keep working after the lightweight ADD COLUMN migration in Store.
+    score_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     pose_cluster: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     ligand_rmsd_to_reference: Mapped[Optional[float]] = mapped_column(

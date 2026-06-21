@@ -85,7 +85,11 @@ class DockingStage(Stage):
             for cand, _lid, p in triples:
                 s.add(DockingPose(
                     project_id=ctx.project_id, candidate_id=cand, method=p.method,
-                    score=p.score, confidence=1.0, pose_cluster=p.cluster,
+                    # record WHAT score is (gnina minimizedAffinity vs diffdock
+                    # confidence) so the stored gnina value is self-describing and
+                    # can never be read as a CNNscore downstream.
+                    score=p.score, score_type=p.score_type or None,
+                    confidence=1.0, pose_cluster=p.cluster,
                     ligand_rmsd_to_reference=p.rmsd_to_reference or 0.0))
         self.log.info(
             "WT reference docking (%d ligand x %d method): %s",

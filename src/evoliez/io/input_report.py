@@ -65,9 +65,14 @@ def compute_input_stats(*, target_id: str, sequence: str,
                         residues: Dict[str, List[str]],
                         organism: Optional[str], ec_number: Optional[str],
                         target_ph: Optional[float],
-                        ligand_atom_ids: Optional[List[str]] = None) -> dict:
+                        ligand_atom_ids: Optional[List[str]] = None,
+                        accession: Optional[str] = None,
+                        pdb_id: Optional[str] = None,
+                        numbering_scheme: Optional[str] = None) -> dict:
     """All the s01 report needs. `ligand` / `extra_ligands` are (id, type,
-    smiles); `residues` maps catalytic|fixed|binding -> raw tokens."""
+    smiles); `residues` maps catalytic|fixed|binding -> raw tokens. `accession` /
+    `pdb_id` / `numbering_scheme` are the optional provenance accessions surfaced
+    as structured metadata (None => the report keeps its "not provided" warning)."""
     seq = sequence.upper()
     comp = {a: seq.count(a) for a in _AA_ORDER}
     # integrity hash over the IDENTITY-defining inputs (same blob the run
@@ -91,10 +96,15 @@ def compute_input_stats(*, target_id: str, sequence: str,
         "organism": organism,
         "ec_number": ec_number,
         "target_ph": target_ph,
+        "accession": accession,
+        "pdb_id": pdb_id,
+        "numbering_scheme": numbering_scheme,
         "residues": residues,
         "ligand": primary,
         "extra_ligands": extras,
         "x_count": comp.get("X", 0),
+        # primary-ligand unassigned stereocentres surfaced for the QC warning line
+        "ligand_stereo_unassigned": int(primary.get("stereo_unassigned") or 0),
     }
 
 
@@ -127,6 +137,24 @@ def build_input_report_html(*, stats: dict, generated: str,
         card("input hash", s["input_hash"], "sha1(seq|ligand)"),
     ])
 
+    # UniProt / PDB accession surfaced as STRUCTURED metadata from config (the two
+    # ids combined into one provenance cell). Absent => keep the explicit
+    # "not provided" gap the methods section needs.
+    acc = s.get("accession")
+    pdb = s.get("pdb_id")
+    if acc and pdb:
+        acc_cell = f"UniProt {acc} · PDB {pdb}"
+    elif acc:
+        acc_cell = f"UniProt {acc}"
+    elif pdb:
+        acc_cell = f"PDB {pdb}"
+    else:
+        acc_cell = "⚠ not provided — add for provenance"
+    # Residue-numbering convention from config; absent => the as-provided warning.
+    nsch = s.get("numbering_scheme")
+    num_cell = (f"{nsch}" if nsch
+                else "⚠ as-provided — verify vs reference DB")
+
     # provenance table (with explicit "not provided" gaps the methods need)
     prov = [
         ("target id", s["target_id"]),
@@ -135,8 +163,8 @@ def build_input_report_html(*, stats: dict, generated: str,
                                           if s["x_count"] else "")),
         ("organism", s["organism"] or "⚠ not provided"),
         ("EC number", s["ec_number"] or "⚠ not provided"),
-        ("UniProt / PDB accession", "⚠ not provided — add for provenance"),
-        ("isoform / residue numbering", "⚠ as-provided — verify vs reference DB"),
+        ("UniProt / PDB accession", acc_cell),
+        ("residue-numbering convention", num_cell),
         ("target pH", "—" if s["target_ph"] is None else str(s["target_ph"])),
         ("integrity hash", s["input_hash"] + "  (sha1 of sequence|ligand)"),
     ]
@@ -188,7 +216,28 @@ def build_input_report_html(*, stats: dict, generated: str,
                              "counts": [s["composition"][a] for a in _AA_ORDER]},
                             separators=(",", ":"))
 
-    has_unassigned = (lg.get("stereo_unassigned") or 0) > 0
+    # Unassigned-stereocentre QC warning line, GENERIC across every ligand
+    # (design target + co-modelled cofactors/substrates). Surfaces each ligand's
+    # COUNT of unassigned stereocentres so e.g. a cofactor SMILES with floating
+    # stereochemistry is caught regardless of which role it has. Empty when all
+    # stereocentres are assigned.
+    stereo_offenders = []
+    for _lg in [lg] + list(s["extra_ligands"]):
+        n_un = int(_lg.get("stereo_unassigned") or 0)
+        if n_un > 0:
+            stereo_offenders.append((str(_lg.get("id", "ligand")), n_un))
+    has_unassigned = bool(stereo_offenders)
+    if has_unassigned:
+        parts = ", ".join(f"{g(lid)} ({n} unassigned)"
+                          for lid, n in stereo_offenders)
+        stereo_note = (
+            f"⚠ unassigned stereocentres: {parts} — the SMILES leaves "
+            f"{'these centres' if sum(n for _, n in stereo_offenders) > 1 else 'this centre'} "
+            f"without defined R/S configuration; fix the stereochemistry before a "
+            f"real run (an undefined centre lets the 3D embedder pick an arbitrary "
+            f"configuration).")
+    else:
+        stereo_note = "All stereocentres assigned."
     return (_INPUT_TEMPLATE
             .replace("%%TITLE%%", g(f"{s['target_id']} — input & ligand QC (s01)"))
             .replace("%%TARGET%%", g(s["target_id"]))
@@ -198,10 +247,7 @@ def build_input_report_html(*, stats: dict, generated: str,
             .replace("%%RESROWS%%", res_rows)
             .replace("%%PRIMARY%%", primary_tbl)
             .replace("%%EXTRA%%", extra_html)
-            .replace("%%STEREONOTE%%",
-                     ("⚠ unassigned stereocentres — fix the SMILES stereochemistry "
-                      "before a real run." if has_unassigned else
-                      "All stereocentres assigned."))
+            .replace("%%STEREONOTE%%", stereo_note)
             .replace("%%COMPBLOB%%", comp_blob))
 
 

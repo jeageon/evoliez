@@ -447,12 +447,36 @@ def compute_interaction_stats(meta: dict, artifacts: dict, model: dict,
 
     # ---- cheap physical QC: clash-range ensemble contacts ----------------- #
     # contacts whose mean distance is below a physically plausible bond/contact
-    # floor (< 1.5 Å) are flagged — they need PoseBusters/PLIP QC before they can
-    # be trusted (steric clashes the diffusion ensemble did not resolve).
+    # floor (< 1.5 Å) are flagged as SPORADIC Boltz-diffusion artifacts: a handful
+    # of diffusion samples placed an atom impossibly close and the ensemble did not
+    # resolve it. They are EXCLUDED from any binding-mode statement (and they never
+    # reach the >=0.5 consensus set used for the 3D highlight). We surface their
+    # (low) contact frequency to PROVE they are sporadic, and the median contact
+    # distance to show the bulk pocket is clash-free.
     _CLASH_FLOOR = 1.5
+
+    def _median(xs):
+        ys = sorted(xs)
+        n = len(ys)
+        if n == 0:
+            return None
+        mid = n // 2
+        return ys[mid] if n % 2 else (ys[mid - 1] + ys[mid]) / 2.0
+
     _dists = [float(_g(c, "mean_distance", cutoff)) for c in econ]
-    n_clash_contacts = sum(1 for d in _dists if d < _CLASH_FLOOR)
+    _clash = [c for c in econ
+              if float(_g(c, "mean_distance", cutoff)) < _CLASH_FLOOR]
+    n_clash_contacts = len(_clash)
     min_contact_distance = round(min(_dists), 3) if _dists else None
+    _med = _median(_dists)
+    median_contact_distance = round(_med, 3) if _med is not None else None
+    _clash_freqs = [float(_g(c, "contact_frequency")) for c in _clash]
+    clash_freq_max = round(max(_clash_freqs), 4) if _clash_freqs else None
+    clash_freq_min = round(min(_clash_freqs), 4) if _clash_freqs else None
+    # are the clashes all LOW-frequency (sporadic), i.e. none is a reproduced
+    # high-frequency (>=0.5) contact? If so the binding mode is unaffected.
+    n_clash_highfreq = sum(1 for f in _clash_freqs if f >= 0.5)
+    clash_all_sporadic = n_clash_contacts > 0 and n_clash_highfreq == 0
 
     # residues the ligand engages most reproducibly across the WT ensemble
     # (max contact frequency >= 0.5); used for the 3D highlight in section 7
@@ -501,6 +525,11 @@ def compute_interaction_stats(meta: dict, artifacts: dict, model: dict,
         "n_strong": n_strong, "n_weak": n_weak,
         "n_clash_contacts": n_clash_contacts,
         "min_contact_distance": min_contact_distance,
+        "median_contact_distance": median_contact_distance,
+        "clash_freq_max": clash_freq_max,
+        "clash_freq_min": clash_freq_min,
+        "n_clash_highfreq": n_clash_highfreq,
+        "clash_all_sporadic": clash_all_sporadic,
         "clash_floor": _CLASH_FLOOR,
         "conserved_resis": conserved_resis,
         "composition": [{"label": l, "count": n, "color": c, "sub": s}
@@ -843,19 +872,52 @@ def build_interaction_report_html(*, target_id: str, stats: dict,
                  if has_pdb else "")
 
     # ---- clash-range physical-QC line (only when short contacts exist) ----- #
+    # When the clashes are ALL low-frequency (none reaches the >=0.5 consensus
+    # set), they are sporadic Boltz-diffusion artifacts: we say so, give their
+    # (low) frequency, state they are EXCLUDED from the binding-mode statement, and
+    # note the bulk pocket (median contact distance) is clash-free.
     n_clash = int(s.get("n_clash_contacts", 0) or 0)
     floor = s.get("clash_floor", 1.5)
     mind = s.get("min_contact_distance")
+    medd = s.get("median_contact_distance")
+    fmax = s.get("clash_freq_max")
+    fmin = s.get("clash_freq_min")
+    sporadic = bool(s.get("clash_all_sporadic"))
+    n_hf = int(s.get("n_clash_highfreq", 0) or 0)
     clash_qc = ""
     if n_clash > 0:
-        mintxt = (f" (closest {mind:.2f} Å)"
+        plural = "s" if n_clash != 1 else ""
+        verb = "sit" if n_clash != 1 else "sits"
+        mintxt = (f"closest {mind:.2f} Å"
                   if isinstance(mind, (int, float)) else "")
+        # frequency phrasing: a single value vs a low band, all sub-0.5.
+        if isinstance(fmax, (int, float)):
+            if isinstance(fmin, (int, float)) and fmin != fmax:
+                freqtxt = (f"contact frequency {fmin:.3f}–{fmax:.3f}")
+            else:
+                freqtxt = f"contact frequency {fmax:.3f}"
+        else:
+            freqtxt = ""
+        medtxt = (f"; the bulk pocket is clash-free (median contact distance "
+                  f"{medd:.2f} Å)" if isinstance(medd, (int, float)) else "")
+        if sporadic:
+            head = (f'<b>Physical QC — sporadic diffusion clashes:</b> {n_clash} '
+                    f'ensemble contact{plural} {verb} at clash range '
+                    f'&lt; {floor:g} Å ({mintxt}), all at LOW '
+                    f'{freqtxt} — i.e. they appear in only a few Boltz diffusion '
+                    f'samples (<b>0 high-frequency</b>, none reaching the ≥ 0.5 '
+                    f'consensus set). They are <b>Boltz-diffusion artifacts, '
+                    f'EXCLUDED from any binding-mode statement</b> and from the 3D '
+                    f'highlight{medtxt}. Recommend PoseBusters / PLIP physical QC '
+                    f'before publication.')
+        else:
+            head = (f'<b>Physical QC:</b> {n_clash} ensemble contact{plural} {verb} '
+                    f'at clash range &lt; {floor:g} Å ({mintxt}), of which '
+                    f'<b>{n_hf} are high-frequency</b> (≥ 0.5) — these are NOT '
+                    f'sporadic and must be resolved by PoseBusters / PLIP QC '
+                    f'before any binding-mode claim{medtxt}.')
         clash_qc = (
-            f'<div class="warn" style="border-left-color:#C0392B">'
-            f'<b>Physical QC:</b> {n_clash} ensemble contact'
-            f'{"s" if n_clash != 1 else ""} at clash-range &lt; {floor:g} Å'
-            f'{mintxt} — physically implausible, flagged for PoseBusters / PLIP '
-            f'QC before any binding-mode claim.</div>')
+            f'<div class="warn" style="border-left-color:#C0392B">{head}</div>')
 
     # ---- multi-engine docking augmentation section (skipped if no audit) ---- #
     # Inserted as section 6, between Model performance (5) and 3D structure (now

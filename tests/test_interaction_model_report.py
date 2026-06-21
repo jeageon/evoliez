@@ -327,8 +327,8 @@ def test_limitations_qc_box_present():
 
 
 def test_clash_qc_renders_when_short_contacts_exist():
-    # add a physically implausible (< 1.5 A) ensemble contact and assert the
-    # clash-range count is computed and surfaced as a QC warning.
+    # a HIGH-frequency (>= 0.5) clash-range contact is NOT sporadic: it must be
+    # flagged as needing resolution, not dismissed as a diffusion artifact.
     arts = _artifacts()
     arts["ensemble_contacts"] = arts["ensemble_contacts"] + [
         {"residue_index": 41, "ligand_atom_id": "LX3", "contact_frequency": 0.88,
@@ -337,21 +337,73 @@ def test_clash_qc_renders_when_short_contacts_exist():
     s = compute_interaction_stats(_META, arts, _MODEL, _PDB)
     assert s["n_clash_contacts"] == 1
     assert s["min_contact_distance"] == 1.1
+    assert s["n_clash_highfreq"] == 1 and s["clash_all_sporadic"] is False
     html = build_interaction_report_html(
         target_id="xyz1", stats=s,
         conditions=[("model", "xgboost")], generated="2026-06-20 12:00")
     assert "%%" not in html
-    assert "clash-range" in html
+    # the dynamic, run-specific Physical-QC warning (distinct from the static
+    # limitations caveat that always mentions "clash range")
+    assert "<b>Physical QC:" in html
     assert "1 ensemble contact" in html          # singular, count rendered
+    assert "high-frequency" in html and "NOT sporadic" in html
     assert "PoseBusters" in html
 
-    # control: with no short contacts the clash line is absent
+    # control: with no short contacts the dynamic clash warning is absent (the
+    # static limitations caveat about clash range may still be present)
     s0 = compute_interaction_stats(_META, _artifacts(), _MODEL, _PDB)
     assert s0["n_clash_contacts"] == 0
     html0 = build_interaction_report_html(
         target_id="xyz1", stats=s0,
         conditions=[("model", "xgboost")], generated="2026-06-20 12:00")
-    assert "clash-range" not in html0
+    assert "<b>Physical QC:" not in html0
+    assert "sporadic diffusion clashes" not in html0
+
+
+def test_sporadic_clash_contacts_flagged_and_excluded():
+    # FIX 3 (the production scenario): several LOW-frequency clash-range contacts
+    # (none reaching the >= 0.5 consensus set) must be flagged as sporadic
+    # Boltz-diffusion artifacts, their (low) frequency shown, EXCLUDED from any
+    # binding-mode statement, and the high-frequency pocket noted as clash-free.
+    arts = _artifacts()
+    # mirror fdh_5track: a clutch of <1.5 Å contacts at frequency 0.025–0.075,
+    # closest 0.67 Å, while the bulk pocket median sits ~4.8 Å and the >=0.5
+    # contacts (from _artifacts) are all at >= 2.7 Å (clash-free).
+    arts["ensemble_contacts"] = arts["ensemble_contacts"] + [
+        {"residue_index": 355, "ligand_atom_id": "O42", "contact_frequency": 0.025,
+         "mean_distance": 0.67, "confidence_weighted_score": 0.02},
+        {"residue_index": 356, "ligand_atom_id": "O43", "contact_frequency": 0.05,
+         "mean_distance": 1.2, "confidence_weighted_score": 0.03},
+        {"residue_index": 357, "ligand_atom_id": "O44", "contact_frequency": 0.075,
+         "mean_distance": 1.4, "confidence_weighted_score": 0.04},
+    ]
+    s = compute_interaction_stats(_META, arts, _MODEL, _PDB)
+    assert s["n_clash_contacts"] == 3
+    assert s["n_clash_highfreq"] == 0            # ZERO high-frequency clashes
+    assert s["clash_all_sporadic"] is True
+    assert s["min_contact_distance"] == 0.67
+    assert s["clash_freq_max"] == 0.075 and s["clash_freq_min"] == 0.025
+    # the sporadic clashes do NOT enter the high-frequency contact / 3D-highlight
+    # set (binding-mode statement is unaffected)
+    assert 355 not in s["conserved_resis"]
+    assert all(d["residue_index"] not in (355, 356, 357)
+               for d in s["consensus_contacts"])
+
+    html = build_interaction_report_html(
+        target_id="xyz1", stats=s,
+        conditions=[("model", "xgboost")], generated="2026-06-20 12:00")
+    assert "%%" not in html
+    # the sporadic-artifact framing, the low frequency, the explicit exclusion,
+    # and the clash-free median are all surfaced
+    assert "sporadic diffusion clashes" in html
+    assert "3 ensemble contacts" in html
+    assert "0.025" in html and "0.075" in html            # the low frequency band
+    assert "0 high-frequency" in html
+    assert "EXCLUDED from any binding-mode statement" in html
+    assert "bulk pocket is clash-free" in html
+    assert "median contact distance" in html
+    # the clashing residues are NOT highlighted in 3D
+    assert '"conserved_resis":[40,55]' in html
 
 
 def test_generic_no_hardcoded_identity():

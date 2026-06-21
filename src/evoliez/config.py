@@ -65,6 +65,16 @@ class InputConfig(_Base):
     target_ph: float = 7.4
     organism: Optional[str] = None
     ec_number: Optional[str] = None
+    # Provenance accessions for the methods section (s01 report surfaces these as
+    # structured metadata). `accession` = the UniProt accession the sequence /
+    # residue numbering is taken from; `pdb_id` = the reference PDB (when a
+    # structure underlies the numbering); `numbering_scheme` = how residue indices
+    # are numbered (e.g. "UniProt canonical", "PDB 3JTM author numbering",
+    # "as-provided"). All optional — absent => the report keeps its "not provided /
+    # verify" warning, so existing configs render unchanged.
+    accession: Optional[str] = None
+    pdb_id: Optional[str] = None
+    numbering_scheme: Optional[str] = None
     experimental_dataset: Optional[str] = None
 
     @model_validator(mode="after")
@@ -238,6 +248,22 @@ class MutationGenConfig(_Base):
     # Safety re-check on LigandMPNN designs (designable-only; never catalytic /
     # fixed; cap mutations per design so it stays a focused active-site edit).
     ligandmpnn_max_mut_per_design: int = 8
+    # --- safety filters (s07) ----------------------------------------------- #
+    # FLAG vs DROP risk-flagged candidates (introduce Gly/Pro/Cys; radical
+    # physicochemical substitution in a catalytic residue's 2-shell). Default
+    # False = flag-only (keep everything in ctx `candidates`, record the flag in
+    # the generated-provenance table; downstream prunes). True drops the flagged
+    # candidates from the shipped set (still recorded in provenance for audit).
+    risk_filter: bool = False
+    # --- budget tiers (s08-s10 cost; reviewer-facing) ----------------------- #
+    # Tier the generated pool into single / multipoint / risky budget VIEWS, each
+    # top-N by the existing per-candidate score, written to separate provenance
+    # files (generated_candidates_{single,multipoint,risky}.csv). These do NOT
+    # change ctx `candidates` (the full set) — downstream still prunes — they are
+    # the cost-aware shortlist a reviewer reads.
+    tier_single_top: int = 100
+    tier_multipoint_top: int = 30
+    tier_risky_top: int = 20
 
 
 class RerankConfig(_Base):

@@ -193,6 +193,8 @@ class InputPreprocessStage(Stage):
                 organism=cfg.organism, ec_number=cfg.ec_number,
                 target_ph=cfg.target_ph,
                 ligand_atom_ids=[a.id for a in ligand.atoms],
+                accession=cfg.accession, pdb_id=cfg.pdb_id,
+                numbering_scheme=cfg.numbering_scheme,
             )
             write_input_report(
                 ctx.paths.reports / "input_report.html", stats=stats,

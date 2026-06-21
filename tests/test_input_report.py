@@ -59,3 +59,57 @@ def test_unassigned_stereo_flagged():
     assert s["ligand"]["stereo_unassigned"] >= 1
     html = build_input_report_html(stats=s, generated="x")
     assert "unassigned stereocentres" in html
+
+
+# --- FIX 4: structured accession metadata + stereocentre COUNT warning ------- #
+def test_accession_metadata_structured_from_config():
+    # UniProt + PDB accession + numbering scheme are surfaced as STRUCTURED
+    # provenance (not the generic "not provided" warning) when config supplies them.
+    s = _stats(accession="Q9S7E4", pdb_id="3JTM",
+               numbering_scheme="PDB 3JTM author numbering")
+    assert s["accession"] == "Q9S7E4" and s["pdb_id"] == "3JTM"
+    assert s["numbering_scheme"] == "PDB 3JTM author numbering"
+    html = build_input_report_html(stats=s, generated="x")
+    assert "%%" not in html
+    assert "UniProt Q9S7E4 · PDB 3JTM" in html       # combined accession cell
+    assert "PDB 3JTM author numbering" in html        # numbering convention
+    assert "residue-numbering convention" in html
+    # the as-provided / not-provided warnings for these two rows are GONE
+    assert "as-provided — verify vs reference DB" not in html
+    assert "not provided — add for provenance" not in html
+
+
+def test_accession_partial_and_absent():
+    # only one of the two ids -> still structured; neither -> keep the warning
+    only_uni = build_input_report_html(stats=_stats(accession="P12345"),
+                                       generated="x")
+    assert "UniProt P12345" in only_uni and "PDB" not in only_uni.split(
+        "UniProt P12345")[1][:8]
+    only_pdb = build_input_report_html(stats=_stats(pdb_id="1ABC"), generated="x")
+    assert "PDB 1ABC" in only_pdb
+    none_html = build_input_report_html(stats=_stats(), generated="x")
+    assert "not provided — add for provenance" in none_html
+    assert "as-provided — verify vs reference DB" in none_html
+
+
+def test_stereo_count_warning_covers_extra_ligands():
+    # an EXTRA ligand (cofactor) with unassigned stereocentres must be caught too,
+    # with its COUNT shown — mirrors NADP-as-cofactor with floating stereo.
+    s = _stats(ligand=("acet", "smiles", "CC(=O)[O-]"),       # no stereocentres
+               extra_ligands=[("cof", "smiles", "CC(O)C(O)C(=O)O")])  # 2 chiral C
+    assert s["ligand_stereo_unassigned"] == 0
+    assert s["extra_ligands"][0]["stereo_unassigned"] >= 1
+    html = build_input_report_html(stats=s, generated="x")
+    assert "%%" not in html
+    assert "unassigned stereocentres" in html
+    # the offending ligand is NAMED with its count, e.g. "cof (2 unassigned)"
+    n = s["extra_ligands"][0]["stereo_unassigned"]
+    assert f"cof ({n} unassigned)" in html
+
+
+def test_stereo_note_clean_when_all_assigned():
+    s = _stats(ligand=("acet", "smiles", "CC(=O)[O-]"), extra_ligands=[])
+    assert s["ligand_stereo_unassigned"] == 0
+    html = build_input_report_html(stats=s, generated="x")
+    assert "All stereocentres assigned." in html
+    assert "unassigned stereocentres" not in html
