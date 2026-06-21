@@ -168,12 +168,14 @@ def tleap_script(net_charge: int = 0, solvent: str = "implicit") -> str:
 
 
 def cpptraj_script(catalytic_positions: Sequence[int],
-                   solvent: str = "implicit") -> str:
+                   solvent: str = "implicit",
+                   trajs: Sequence[str] = ("prod.nc",)) -> str:
     """rms (ligand + backbone), per-catalytic-residue min-distance to the
     ligand (nativecontacts mindist -> matches the OpenMM heavy-atom metric),
-    and ligand h-bonds. Explicit trajectories are autoimaged (PBC) and the
-    solvent/ions stripped so the masks below act on the solute only."""
-    lines = ["parm complex.prmtop", "trajin prod.nc"]
+    and ligand h-bonds, pooled over ALL replica trajectories. Explicit
+    trajectories are autoimaged (PBC) and the solvent/ions stripped so the
+    masks below act on the solute only."""
+    lines = ["parm complex.prmtop"] + [f"trajin {t}" for t in trajs]
     if solvent == "explicit":
         lines += ["autoimage", "strip :WAT,Na+,Cl-,K+"]
     lines += [
@@ -246,6 +248,24 @@ def _run_stage(tag: str, args: List[str], workdir: Path, pmemd: str,
                            f"{r.stderr[-400:]}")
 
 
+def _run_replicas(workdir: Path, pmemd: str, prmtop: str, start_rst: str,
+                  prod_in: str, n_rep: int, timeout: int,
+                  ref: "str | None" = None) -> List[str]:
+    """Run n_rep production replicas from the SAME equilibrated restart. Each
+    re-uses the equilibrated coords/velocities/box but the mdin's ig=-1 reseeds
+    the Langevin thermostat, so the stochastic trajectories diverge -> N
+    statistically-independent replicas. Returns the trajectory filenames."""
+    trajs: List[str] = []
+    for r in range(max(1, n_rep)):
+        args = ["-O", "-i", prod_in, "-o", f"prod_{r}.out", "-p", prmtop,
+                "-c", start_rst, "-r", f"prod_{r}.rst", "-x", f"prod_{r}.nc"]
+        if ref:
+            args += ["-ref", ref]
+        _run_stage(f"prod{r}", args, workdir, pmemd, timeout)
+        trajs.append(f"prod_{r}.nc")
+    return trajs
+
+
 def _series(workdir: Path, name: str, col: int = 1) -> List[float]:
     """Value column ``col`` (1-based after the frame index) of a cpptraj .dat.
     nativecontacts ``out`` writes Frame|native|nonnative|mindist, so catalytic
@@ -267,11 +287,12 @@ def _series(workdir: Path, name: str, col: int = 1) -> List[float]:
     return out
 
 
-def _analyze(workdir: Path, cfg: MDConfig,
-             catalytic_positions: Sequence[int]) -> Dict[str, object]:
+def _analyze(workdir: Path, cfg: MDConfig, catalytic_positions: Sequence[int],
+             trajs: Sequence[str] = ("prod.nc",)) -> Dict[str, object]:
     solvent = "explicit" if getattr(cfg, "solvent", "implicit") == "explicit" else "implicit"
-    (workdir / "analyze.in").write_text(cpptraj_script(catalytic_positions, solvent))
-    _sh(["cpptraj", "-i", "analyze.in"], workdir, 600)
+    (workdir / "analyze.in").write_text(
+        cpptraj_script(catalytic_positions, solvent, trajs))
+    _sh(["cpptraj", "-i", "analyze.in"], workdir, 900)
 
     lig = _series(workdir, "ligand_rmsd.dat")
     pkt = _series(workdir, "pocket_rmsd.dat")
@@ -297,6 +318,43 @@ def _analyze(workdir: Path, cfg: MDConfig,
         "hbond_occupancy": hbond_occ,
         "energy_drift": round(drift, 4),
     }
+
+
+def _mmpbsa(workdir: Path, trajs: Sequence[str],
+            total_frames: int = 200) -> Dict[str, float]:
+    """Endpoint MM-GBSA + MM-PBSA binding free energy over the replica
+    trajectories. ante-MMPBSA.py splits the solvated complex prmtop into dry
+    complex/receptor/ligand; MMPBSA.py computes dG_bind (GB igb8 + PB, 0.15 M
+    salt). OPTIONAL: returns {} on any failure - the candidate is still ranked
+    on the MD geometry metrics. PB is costly, so subsample to ~100 frames."""
+    interval = max(2, total_frames // 100)
+    strip = ":WAT,Na+,Cl-,K+"
+    r = _sh(["ante-MMPBSA.py", "-p", "complex.prmtop", "-c", "com.prmtop",
+             "-r", "rec.prmtop", "-l", "lig.prmtop", "-s", strip, "-n", ":LIG",
+             "--radii", "mbondi2"], workdir, 300)
+    if not (workdir / "com.prmtop").exists():
+        log.warning("ante-MMPBSA failed: %s", (r.stderr or "")[-300:])
+        return {}
+    (workdir / "mmpbsa.in").write_text(
+        f"MM-PB/GBSA\n&general\n startframe=1, interval={interval}, keep_files=0,\n"
+        f" strip_mask='{strip}',\n/\n&gb\n igb=8, saltcon=0.15,\n/\n"
+        "&pb\n istrng=0.15,\n/\n")
+    r = _sh(["MMPBSA.py", "-O", "-i", "mmpbsa.in", "-o", "mmpbsa.out",
+             "-sp", "complex.prmtop", "-cp", "com.prmtop", "-rp", "rec.prmtop",
+             "-lp", "lig.prmtop", "-y"] + list(trajs), workdir, 7200)
+    out = workdir / "mmpbsa.out"
+    if not out.exists():
+        log.warning("MMPBSA.py failed: %s", (r.stderr or "")[-300:])
+        return {}
+    txt = out.read_text()
+    dg: Dict[str, float] = {}
+    blocks = re.split(r"(GENERALIZED BORN|POISSON BOLTZMANN)", txt)
+    for i in range(1, len(blocks) - 1, 2):
+        name = "gbsa" if "BORN" in blocks[i] else "pbsa"
+        mt = re.search(r"DELTA TOTAL\s+(-?\d+\.\d+)", blocks[i + 1])
+        if mt:
+            dg[name] = round(float(mt.group(1)), 2)
+    return dg
 
 
 class _AmberParamUnsupported(Exception):
@@ -360,13 +418,16 @@ def run_md_amber(cx: Complex, candidate_id: str, cfg: MDConfig, workdir: Path,
     heat_steps = 10000
     equil_steps = max(1000, int(getattr(cfg, "equilibration_ps", 100.0) * 1000
                                 / max(0.1, cfg.timestep_fs)))
+    n_rep = max(1, int(getattr(cfg, "replicas", 1) or 1))
+    # frames saved per replica: few for a tiny smoke, ~250 for a real ns run.
+    prod_frames = min(250, max(10, nsteps // 50))
     P = "complex.prmtop"
     try:
         if solvent == "explicit":
             (workdir / "min.in").write_text(mdin_min_exp())
             (workdir / "heat.in").write_text(mdin_heat_exp(heat_steps))
             (workdir / "equil.in").write_text(mdin_npt_equil(equil_steps))
-            (workdir / "prod.in").write_text(mdin_prod_exp(nsteps))
+            (workdir / "prod.in").write_text(mdin_prod_exp(nsteps, prod_frames))
             _run_stage("min", ["-O", "-i", "min.in", "-o", "min.out", "-p", P,
                                "-c", "complex.inpcrd", "-r", "min.rst",
                                "-ref", "complex.inpcrd"], workdir, pmemd, 1800)
@@ -376,22 +437,20 @@ def run_md_amber(cx: Complex, candidate_id: str, cfg: MDConfig, workdir: Path,
             _run_stage("equil", ["-O", "-i", "equil.in", "-o", "equil.out", "-p", P,
                                  "-c", "heat.rst", "-r", "equil.rst",
                                  "-ref", "heat.rst"], workdir, pmemd, 21600)
-            _run_stage("prod", ["-O", "-i", "prod.in", "-o", "prod.out", "-p", P,
-                                "-c", "equil.rst", "-r", "prod.rst",
-                                "-x", "prod.nc"], workdir, pmemd, 172800)
+            trajs = _run_replicas(workdir, pmemd, P, "equil.rst", "prod.in",
+                                  n_rep, 172800)
         else:
             (workdir / "min.in").write_text(mdin_min())
             (workdir / "heat.in").write_text(mdin_heat(heat_steps))
-            (workdir / "prod.in").write_text(mdin_prod(nsteps))
+            (workdir / "prod.in").write_text(mdin_prod(nsteps, nframes=prod_frames))
             _run_stage("min", ["-O", "-i", "min.in", "-o", "min.out", "-p", P,
                                "-c", "complex.inpcrd", "-r", "min.rst",
                                "-ref", "complex.inpcrd"], workdir, pmemd, 600)
             _run_stage("heat", ["-O", "-i", "heat.in", "-o", "heat.out", "-p", P,
                                 "-c", "min.rst", "-r", "heat.rst",
                                 "-ref", "min.rst", "-x", "heat.nc"], workdir, pmemd, 1200)
-            _run_stage("prod", ["-O", "-i", "prod.in", "-o", "prod.out", "-p", P,
-                                "-c", "heat.rst", "-r", "prod.rst",
-                                "-ref", "heat.rst", "-x", "prod.nc"], workdir, pmemd, 3600)
+            trajs = _run_replicas(workdir, pmemd, P, "heat.rst", "prod.in",
+                                  n_rep, 3600, ref="heat.rst")
     except Exception as exc:
         log.warning("Amber pmemd run failed for %s: %s", candidate_id, exc)
         return MDResult(candidate_id=candidate_id, status="failed",
@@ -399,7 +458,9 @@ def run_md_amber(cx: Complex, candidate_id: str, cfg: MDConfig, workdir: Path,
                         simulation_time_ns=0.0, integration_failed=True,
                         failure_reason=f"amber pmemd: {exc}")
 
-    m = _analyze(workdir, cfg, catalytic_positions)
+    m = _analyze(workdir, cfg, catalytic_positions, trajs)
+    binding = (_mmpbsa(workdir, trajs, prod_frames * n_rep)
+               if solvent == "explicit" else {})
     lig = m["ligand_rmsd_series"]
     status = "unstable" if (lig and lig[-1] > 5.0) else "ok"
     return MDResult(
@@ -407,11 +468,12 @@ def run_md_amber(cx: Complex, candidate_id: str, cfg: MDConfig, workdir: Path,
         protocol_level=cfg.protocol_level, solvent_mode=solvent,
         simulation_time_ns=round(actual_ns, 6),
         minimized_pdb=str(workdir / "min.rst"),
-        trajectory_path=str(workdir / "prod.nc"),
+        trajectory_path=str(workdir / trajs[0]) if trajs else None,
         ligand_rmsd_series=m["ligand_rmsd_series"],
         pocket_rmsd_series=m["pocket_rmsd_series"],
         key_distances=m["key_distances"],
         contact_occupancy={},
         hbond_occupancy=m["hbond_occupancy"],
         energy_drift=m["energy_drift"],
+        binding_dg=binding,
     )

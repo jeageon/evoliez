@@ -82,6 +82,9 @@ class MDResult:
     contact_occupancy: Dict[str, float] = field(default_factory=dict)
     hbond_occupancy: float = 0.0
     energy_drift: float = 0.0
+    # endpoint binding free energy (kcal/mol) per method, e.g. {"gbsa": -28.4,
+    # "pbsa": -24.1}; populated by the Amber tier-3 MM-PB/GBSA, empty otherwise.
+    binding_dg: Dict[str, float] = field(default_factory=dict)
     integration_failed: bool = False
     failure_reason: Optional[str] = None
 

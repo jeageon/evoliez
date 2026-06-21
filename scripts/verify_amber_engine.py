@@ -86,8 +86,9 @@ print(f"[setup] protein {len(prot)} atoms | ligand {LIG_SMILES} | catalytic {cat
 import os
 cfg = MDConfig(enabled=True, engine="amber", protocol_level=1,
                solvent=os.environ.get("VERIFY_SOLVENT", "implicit"),
-               production_ns=0.002, equilibration_ps=2.0)
-print(f"[setup] solvent={cfg.solvent}")
+               production_ns=0.002, equilibration_ps=2.0,
+               replicas=int(os.environ.get("VERIFY_REPLICAS", "1")))
+print(f"[setup] solvent={cfg.solvent} replicas={cfg.replicas}")
 r = run_md_amber(cx, "verify_amber", cfg, WORK,
                  catalytic_positions=cat, dry_run=False)
 
@@ -101,6 +102,7 @@ print("pocket_rmsd       :", r.pocket_rmsd_series[:3])
 print("key_distances     :", {k: v[:3] for k, v in r.key_distances.items()})
 print("hbond_occupancy   :", r.hbond_occupancy)
 print("energy_drift      :", r.energy_drift)
+print("binding_dg        :", r.binding_dg)
 print("failure_reason    :", r.failure_reason)
 
 ok = (r.status in ("ok", "unstable")
