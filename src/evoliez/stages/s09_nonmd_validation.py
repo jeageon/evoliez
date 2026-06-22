@@ -147,15 +147,24 @@ class NonMDValidationStage(Stage):
         batched_poses: Dict[str, Dict[str, Pose]] = {}
 
         def _redock_structure_for(cand: Candidate):
-            """The receptor + design-ligand reference + context chains for ONE
-            candidate's redock. Shared by the inline path and the batch
-            precompute so both dock the IDENTICAL target. Returns
-            (redock_structure, ref_atoms, context_chains)."""
+            """The receptor + design-ligand reference pose + context chains for ONE
+            candidate's redock. Shared by the inline path and the batch precompute so
+            both dock the IDENTICAL target against the IDENTICAL reference. Returns
+            (redock_structure, reference_atoms, context_chains)."""
             redock_cx = mutant_complexes.get(cand.candidate_id)
             redock_structure = (redock_cx.structure if redock_cx is not None
                                 else _mutant_complex(wt, cand).structure)
+            # Reference pose for the redock RMSD. Redocking INTO a real s08b Boltz
+            # mutant complex but scoring RMSD against the WT-frame reference yields a
+            # 12-32 A CROSS-FRAME distance (Boltz predicts each complex in its own
+            # frame) -> redocking_consistency collapses to 0 -> every real-Boltz
+            # mutant spuriously fails s09. Use the complex's OWN ligand pose (same
+            # frame as redock_structure): "do gnina/diffdock reproduce THIS pose?" —
+            # the identical docker-vs-Boltz check the wt_proxy path applies to WT.
+            ref_for_cand = (redock_cx.ligand.atoms if redock_cx is not None
+                            else ref_atoms)
             cx_chains = _context_chains_for(redock_structure)
-            return redock_structure, ref_atoms, cx_chains
+            return redock_structure, ref_for_cand, cx_chains
 
         def _process_candidate(cand: Candidate) -> Candidate:
             """Validate ONE candidate (stability + redocking + geometry). Run by
@@ -170,6 +179,13 @@ class NonMDValidationStage(Stage):
             redock_cx = mutant_complexes.get(cand.candidate_id)
             redock_structure = (redock_cx.structure if redock_cx is not None
                                 else mc.structure)
+            # Redock RMSD reference: the mutant's OWN Boltz ligand pose (shares
+            # redock_structure's frame) when a real complex exists, else the WT
+            # reference — mirrors _redock_structure_for. Without it the redock into
+            # the independently-framed Boltz mutant is scored against the WT-frame
+            # pose (12-32 A) and consistency collapses to 0 for every real mutant.
+            ref_for_cand = (redock_cx.ligand.atoms if redock_cx is not None
+                            else ref_atoms)
             cand.details["redock_structure_source"] = (
                 "mutant_boltz" if redock_cx is not None else "wt_proxy")
             # Co-modelled context-ligand chains kept as FIXED receptor context
@@ -237,7 +253,7 @@ class NonMDValidationStage(Stage):
             poses = {
                 method: (pre[method] if method in pre else redock_with(
                     method, ctx, cand.candidate_id, redock_structure,
-                    ref_atoms, dcfg, ctx.paths.validation / "redock", inst,
+                    ref_for_cand, dcfg, ctx.paths.validation / "redock", inst,
                     wt.ligand.smiles, stage_name=self.name,
                     context_chains=cx_chains,
                 ))
