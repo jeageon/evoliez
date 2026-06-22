@@ -152,13 +152,14 @@ def _parse_rdkit(spec: LigandInput) -> Ligand:
             )
         )
     fc = Chem.GetFormalCharge(mol)
-    if spec.net_charge is not None and spec.net_charge != fc:
+    nc = getattr(spec, "net_charge", None)
+    if nc is not None and nc != fc:
         # Explicit net_charge is the source of truth for MD parameterisation, but a
         # disagreement with the SMILES-derived charge means the config and the
         # structure point at different microspecies -> surface it loudly.
         log.warning("ligand %s: config net_charge=%d overrides SMILES formal charge "
-                    "%d (different microspecies?)", spec.id, spec.net_charge, fc)
-        fc = spec.net_charge
+                    "%d (different microspecies?)", spec.id, nc, fc)
+        fc = nc
     return Ligand(
         id=spec.id,
         smiles=Chem.MolToSmiles(Chem.RemoveHs(mol)),
@@ -166,8 +167,8 @@ def _parse_rdkit(spec: LigandInput) -> Ligand:
         formal_charge=fc,
         n_rotatable_bonds=AllChem.CalcNumRotatableBonds(mol),
         source="rdkit",
-        charges_mol2=spec.charges_mol2,
-        allow_am1bcc=spec.allow_am1bcc,
+        charges_mol2=getattr(spec, "charges_mol2", None),
+        allow_am1bcc=getattr(spec, "allow_am1bcc", True),
     )
 
 
@@ -217,7 +218,8 @@ def _parse_synthetic(spec: LigandInput) -> Ligand:
                 pharmacophore=_pharma(element, aromatic),
             )
         )
-    fc = spec.net_charge if spec.net_charge is not None else sum(a.formal_charge for a in atoms)
+    nc = getattr(spec, "net_charge", None)
+    fc = nc if nc is not None else sum(a.formal_charge for a in atoms)
     return Ligand(
         id=spec.id,
         smiles=s,
@@ -225,8 +227,8 @@ def _parse_synthetic(spec: LigandInput) -> Ligand:
         formal_charge=fc,
         n_rotatable_bonds=max(0, heavy // 5),
         source="synthetic",
-        charges_mol2=spec.charges_mol2,
-        allow_am1bcc=spec.allow_am1bcc,
+        charges_mol2=getattr(spec, "charges_mol2", None),
+        allow_am1bcc=getattr(spec, "allow_am1bcc", True),
     )
 
 
