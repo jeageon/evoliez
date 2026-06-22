@@ -231,6 +231,10 @@ class MDConfig(_Base):
     production_ns: float = 1.0
     replicas: int = 1
     top_candidates: int = 30
+    # Paper-grade: send to MD ONLY candidates with a REAL s08b Boltz mutant complex
+    # (boltz_delta_source=="real"), never a WT-coords identity-swap proxy. Falls back
+    # to the full kept set only when NOTHING was folded (configs without s08b).
+    require_real_structure: bool = True
 
 
 class ValidationConfig(_Base):

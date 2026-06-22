@@ -529,7 +529,22 @@ class NonMDValidationStage(Stage):
             return base
 
         kept.sort(key=_md_key, reverse=True)
-        md_top = kept[: ctx.config.validation.md.top_candidates]
+        _n_md = ctx.config.validation.md.top_candidates
+        if getattr(ctx.config.validation.md, "require_real_structure", True):
+            # Paper-grade MD set: only candidates with a REAL s08b Boltz mutant
+            # complex (boltz_delta_source=="real"), so s10 never validates a WT-coords
+            # identity-swap proxy. The proxy-top picks that were never folded are
+            # excluded even when _md_key ranks them high — they carry no real Boltz Δ
+            # penalty, an unfair advantage over the folded set. Fall back to the full
+            # kept set ONLY when nothing was folded (configs without s08b).
+            _real = [c for c in kept if c.details.get("boltz_delta_source") == "real"]
+            md_top = (_real if _real else kept)[:_n_md]
+            if _real and len(_real) < _n_md:
+                self.log.info(
+                    "MD shortlist: %d real-Boltz-structure candidate(s) (< budget "
+                    "%d) — NOT padding with WT-proxy structures", len(_real), _n_md)
+        else:
+            md_top = kept[:_n_md]
         ctx.put("candidates", candidates)
         ctx.put("validated_candidates", kept)
         ctx.put("md_candidates", md_top)
