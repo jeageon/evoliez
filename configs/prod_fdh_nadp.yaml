@@ -35,6 +35,13 @@ input:
     # NADP+ (the cofactor being engineered away from). Replace if your ligand
     # differs; RDKit must parse it (doctor/s01 report source==rdkit, not synthetic).
     value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2OP([O-])([O-])=O)[C@@H](O)[C@H]1O"
+    # Fixed-charge cofactor template: the -3 NADP (net charge: +1 pyridinium + four -1
+    # phosphate O = -3) does NOT converge through on-the-fly AM1-BCC/sqm, so MD uses the
+    # pre-derived charges in params/nadp_3minus/ (see its README). allow_am1bcc:false
+    # makes a missing template fail loudly instead of hanging in a non-converging sqm.
+    net_charge: -3
+    charges_mol2: params/nadp_3minus/NAP.fixed.mol2
+    allow_am1bcc: false
   # Co-substrate (hydride DONOR) co-modelled in the active site so the catalytic-
   # power NAC screen (validation.md.reactive_geometry) can measure the formate ->
   # NADP-C4 hydride geometry. Drop this (and disable reactive_geometry) if you
