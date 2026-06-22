@@ -187,6 +187,48 @@ class MDStage(Stage):
                     )
                 )
 
+        # Relative binding free energy (ΔΔG_bind, mutant vs WT) — FINAL confirmatory
+        # tier on the top-N MD candidates by md_lite_score. Opt-in (md.rbfe.enabled),
+        # real backend only; softcore TI via Amber pmemd.cuda (adapters/amber_rbfe).
+        # Non-fatal: a failed RBFE leaves the candidate's MD scores intact.
+        rbcfg = getattr(mdcfg, "rbfe", None)
+        if (rbcfg and getattr(rbcfg, "enabled", False)
+                and backend is Backend.real and not ctx.dry_run):
+            try:
+                from pathlib import Path as _Path
+
+                from evoliez.adapters.amber_engine import parameterize_ligand
+                from evoliez.adapters.amber_rbfe import run_rbfe
+                wt_pdb = getattr(wt.structure, "pdb_path", None)
+                if wt_pdb and _Path(wt_pdb).exists():
+                    wt_pdb_text = _Path(wt_pdb).read_text()
+                    rbfe_root = ctx.paths.md / "_rbfe"
+                    lig_mol2, lig_frcmod = parameterize_ligand(
+                        wt, _Path(wt_pdb), rbfe_root / "_ligand")
+                    ranked = sorted(
+                        (c for c in candidates
+                         if c.scores.get("md_lite_score") is not None),
+                        key=lambda c: -c.scores["md_lite_score"])[: rbcfg.top_n]
+                    self.log.info(
+                        "RBFE (ΔΔG_bind, softcore TI): %d candidate(s)", len(ranked))
+                    for cand in ranked:
+                        res = run_rbfe(
+                            wt_pdb_text, lig_mol2, lig_frcmod, cand.mutations,
+                            rbfe_root / cand.candidate_id,
+                            multipoint=rbcfg.multipoint, n_lambda=rbcfg.n_lambda,
+                            min_cyc=rbcfg.min_cyc, heat_steps=rbcfg.heat_steps,
+                            prod_steps=rbcfg.prod_steps)
+                        cand.details["rbfe"] = res
+                        if res.get("ddg_bind") is not None:
+                            cand.scores["rbfe_ddg_bind"] = res["ddg_bind"]
+                        self.log.info("  %s: ΔΔG_bind=%s kcal/mol (%s)",
+                                      cand.candidate_id, res.get("ddg_bind"),
+                                      res.get("mode") or res.get("skipped"))
+                else:
+                    self.log.warning("RBFE skipped: WT complex has no full-atom PDB")
+            except Exception as exc:  # noqa: BLE001
+                self.log.warning("RBFE stage failed (%s); MD scores intact", exc)
+
         n_pass = sum(1 for c in candidates if c.details.get("md_passed"))
         ctx.put("md_candidates", candidates)
         ctx.persist_meta("n_md_passed", n_pass)

@@ -240,6 +240,33 @@ def _build_system(cx: Complex, pdb_path: Path, workdir: Path,
         raise RuntimeError(f"tleap failed: {r.stdout[-400:]}")
 
 
+def parameterize_ligand(cx: Complex, pdb_path: Path, workdir: Path):
+    """antechamber(AM1-BCC, gaff2) + parmchk2 on the design ligand at its docked
+    pose -> (ligand.mol2, ligand.frcmod) in ``workdir``. Standalone so the RBFE
+    complex leg can reuse the exact same ligand parameters as the binding MD.
+    Raises _AmberParamUnsupported on a charge failure (large/charged cofactor)."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    mol2, frcmod = workdir / "ligand.mol2", workdir / "ligand.frcmod"
+    if mol2.exists() and frcmod.exists():
+        return mol2, frcmod                     # cached (ligand identical per run)
+    rd = _ligand_rdkit_at_pose(Path(pdb_path), cx.ligand.smiles)
+    from rdkit import Chem
+    with Chem.SDWriter(str(workdir / "ligand.sdf")) as w:
+        w.write(rd)
+    nc = int(getattr(cx.ligand, "formal_charge", 0) or 0)
+    r = _sh(["antechamber", "-i", "ligand.sdf", "-fi", "sdf", "-o", "ligand.mol2",
+             "-fo", "mol2", "-c", "bcc", "-nc", str(nc), "-at", "gaff2",
+             "-rn", "LIG"], workdir, 900)
+    if r.returncode != 0 or not mol2.exists():
+        raise _AmberParamUnsupported(
+            f"antechamber/AM1-BCC failed: {(r.stdout + r.stderr)[-400:]}")
+    r = _sh(["parmchk2", "-i", "ligand.mol2", "-f", "mol2", "-o", "ligand.frcmod"],
+            workdir, 120)
+    if r.returncode != 0 or not frcmod.exists():
+        raise _AmberParamUnsupported(f"parmchk2 failed: {r.stderr[-300:]}")
+    return mol2, frcmod
+
+
 def _run_stage(tag: str, args: List[str], workdir: Path, pmemd: str,
                timeout: int) -> None:
     r = _sh([pmemd] + args, workdir, timeout)

@@ -213,11 +213,27 @@ class ReactiveGeometryConfig(_Base):
     label: str = "reaction"
 
 
+class RBFEConfig(_Base):
+    """Alchemical relative binding free energy (ΔΔG_bind, mutant vs WT) for the design
+    ligand via softcore TI (adapters/amber_rbfe). FINAL confirmatory tier -- EXPENSIVE
+    (2 legs x n_lambda windows x min+heat+prod PER mutated residue), so opt-in and run
+    on the top_n MD candidates only. Needs Amber pmemd.cuda + explicit solvent.
+    Multi-point candidates use the additive single-residue approximation (flagged)."""
+    enabled: bool = False
+    top_n: int = 3                  # run RBFE on the top-N MD candidates by md_lite_score
+    n_lambda: int = 9              # Gauss-Legendre λ windows per leg
+    min_cyc: int = 2000
+    heat_steps: int = 10000
+    prod_steps: int = 50000        # 50 ps/window at dt=0.001 ps
+    multipoint: str = "additive"   # additive (sum per-residue) | skip
+
+
 class MDConfig(_Base):
     enabled: bool = True
     engine: str = "openmm"
     reactive_geometry: ReactiveGeometryConfig = Field(
         default_factory=ReactiveGeometryConfig)
+    rbfe: RBFEConfig = Field(default_factory=RBFEConfig)
     protocol_level: int = Field(1, ge=0, le=3)  # spec 15.2
     # implicit (GBSA/obc2) is what the OpenMM path actually runs today. "explicit"
     # is NOT yet wired (no addSolvent/PME) — it is accepted but the engine warns

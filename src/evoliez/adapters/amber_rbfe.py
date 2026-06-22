@@ -405,3 +405,78 @@ def run_leg(hyb_prm: Path, hyb_rst: Path, masks: TIMasks, workdir: Path,
         dg, method = _trapz(means, lams), "trapz-fallback"
     return {"dg": dg, "method": method, "lambdas": lams,
             "dvdl_means": means, "n_fail": n_fail}
+
+
+# --------------------------------------------------------------------------- #
+# Full RBFE orchestration: ΔΔG_bind(WT->mutant) via the double-leg cycle
+# --------------------------------------------------------------------------- #
+_AA1to3 = {"A": "ALA", "R": "ARG", "N": "ASN", "D": "ASP", "C": "CYS",
+           "Q": "GLN", "E": "GLU", "G": "GLY", "H": "HIS", "I": "ILE",
+           "L": "LEU", "K": "LYS", "M": "MET", "F": "PHE", "P": "PRO",
+           "S": "SER", "T": "THR", "W": "TRP", "Y": "TYR", "V": "VAL"}
+
+
+def run_rbfe(wt_pdb_text: str, ligand_mol2, ligand_frcmod, mutations,
+             workdir: Path, *, multipoint: str = "additive", n_lambda: int = 9,
+             min_cyc: int = 2000, heat_steps: int = 10000, prod_steps: int = 50000,
+             ntpr: int = 500, pmemd: Optional[str] = None,
+             timeout: int = 3600) -> Dict:
+    """ΔΔG_bind(WT->mutant) for the design ligand via the thermodynamic cycle
+    ΔΔG = ΔG_complex(X->Y) - ΔG_apo(X->Y), run per mutated residue with softcore TI.
+
+    ``mutations``: the candidate's ``types.Mutation`` list (1-letter wt/mut +
+    position). Multi-point candidates: ``multipoint='additive'`` sums the
+    single-residue cycles (coupling-free APPROXIMATION, flagged in the result) or
+    ``'skip'`` returns ddg_bind=None. Mutations to PRO are skipped (proline ring is
+    unsupported by the hybrid builder). Returns
+    {ddg_bind, per_mutation:[{mutation,ddg_bind,dg_complex,dg_apo,...}], mode, n_mut}.
+    EXPENSIVE (2 legs x n_lambda windows x min+heat+prod per residue) -- gate behind
+    md.rbfe.enabled + top_n upstream."""
+    workdir = Path(workdir)
+    muts = [m for m in mutations if getattr(m, "mut", "") in _AA1to3]
+    unsupported = [f"{m.wt}{m.position}{m.mut}" for m in mutations
+                   if getattr(m, "mut", "") == "P" or getattr(m, "mut", "") not in _AA1to3]
+    if not muts:
+        return {"ddg_bind": None, "skipped": f"no alchemy-supported mutation "
+                f"({unsupported})", "n_mut": 0}
+    muts = [m for m in muts if m.mut != "P"]
+    if not muts:
+        return {"ddg_bind": None, "skipped": "only PRO mutations (unsupported)",
+                "n_mut": 0}
+    if len(muts) > 1 and multipoint == "skip":
+        return {"ddg_bind": None, "skipped": f"multi-point ({len(muts)})",
+                "n_mut": len(muts)}
+    workdir.mkdir(parents=True, exist_ok=True)
+    (workdir / "wt_input.pdb").write_text(wt_pdb_text)
+    per: List[Dict] = []
+    total = 0.0
+    for m in muts:
+        amut = Mutation(resid=int(m.position), wt_resname=_AA1to3.get(m.wt, m.wt),
+                        mut_resname=_AA1to3[m.mut])
+        tag = str(amut)
+        legs = {}
+        for leg, ligand in (("complex", True), ("apo", False)):
+            ld = workdir / tag / leg
+            ld.mkdir(parents=True, exist_ok=True)
+            if ligand:                         # complex leg needs the ligand params
+                (ld / "ligand.mol2").write_text(Path(ligand_mol2).read_text())
+                (ld / "ligand.frcmod").write_text(Path(ligand_frcmod).read_text())
+            hyb_prm, hyb_rst, masks = build_hybrid(
+                workdir / "wt_input.pdb", amut, ld, ligand=ligand, timeout=timeout)
+            legs[leg] = run_leg(
+                hyb_prm, hyb_rst, masks, ld / "ti", n_lambda=n_lambda,
+                min_cyc=min_cyc, heat_steps=heat_steps, prod_steps=prod_steps,
+                ntpr=ntpr, pmemd=pmemd, timeout=timeout)
+        ddg = legs["complex"]["dg"] - legs["apo"]["dg"]
+        per.append({
+            "mutation": tag, "ddg_bind": round(ddg, 3),
+            "dg_complex": round(legs["complex"]["dg"], 3),
+            "dg_apo": round(legs["apo"]["dg"], 3),
+            "method": legs["complex"]["method"],
+            "n_fail": legs["complex"]["n_fail"] + legs["apo"]["n_fail"]})
+        total += ddg
+    return {"ddg_bind": round(total, 3), "per_mutation": per,
+            "mode": "single" if len(muts) == 1 else f"additive_x{len(muts)}",
+            "n_mut": len(muts),
+            "note": ("additive multi-residue approximation (no coupling)"
+                     if len(muts) > 1 else "")}
