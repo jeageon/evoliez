@@ -253,6 +253,11 @@ class RerankerStage(Stage):
         ctx.put("redock_candidates", top)
         ctx.persist_meta("reranker_model", rcfg.model if labels else "heuristic")
         ctx.persist_meta("n_after_rerank", len(top))
+        try:  # auto-generate the s08 reranker HTML report (graceful on failure)
+            from evoliez.io.rerank_report import write_rerank_report
+            write_rerank_report(ctx.paths.root)
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("s08 report generation skipped (%s)", exc)
         self.log.info(
             "reranked %d candidates (%s); %d advance to redocking",
             len(candidates),

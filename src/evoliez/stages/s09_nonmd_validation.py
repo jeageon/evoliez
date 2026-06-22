@@ -563,6 +563,13 @@ class NonMDValidationStage(Stage):
         } for c in candidates], indent=2, default=str))
         ctx.persist_meta("n_after_nonmd", len(kept))
         ctx.persist_meta("n_for_md", len(md_top))
+        try:  # auto-generate the s09 report (+ refresh s08 with the fold cross-ref)
+            from evoliez.io.rerank_report import write_rerank_report
+            from evoliez.io.validation_report import write_validation_report
+            write_validation_report(ctx.paths.root)
+            write_rerank_report(ctx.paths.root)
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("s09 report generation skipped (%s)", exc)
         mode = ("dry-run preview" if ctx.dry_run
                 else getattr(backend, "value", str(backend)))
         self.log.info(
