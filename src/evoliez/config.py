@@ -193,9 +193,31 @@ class StabilityConfig(_Base):
     max_ddg_allowed: float = 2.5
 
 
+class ReactiveGeometryConfig(_Base):
+    """Near-attack-conformation (NAC) / catalytic-power screen on the s10
+    trajectory (see evoliez.md.nac). md_lite_score only proves BINDING/structural
+    stability; this adds REACTIVITY -- the fraction of frames where the reacting
+    atoms sit in a productive geometry (transferring atom within distance_max of
+    the acceptor AND a donor-transfer-acceptor angle >= angle_min). Disabled by
+    default; enzyme-specific SMARTS + criteria live in the target config (this is
+    generic). FDH example: donor formate '[CX3H1](=O)[O-]', acceptor the
+    nicotinamide C4 '[cH1]([cH0]C(=O)[NX3])[cH1]'."""
+    enabled: bool = False
+    donor_smarts: str = ""
+    acceptor_smarts: str = ""
+    donor_idx: int = 0
+    acceptor_idx: int = 0
+    transfer_is_h: bool = True
+    distance_max: float = 3.5     # Å, transferring atom -> acceptor
+    angle_min: float = 150.0      # deg, donor_heavy - transfer - acceptor
+    label: str = "reaction"
+
+
 class MDConfig(_Base):
     enabled: bool = True
     engine: str = "openmm"
+    reactive_geometry: ReactiveGeometryConfig = Field(
+        default_factory=ReactiveGeometryConfig)
     protocol_level: int = Field(1, ge=0, le=3)  # spec 15.2
     # implicit (GBSA/obc2) is what the OpenMM path actually runs today. "explicit"
     # is NOT yet wired (no addSolvent/PME) — it is accepted but the engine warns
