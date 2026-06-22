@@ -112,7 +112,7 @@ validation:
   redocking:
     methods: [gnina, diffdock]
   stability:
-    method: foldx
+    method: thermompnn                   # open-source ThermoMPNN (FoldX/Rosetta replacement, server-verified)
     max_ddg_allowed: 2.5
   md:
     enabled: true
@@ -122,11 +122,25 @@ validation:
     # For a PAPER-GRADE production run set protocol_level: 3 (uses the full
     # production_ns, no step cap), raise replicas, and consider engine: amber +
     # solvent: explicit for the final confirmatory tier on the top candidates.
-    protocol_level: 2                    # 0 minimise-only | 1-2 lite(~50ps cap) | 3 full production_ns
-    solvent: implicit                    # implicit GBSA (OpenMM path); explicit = Amber tier only
-    production_ns: 2.0                   # only takes effect at protocol_level 3
-    replicas: 1                          # raise (e.g. 3) for paper-grade production
+    # PAPER-GRADE production tier (was screening level 2). OpenMM implicit at the FULL
+    # production_ns + the catalytic-power NAC screen + alchemical RBFE ΔΔG on the top
+    # candidates. require_real_structure (default true) sends ONLY real-Boltz mutant
+    # structures to MD. For the explicit-solvent / multi-replica / MM-GBSA confirmatory
+    # pass on the very top picks, re-run --to s10_md with engine: amber + solvent:
+    # explicit (the Amber tier runs `replicas` independent trajectories + MM-GB/PBSA).
+    engine: openmm                       # openmm (NAC-capable screen) | amber (explicit+replicas+MM-GBSA)
+    protocol_level: 3                    # FULL production_ns (no ~50 ps step cap)
+    solvent: implicit                    # implicit GBSA (openmm); set `explicit` with engine: amber
+    production_ns: 2.0                   # real 2 ns / candidate (raise for longer sampling)
+    replicas: 3                          # independent trajectories — used by the amber tier
     top_candidates: 40
+    require_real_structure: true         # MD only real-Boltz mutant structures (no WT-coords proxy)
+    rbfe:                                # alchemical ΔΔG_bind (mutant vs WT, NADP) via softcore TI
+      enabled: true                      #   Amber pmemd.cuda — the launcher sets EVOLIEZ_PMEMD_CUDA
+      top_n: 3                           #   only the top-3 MD candidates by md_lite_score (expensive)
+      n_lambda: 9                        #   Gauss-Legendre λ windows / leg
+      prod_steps: 50000                  #   50 ps / window
+      multipoint: additive               #   sum per-residue cycles for multi-point candidates
     # Catalytic-power (near-attack-conformation) screen: REACTIVITY on top of the
     # binding-stability md_lite_score. Reports per-candidate NAC occupancy and
     # ΔNAC vs WT (mutant > WT == geometrically more productive active site).
