@@ -84,13 +84,23 @@ class MDStage(Stage):
         # take the single-ligand build that reads ALL HETATM as one molecule and
         # mis-matches the NADP(48)+formate(3) block (atom-count gate) -> the whole MD
         # fails. The config is the static source of truth, so it is never lost.
-        _extra_ligs = (ctx.get("extra_ligands", [])
-                       or ctx.config.input.extra_ligands or [])
-        extra_specs = [
-            (getattr(e, "id", f"extra{i}"), getattr(e, "value", ""))
-            for i, e in enumerate(_extra_ligs)
-            if getattr(e, "type", "smiles") == "smiles" and getattr(e, "value", "")
-        ]
+        # Prefer the CONFIG (LigandInput: .value + .type) as the static source of truth.
+        # The resumed ctx "extra_ligands" are types.Ligand (.smiles, NO .value/.type), so
+        # the old code -- ctx-first, then read .value -- silently dropped formate (ctx
+        # list is truthy so the config fallback never fired; .value is empty on a
+        # types.Ligand). Without formate the design ligand takes the single-ligand build
+        # and NAC loses its hydride donor. Accept EITHER shape.
+        _extra_ligs = (ctx.config.input.extra_ligands
+                       or ctx.get("extra_ligands", []) or [])
+
+        def _extra_smiles(e):
+            if getattr(e, "type", "smiles") not in ("smiles", None):
+                return None                        # path-based extra (sdf/mol2) -> skip
+            return getattr(e, "value", None) or getattr(e, "smiles", None)
+
+        extra_specs = [(getattr(e, "id", f"extra{i}"), _extra_smiles(e))
+                       for i, e in enumerate(_extra_ligs)]
+        extra_specs = [(eid, smi) for eid, smi in extra_specs if smi]
         # WT reference NAC baseline: run the reaction-geometry screen ONCE on the
         # WT complex so each mutant's reactivity is reported as ΔNAC = mutant - WT
         # (mutant > WT == a geometrically MORE productive active site). Only when
