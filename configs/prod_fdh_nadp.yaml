@@ -116,9 +116,16 @@ validation:
     max_ddg_allowed: 2.5
   md:
     enabled: true
-    protocol_level: 2                    # 0 minimise-only | 1-2 lite | 3 full production_ns
-    solvent: implicit
-    production_ns: 2.0
+    # SCREENING tier. protocol_level 1-2 CAPS production at 25,000 steps (~0.05 ns
+    # at 2 fs) regardless of production_ns -- so this is a ~50 ps implicit-solvent
+    # SCREEN, not a 2 ns run. The engine reports the ACTUAL simulated ns (honest).
+    # For a PAPER-GRADE production run set protocol_level: 3 (uses the full
+    # production_ns, no step cap), raise replicas, and consider engine: amber +
+    # solvent: explicit for the final confirmatory tier on the top candidates.
+    protocol_level: 2                    # 0 minimise-only | 1-2 lite(~50ps cap) | 3 full production_ns
+    solvent: implicit                    # implicit GBSA (OpenMM path); explicit = Amber tier only
+    production_ns: 2.0                   # only takes effect at protocol_level 3
+    replicas: 1                          # raise (e.g. 3) for paper-grade production
     top_candidates: 40
     # Catalytic-power (near-attack-conformation) screen: REACTIVITY on top of the
     # binding-stability md_lite_score. Reports per-candidate NAC occupancy and

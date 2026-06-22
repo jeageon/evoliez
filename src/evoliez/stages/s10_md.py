@@ -64,6 +64,7 @@ class MDStage(Stage):
         # (mutant > WT == a geometrically MORE productive active site). Only when
         # NAC is enabled and real MD will actually run (mock/dry-run yield no NAC).
         wt_nac = None
+        wt_record = None
         if nac_enabled and not ctx.dry_run and backend is Backend.real:
             try:
                 wt_res = run_md(
@@ -77,11 +78,24 @@ class MDStage(Stage):
                 wt_nac = wt_metrics.nac_occupancy
                 (ctx.paths.md_candidate("_wt_reference") / "analysis.json"
                  ).write_text(__import__("json").dumps(to_json(wt_metrics), indent=2))
+                wt_record = {
+                    "candidate_id": "_wt_reference", "mutation_string": "WT",
+                    "status": wt_res.status, "solvent_mode": wt_res.solvent_mode,
+                    "simulation_time_ns": wt_res.simulation_time_ns,
+                    "protocol_level": wt_res.protocol_level,
+                    "nac_occupancy": wt_metrics.nac_occupancy,
+                    "nac": wt_metrics.nac, "binding_dg": wt_metrics.binding_dg,
+                }
                 self.log.info("WT reference NAC occupancy: %s (status=%s)",
                               wt_nac, wt_res.status)
             except Exception as exc:    # the reference is a diagnostic, never fatal
                 self.log.warning("WT reference NAC run failed (%s); ΔNAC "
                                  "unavailable", exc)
+
+        # Per-candidate MD provenance: a self-contained on-disk record (what
+        # ACTUALLY ran -- solvent/ns/status -- plus every metric) so the s10
+        # report regenerates from disk with no DB and no stage re-run.
+        md_records: List[dict] = []
 
         n_ran = n_skipped = n_failed = 0
         for cand in candidates:
@@ -129,6 +143,27 @@ class MDStage(Stage):
             (ctx.paths.md_candidate(cand.candidate_id) / "analysis.json").write_text(
                 __import__("json").dumps(aj, indent=2)
             )
+            md_records.append({
+                "candidate_id": cand.candidate_id,
+                "mutation_string": cand.mutation_str,
+                "status": result.status,
+                "solvent_mode": result.solvent_mode,            # what ACTUALLY ran
+                "simulation_time_ns": result.simulation_time_ns,
+                "protocol_level": result.protocol_level,
+                "md_lite_score": metrics.md_lite_score,
+                "passed": metrics.passed,
+                "md_instability": cand.scores.get("md_instability"),
+                "ligand_rmsd_mean": metrics.ligand_rmsd_mean,
+                "pocket_rmsd_mean": metrics.pocket_rmsd_mean,
+                "hbond_occupancy": metrics.hbond_occupancy,
+                "catalytic_distance_mean": metrics.catalytic_distance_mean,
+                "energy_drift": metrics.energy_drift,
+                "nac_occupancy": metrics.nac_occupancy,
+                "nac_delta_vs_wt": cand.scores.get("nac_delta_vs_wt"),
+                "nac": metrics.nac,
+                "binding_dg": metrics.binding_dg,
+                "failure_reasons": metrics.failure_reasons,
+            })
             with ctx.store.session() as s:
                 # idempotent: no load() guard, so a --resume re-runs MD; clear
                 # this candidate's prior MD row(s) before inserting to avoid
@@ -184,3 +219,29 @@ class MDStage(Stage):
             "MD real-execution: %d/%d actually ran (skipped=%d, failed=%d)",
             n_ran, len(candidates), n_skipped, n_failed,
         )
+
+        # Self-contained MD provenance dump + auto-generated s10 report (mirrors
+        # s09): the report reads ONLY this JSON + meta, so it regenerates from
+        # disk with no DB and no stage re-run.
+        import json as _json
+        _prov = ctx.paths.reports / "provenance"
+        _prov.mkdir(parents=True, exist_ok=True)
+        (_prov / "md_candidates.json").write_text(_json.dumps({
+            "wt_reference": wt_record,
+            "nac_enabled": nac_enabled,
+            "wt_nac_occupancy": wt_nac,
+            "requested": {"protocol_level": mdcfg.protocol_level,
+                          "solvent": mdcfg.solvent,
+                          "production_ns": mdcfg.production_ns,
+                          "engine": getattr(mdcfg, "engine", "openmm")},
+            "counts": {"n_real_ran": n_ran, "n_passed": n_pass,
+                       "n_skipped": n_skipped, "n_failed": n_failed,
+                       "n_total": len(candidates)},
+            "candidates": md_records,
+        }, indent=2, default=str))
+        try:    # the report is a deliverable, never fatal to the pipeline
+            from evoliez.io.md_report import write_md_report
+            p = write_md_report(ctx.paths.root)
+            self.log.info("s10 MD report: %s", p.name)
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("s10 MD report generation skipped (%s)", exc)

@@ -30,6 +30,10 @@ class MDMetrics:
     # md_lite_score (binding stability) - it is NOT folded into md_lite here.
     nac_occupancy: Optional[float] = None
     nac: Dict[str, object] = field(default_factory=dict)
+    # Endpoint binding free energy per method (kcal/mol), e.g. {"gbsa": -28.4}.
+    # Populated by the Amber tier-3 MM-PB/GBSA; must be carried into to_json /
+    # the report or the paper loses the ΔG estimate the explicit run produced.
+    binding_dg: Dict[str, float] = field(default_factory=dict)
     passed: bool = True
     failure_reasons: List[str] = field(default_factory=list)
 
@@ -50,6 +54,7 @@ def analyse(result: MDResult, weights: ScoreWeights) -> MDMetrics:
     # BEFORE the skip/fail early returns so it is never dropped.
     m.nac_occupancy = result.nac_occupancy
     m.nac = dict(result.nac or {})
+    m.binding_dg = dict(result.binding_dg or {})
 
     # EVERY skip is NEUTRAL for scoring: a skip means real MD never RAN for
     # this candidate (optional FF unavailable, or no mutant / full-atom
@@ -151,6 +156,7 @@ def to_json(metrics: MDMetrics) -> Dict[str, object]:
         "md_lite_score": metrics.md_lite_score,
         "nac_occupancy": metrics.nac_occupancy,
         "nac": metrics.nac,
+        "binding_dg": metrics.binding_dg,
         "passed": metrics.passed,
         "failure_reasons": metrics.failure_reasons,
     }

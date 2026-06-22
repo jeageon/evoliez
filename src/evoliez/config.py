@@ -468,6 +468,10 @@ class ScoreWeights(_Base):
     # mechanism / specificity bonuses
     catalytic_geometry_preservation: float = 1.0
     specificity_divergence_bonus: float = 0.5
+    # Catalytic-power (NAC) bonus on ΔNAC vs WT (s10 reactive_geometry). 0.0 by
+    # DEFAULT -- NAC stays a diagnostic and does NOT move the ranking unless a
+    # cofactor-switching/activity objective explicitly opts in by raising this.
+    catalytic_nac: float = 0.0
 
 
 class ProjectConfig(_Base):

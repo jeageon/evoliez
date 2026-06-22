@@ -372,8 +372,23 @@ def _skip(candidate_id: str, cfg: MDConfig, status: str, reason: str) -> MDResul
 # --------------------------------------------------------------------------- #
 def run_md_amber(cx: Complex, candidate_id: str, cfg: MDConfig, workdir: Path,
                  *, catalytic_positions: Sequence[int], dry_run: bool,
-                 ligand_cache_dir: "Path | None" = None) -> MDResult:
+                 ligand_cache_dir: "Path | None" = None,
+                 extra_ligands: "Sequence[tuple] | None" = None) -> MDResult:
     workdir.mkdir(parents=True, exist_ok=True)
+    # NAC (catalytic-power) is NOT yet wired on the Amber tier (it needs the
+    # cofactor + co-substrate as multi-ligand prmtop + a cpptraj reactive-
+    # geometry pass on the .nc). Surface that HONESTLY instead of silently
+    # returning a NAC-less result: a paper claiming explicit-solvent reactivity
+    # must run engine=openmm for NAC, or wait for the Amber-NAC tier.
+    nac_cfg = getattr(cfg, "reactive_geometry", None)
+    if nac_cfg and getattr(nac_cfg, "enabled", False) and (extra_ligands or []):
+        log.warning(
+            "MD engine=amber for %s with reactive_geometry.enabled: the Amber "
+            "path does NOT compute NAC yet (extra_ligands/co-substrate ignored). "
+            "Binding metrics + MM-GBSA run; for catalytic-power (NAC) occupancy "
+            "use engine=openmm. (Amber-NAC is the next rigor tier.)",
+            candidate_id,
+        )
     if dry_run:
         log.info("[dry-run] would run Amber pmemd.cuda L%d for %s",
                  cfg.protocol_level, candidate_id)

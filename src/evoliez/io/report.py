@@ -37,14 +37,20 @@ def _write_candidates_csv(paths: ProjectPaths, ranked: Sequence[Candidate]) -> P
         wri = csv.writer(fh)
         wri.writerow(
             ["rank", "candidate_id", "mutations", "generator", "final_score",
-             "ml_score", "stability_ddg", "docking_score", "md_lite_score"]
+             "ml_score", "stability_ddg", "docking_score", "md_lite_score",
+             "nac_occupancy", "nac_delta_vs_wt"]
         )
         for i, c in enumerate(ranked, 1):
+            # nac_* left BLANK (not 0.0) when NAC was not run for this candidate:
+            # absent reactivity data is not the same as a zero reaction-competent
+            # fraction, and a paper table must not conflate them.
             wri.writerow(
                 [i, c.candidate_id, c.mutation_str, c.generator,
                  c.scores.get("final_score", 0.0), c.scores.get("ml_score", 0.0),
                  c.scores.get("ddg_fold", 0.0), c.scores.get("docking_score", 0.0),
-                 c.scores.get("md_lite_score", 0.0)]
+                 c.scores.get("md_lite_score", 0.0),
+                 c.scores.get("nac_occupancy", ""),
+                 c.scores.get("nac_delta_vs_wt", "")]
             )
     return p
 

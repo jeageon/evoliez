@@ -475,6 +475,7 @@ def run_md(
                     cx, candidate_id, cfg, workdir,
                     catalytic_positions=catalytic_positions, dry_run=dry_run,
                     ligand_cache_dir=ligand_cache_dir,
+                    extra_ligands=extra_ligands,
                 )
             except Exception as exc:
                 log.warning("Amber MD failed for %s (%s); recording failure",

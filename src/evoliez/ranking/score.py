@@ -47,6 +47,10 @@ def compute_final_score(cand: Candidate, w: ScoreWeights) -> ScoreBreakdown:
         * s.get("ts_geometry_score", 0.0),
         "specificity_divergence": w.specificity_divergence_bonus
         * s.get("specificity_divergence", 0.0),
+        # catalytic-power: ΔNAC vs WT (mutant - WT reaction-competent fraction).
+        # >0 = geometrically more productive active site. Weight 0.0 by default
+        # (diagnostic); set ScoreWeights.catalytic_nac > 0 to fold it in.
+        "catalytic_nac": w.catalytic_nac * s.get("nac_delta_vs_wt", 0.0),
     }
     penalties = {
         "conservation": w.conservation_penalty * s.get("conservation_penalty", 0.0),

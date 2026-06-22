@@ -31,17 +31,25 @@ class FinalRankingStage(Stage):
         validated: List[Candidate] = ctx.get("validated_candidates") or ctx.require(
             "candidates"
         )
-        # md_candidates carry MD scores; merge them back by id
+        # md_candidates carry MD scores; merge them back by id. The MD subset is
+        # a DIFFERENT object list than `validated`, so every MD-derived score a
+        # downstream report/CSV needs must be listed here or it is silently lost
+        # (this dropped nac_occupancy/nac_delta_vs_wt before). nac_* are NOT
+        # setdefault-ed to 0.0: absent means "NAC not run for this candidate",
+        # which is distinct from a real zero occupancy.
         md_by_id = {c.candidate_id: c for c in ctx.get("md_candidates", [])}
         for c in validated:
             if c.candidate_id in md_by_id:
                 c.scores.update(
                     {
                         k: md_by_id[c.candidate_id].scores[k]
-                        for k in ("md_lite_score", "md_instability")
+                        for k in ("md_lite_score", "md_instability",
+                                  "nac_occupancy", "nac_delta_vs_wt")
                         if k in md_by_id[c.candidate_id].scores
                     }
                 )
+                if "nac" in md_by_id[c.candidate_id].details:
+                    c.details["nac"] = md_by_id[c.candidate_id].details["nac"]
             c.scores.setdefault("md_lite_score", 0.0)
             c.scores.setdefault("md_instability", 0.0)
 
