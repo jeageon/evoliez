@@ -85,6 +85,54 @@ def _redock_metrics(rmsd):
     return round(c, 4), round(1.0 - c, 4), rmsd > 4.5
 
 
+# --- Multi-signal failure detection for real-Boltz mutants (s09) -------------------
+# A candidate WITH a real s08b Boltz mutant complex carries FOUR INDEPENDENT tests; no
+# single one decides. DiffDock is NOT ground truth for a large, highly-charged,
+# flexible cofactor like NADP (it is itself sensitive to ligand size/charge and the
+# formate context), so a DiffDock escape ALONE is only "caution" -- a pose the blind
+# global search would not re-select, worth re-verifying, not a confirmed failure. A
+# failure is a CORROBORATED escape: DiffDock escape co-occurring with a degraded Boltz
+# binding signal (d_ligand_iptm) and/or disrupted catalytic geometry. Thresholds are
+# explicit and recorded in the validated_candidates provenance so they can be tuned.
+_GNINA_RETAIN_A = 3.0   # gnina reference-local RMSD <= this -> pose retained near Boltz pose
+_DD_ESCAPE_A = 4.0      # diffdock global RMSD > this        -> pose escaped under blind search
+_IPTM_DROP = -0.05      # d_ligand_iptm < this               -> Boltz says target binding weakened
+_CAT_DISRUPT = 2.5      # catalytic_geometry_penalty > this  -> active-site geometry disrupted
+
+
+def _classify_real_mutant(cand: Candidate, gnina_pose, diffdock_pose):
+    """Grade a real-Boltz mutant from the four independent tests. Returns
+    (class, reason) with class in {pass, caution, penalty, reject}:
+      pass    - local redock retained, no global escape, binding + mechanism intact
+      caution - DiffDock-only escape (Boltz + catalytic intact) or a single off signal;
+                KEPT for re-verification, NOT rejected (DiffDock is not ground truth)
+      penalty - escape corroborated by ONE structural signal (binding or mechanism)
+      reject  - escape corroborated by BOTH (a confirmed NADP-binding/geometry failure)
+    Only ``reject`` gates the candidate out; the ranking demotes penalty/caution via
+    the worst-of-both consistency and the real Boltz delta already in _md_key."""
+    g = gnina_pose.rmsd_to_reference if gnina_pose is not None else None
+    d = diffdock_pose.rmsd_to_reference if diffdock_pose is not None else None
+    retain = g is not None and g <= _GNINA_RETAIN_A
+    escape = d is None or d > _DD_ESCAPE_A
+    binding_bad = cand.scores.get("d_ligand_iptm", 0.0) < _IPTM_DROP
+    mech_bad = cand.scores.get("catalytic_geometry_penalty", 0.0) > _CAT_DISRUPT
+    struct_bad = int(binding_bad) + int(mech_bad)
+    corr = " + ".join(s for s, b in (("Boltz binding drop", binding_bad),
+                                     ("catalytic disruption", mech_bad)) if b)
+    if escape and struct_bad == 2:
+        return "reject", "confirmed NADP-binding failure: DiffDock escape + " + corr
+    if escape and struct_bad == 1:
+        return "penalty", "DiffDock escape corroborated by " + corr
+    if escape:
+        return "caution", "DiffDock-only escape; Boltz binding + catalytic intact -- re-verify"
+    if struct_bad == 2:
+        return "penalty", "structural degradation without DiffDock escape: " + corr
+    if struct_bad == 1 or not retain:
+        return "caution", ("single structural signal off: " + corr) if corr else \
+               "local redock did not retain the pose -- re-verify"
+    return "pass", None
+
+
 class NonMDValidationStage(Stage):
     name = "s09_nonmd"
 
@@ -369,7 +417,21 @@ class NonMDValidationStage(Stage):
             if cand.scores["ddg_fold"] > scfg.max_ddg_allowed:
                 reasons.append(f"ddG {cand.scores['ddg_fold']:.2f} > "
                                f"{scfg.max_ddg_allowed}")
-            if ligand_escape:
+            # Redock gate. For a candidate WITH a real s08b Boltz complex, do NOT
+            # auto-reject on a DiffDock-only escape (the worst-of-both ligand_escape):
+            # DiffDock is not ground truth for NADP. Run the 4-signal failure
+            # detection and reject ONLY a corroborated failure; caution/penalty are
+            # kept (the consistency + real Boltz delta in _md_key demote them). Proxy
+            # candidates keep the same-frame escape filter -- there every method docks
+            # the identical WT-frame reference, so an escape is a genuine displacement.
+            cand.details.pop("failure_mode", None)
+            if redock_cx is not None:
+                vclass, why = _classify_real_mutant(
+                    cand, poses.get("gnina"), poses.get("diffdock"))
+                cand.details["failure_mode"] = vclass
+                if vclass == "reject":
+                    reasons.append(why)
+            elif ligand_escape:
                 reasons.append("ligand displaced on redocking")
             cand.details.pop("nonmd_rejected", None)  # clear stale flag on resume
             if reasons:
@@ -494,6 +556,8 @@ class NonMDValidationStage(Stage):
             "mechanism_source": c.details.get("mechanism_source"),
             "catalytic_geometry_source": c.details.get("catalytic_geometry_source"),
             "boltz_delta_source": c.details.get("boltz_delta_source"),
+            "failure_mode": c.details.get("failure_mode"),
+            "d_ligand_iptm": c.scores.get("d_ligand_iptm"),
             "passed": c.candidate_id in _kept_ids,
             "for_md": c.candidate_id in _md_ids,
         } for c in candidates], indent=2, default=str))
