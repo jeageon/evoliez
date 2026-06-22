@@ -277,20 +277,20 @@ class NonMDValidationStage(Stage):
             cand.scores["docking_score"] = primary_pose.score
             rmsds = [p.rmsd_to_reference for p in poses.values()]
             # Consistency gate = worst (largest) RMSD across methods; an unverifiable
-            # pose (None) propagates as unknown -> neutral, never a free pass. EXCEPT
-            # for a real-Boltz mutant: gate on gnina ALONE. gnina (autobox at the
-            # mutant's OWN Boltz pose) reproduces it ~2-4 A, but DiffDock is blind/
-            # box-free and unreliable for the novel mutant NADP placement (3-24 A), so
-            # the worst-of-both rule spuriously fails every folded mutant and strands
-            # the real Boltz structures before MD. DiffDock's RMSD stays in
-            # details["redock"] + docking_method_spread (reported, NOT gated). The
-            # proxy path keeps the strict multi-docker worst (all methods dock the
-            # same WT-frame reference, so cross-method agreement is meaningful there).
-            if redock_cx is not None and "gnina" in poses:
-                gate_rmsds = [poses["gnina"].rmsd_to_reference]
-            else:
-                gate_rmsds = rmsds
-            worst = None if any(r is None for r in gate_rmsds) else max(gate_rmsds)
+            # pose (None) propagates as unknown -> neutral, never a free pass.
+            #
+            # For a real-Boltz mutant we deliberately KEEP DiffDock in the gate (no
+            # gnina-only shortcut). gnina's autobox sits on the mutant's OWN Boltz
+            # pose, so its ~2 A reproduction is partly self-fulfilling; DiffDock
+            # (blind, box-free) is the only INDEPENDENT check. Its large deviation on
+            # the folded mutants is CORROBORATED, not docker noise: DiffDock's own
+            # confidence collapses (median -2.8 vs -0.8 for WT) and the catalytic-
+            # geometry penalty shows NADP shifted 2-6 A off the WT position -- both
+            # consistent with the negative Boltz ligand-iptm delta. The honest reading
+            # is that these designs disrupt NADP binding, so a low redocking_
+            # consistency is CORRECT and must not be masked. gnina/DiffDock RMSDs +
+            # docking_method_spread + the DiffDock confidence stay in the provenance.
+            worst = None if any(r is None for r in rmsds) else max(rmsds)
             consistency, uncertainty, ligand_escape = _redock_metrics(worst)
             cand.scores["redocking_consistency"] = consistency
             cand.scores["docking_uncertainty"] = uncertainty
