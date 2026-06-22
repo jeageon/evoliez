@@ -275,7 +275,14 @@ def _offmol_from_rdkit(rd):
 
 
 def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
-    """OpenFF Molecule for the SINGLE design ligand at the Boltz pose."""
+    """OpenFF Molecule for the SINGLE design ligand at the Boltz pose. Extracts the
+    design ligand from its OWN hetero group (not the merged HETATM block), so a
+    co-modelled complex (e.g. NADP + a formate co-substrate) still builds the design
+    ligand alone instead of failing the whole-molecule atom-count gate. Falls back to
+    the all-HETATM read (single-group complexes) so the verified path is unchanged."""
+    matched = _ligands_at_pose(pdb_path, [("design", smiles)])
+    if matched:
+        return _offmol_from_rdkit(matched[0][1])
     return _offmol_from_rdkit(_ligand_rdkit_at_pose(pdb_path, smiles))
 
 
