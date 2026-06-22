@@ -227,6 +227,28 @@ class RerankerStage(Stage):
 
         candidates.sort(key=lambda c: -c.scores.get("ml_score", 0.0))
         top = candidates[: rcfg.top_for_redocking]
+        # Persist per-candidate reranker scores + features (the s08 report reads this;
+        # previously ctx.put in-memory only). The top `top_for_redocking` advance to
+        # the s08b real-Boltz fold + s09 validation.
+        import json as _json
+        _prov = ctx.paths.reports / "provenance"
+        _prov.mkdir(parents=True, exist_ok=True)
+        _top_ids = {c.candidate_id for c in top}
+        (_prov / "reranked_candidates.json").write_text(_json.dumps([{
+            "rank": i + 1,
+            "candidate_id": c.candidate_id,
+            "mutation_string": ";".join(
+                f"{m.wt}{m.position}{m.mut}" for m in c.mutations),
+            "n_mutations": len(c.mutations),
+            "generator": c.details.get("generator") or c.details.get("source"),
+            "ml_score": c.scores.get("ml_score"),
+            "family_interaction_score": c.scores.get("family_interaction_score"),
+            "interaction_gain": c.scores.get("interaction_gain"),
+            "specificity_divergence": c.scores.get("specificity_divergence"),
+            "msa_permissiveness": c.scores.get("msa_permissiveness"),
+            "conservation_penalty": c.scores.get("conservation_penalty"),
+            "advanced_to_fold": c.candidate_id in _top_ids,
+        } for i, c in enumerate(candidates)], indent=2, default=str))
         ctx.put("candidates", candidates)
         ctx.put("redock_candidates", top)
         ctx.persist_meta("reranker_model", rcfg.model if labels else "heuristic")
