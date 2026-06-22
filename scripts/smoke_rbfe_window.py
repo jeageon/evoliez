@@ -70,10 +70,13 @@ print(f"[smoke] noshakemask={masks.noshakemask}")
 CLAM = 0.5
 
 
-def run(tag, mdin, cin, rout, oout=None):
+def run(tag, mdin, cin, rout, oout=None, ref=None):
     (WORK / f"{tag}.in").write_text(mdin)
-    r = sh([PMEMD, "-O", "-i", f"{tag}.in", "-o", oout or f"{tag}.out",
-            "-p", hyb_prm.name, "-c", cin, "-r", rout], timeout=1200)
+    cmd = [PMEMD, "-O", "-i", f"{tag}.in", "-o", oout or f"{tag}.out",
+           "-p", hyb_prm.name, "-c", cin, "-r", rout]
+    if ref:                       # ntr=1 (restrained min/heat) needs a reference
+        cmd += ["-ref", ref]
+    r = sh(cmd, timeout=1200)
     ok = (WORK / rout).exists()
     print(f"  [{tag}] exit={r.returncode}  {rout}={ok}")
     if not ok:
@@ -85,9 +88,10 @@ def run(tag, mdin, cin, rout, oout=None):
     return ok
 
 
-ok = run("ti_min", mdin_ti_min(masks, CLAM, maxcyc=2000), hyb_rst.name, "min.rst")
+ok = run("ti_min", mdin_ti_min(masks, CLAM, maxcyc=2000), hyb_rst.name,
+         "min.rst", ref=hyb_rst.name)
 ok = ok and run("ti_heat", mdin_ti_heat(masks, CLAM, nsteps=5000),
-                "min.rst", "heat.rst")
+                "min.rst", "heat.rst", ref=hyb_rst.name)
 ok = ok and run("ti_prod", mdin_ti_prod(masks, CLAM, nsteps=5000, ntpr=200),
                 "heat.rst", "prod.rst", "prod.out")
 

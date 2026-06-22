@@ -192,23 +192,32 @@ def _ti_block(m: TIMasks, clambda: float) -> str:
         f" ntf=1, noshakemask='{m.noshakemask}',\n")
 
 
-def mdin_ti_min(m: TIMasks, clambda: float, maxcyc: int = 5000) -> str:
+def mdin_ti_min(m: TIMasks, clambda: float, maxcyc: int = 5000,
+                restraint_wt: float = 5.0) -> str:
     # ntmin=2 (pure steepest descent) is REQUIRED with ifsc=1 -- the conjugate
-    # gradient switch (ncyc) is rejected for softcore minimisation.
-    return ("TI min (softcore, steepest descent)\n&cntrl\n"
+    # gradient switch (ncyc) is rejected for softcore minimisation. Backbone
+    # restraints keep the system from distorting while the dual sidechains relax.
+    return ("TI min (softcore SD, restrained backbone)\n&cntrl\n"
             f" imin=1, maxcyc={maxcyc}, ntmin=2,\n"
             " ntb=1, cut=10.0, ntc=2,\n"
+            f" ntr=1, restraintmask='@CA,C,N,O', restraint_wt={restraint_wt},\n"
             f"{_ti_block(m, clambda)}"
             " ntpr=500,\n/\n")
 
 
-def mdin_ti_heat(m: TIMasks, clambda: float, nsteps: int) -> str:
-    return ("TI heat 0->300K (softcore, NVT)\n&cntrl\n"
+def mdin_ti_heat(m: TIMasks, clambda: float, nsteps: int,
+                 restraint_wt: float = 5.0) -> str:
+    # gentle restrained heat 5->300K: without backbone restraints the freshly
+    # built softcore region distorts during heating and the window blows up.
+    return ("TI heat 5->300K (softcore, restrained, NVT)\n&cntrl\n"
             f" imin=0, nstlim={nsteps}, dt=0.001, irest=0, ntx=1,\n"
             " ntb=1, cut=10.0, iwrap=1, ntc=2,\n"
-            " ntt=3, gamma_ln=2.0, tempi=5.0, temp0=300.0, ig=-1,\n"
+            " ntt=3, gamma_ln=5.0, tempi=5.0, temp0=300.0, ig=-1,\n"
+            f" ntr=1, restraintmask='@CA,C,N,O', restraint_wt={restraint_wt},\n"
             f"{_ti_block(m, clambda)}"
-            " ntpr=500,\n/\n")
+            " nmropt=1, ntpr=500,\n/\n"
+            "&wt type='TEMP0', istep1=0, istep2=%d, value1=5.0, value2=300.0 /\n"
+            "&wt type='END' /\n" % int(nsteps * 0.8))
 
 
 def mdin_ti_prod(m: TIMasks, clambda: float, nsteps: int,
@@ -222,13 +231,20 @@ def mdin_ti_prod(m: TIMasks, clambda: float, nsteps: int,
             f" ntpr={ntpr}, ntwx=0, ntwr={nsteps},\n/\n")
 
 
-def lambda_schedule(n: int = 11) -> List[float]:
-    """Evenly-spaced λ windows in (0,1). Avoids the exact 0/1 endpoints where
-    even softcore can be stiff; uses Gauss-friendly interior spacing for n>=9."""
-    if n < 3:
-        raise ValueError("need >=3 lambda windows")
-    return [round((i + 0.5) / n, 5) for i in range(n)] if n < 9 else \
-        [round(i / (n - 1), 5) for i in range(1, n - 1)]  # interior 0<λ<1
+def gauss_legendre_01(n: int = 9) -> List[Tuple[float, float]]:
+    """n-point Gauss-Legendre (λ, weight) quadrature on [0,1] -- the standard
+    Amber TI schedule. Nodes are strictly INTERIOR (never the 0/1 endpoints,
+    which are softcore-unstable and crash mid-run) and the weights sum to 1, so
+    ΔG = Σ wᵢ ⟨dV/dλ⟩ᵢ exactly for a smooth integrand."""
+    import numpy as np
+    x, w = np.polynomial.legendre.leggauss(int(n))
+    return [(round(float((xi + 1) / 2), 5), float(wi / 2))
+            for xi, wi in zip(x, w)]
+
+
+def lambda_schedule(n: int = 9) -> List[float]:
+    """The λ nodes of the n-point Gauss-Legendre TI schedule (interior)."""
+    return [lam for lam, _ in gauss_legendre_01(n)]
 
 
 # --------------------------------------------------------------------------- #
@@ -301,3 +317,91 @@ def build_hybrid(clean_pdb: Path, mutation: Mutation, workdir: Path,
     if not hyb_prm.exists() or not hyb_rst.exists():
         raise RuntimeError(f"parmed launder of the hybrid failed (see {workdir})")
     return hyb_prm, hyb_rst, masks
+
+
+# --------------------------------------------------------------------------- #
+# Lambda-window orchestration + TI integration (one alchemical leg)
+# --------------------------------------------------------------------------- #
+def _parse_dvdl(out_path: Path) -> List[float]:
+    vals: List[float] = []
+    if out_path.exists():
+        for line in out_path.read_text().splitlines():
+            m = re.search(r"DV/DL\s*=\s*(-?\d+\.\d+)", line)
+            if m:
+                vals.append(float(m.group(1)))
+    return vals
+
+
+def _mean(xs: Sequence[float]) -> float:
+    return sum(xs) / len(xs) if xs else float("nan")
+
+
+def _trapz(ys: Sequence[float], xs: Sequence[float]) -> float:
+    return sum(0.5 * (ys[i] + ys[i + 1]) * (xs[i + 1] - xs[i])
+               for i in range(len(xs) - 1))
+
+
+def _run_window(wd: Path, prm: str, start_rst: str, masks: TIMasks, lam: float,
+                pmemd: str, min_cyc: int, heat_steps: int, prod_steps: int,
+                ntpr: int, timeout: int) -> Optional[List[float]]:
+    """One λ window: min -> heat -> production (all at λ) -> dV/dλ samples."""
+    wd.mkdir(parents=True, exist_ok=True)
+
+    def stage(tag, mdin, cin, rout, oout=None, ref=None):
+        (wd / f"{tag}.in").write_text(mdin)
+        cmd = [pmemd, "-O", "-i", f"{tag}.in", "-o", oout or f"{tag}.out",
+               "-p", prm, "-c", cin, "-r", rout]
+        if ref:                       # ntr=1 needs a restraint reference
+            cmd += ["-ref", ref]
+        _sh(cmd, wd, timeout)
+        return wd / rout if (wd / rout).exists() else None
+
+    mn = stage("min", mdin_ti_min(masks, lam, min_cyc), start_rst, "min.rst",
+               ref=start_rst)
+    if not mn:
+        return None
+    ht = stage("heat", mdin_ti_heat(masks, lam, heat_steps), str(mn), "heat.rst",
+               ref=start_rst)
+    if not ht:
+        return None
+    if not stage("prod", mdin_ti_prod(masks, lam, prod_steps, ntpr),
+                 str(ht), "prod.rst", "prod.out"):
+        return None
+    return _parse_dvdl(wd / "prod.out")
+
+
+def run_leg(hyb_prm: Path, hyb_rst: Path, masks: TIMasks, workdir: Path,
+            n_lambda: int = 9, min_cyc: int = 2000, heat_steps: int = 10000,
+            prod_steps: int = 50000, ntpr: int = 500, equil_frac: float = 0.2,
+            pmemd: Optional[str] = None, timeout: int = 3600) -> Dict:
+    """Run every Gauss-Legendre λ window of one alchemical leg and integrate
+    ⟨dV/dλ⟩ -> ΔG (Σ wᵢ ⟨dV/dλ⟩ᵢ; trapezoidal fallback over the survivors if a
+    window dies). Each window does min->heat->prod independently from the shared
+    hybrid restart (each λ equilibrates at its own state). Returns
+    {dg, method, lambdas, dvdl_means, n_fail}. MBAR via ndfes/edgembar is a
+    later refinement; Gauss-Legendre TI is the v1 estimator."""
+    pmemd = pmemd or _pmemd_cuda()
+    if not pmemd:
+        raise RuntimeError("no pmemd.cuda (set EVOLIEZ_PMEMD_CUDA)")
+    prm = str(Path(hyb_prm).resolve())
+    start = str(Path(hyb_rst).resolve())
+    results: List[Tuple[float, float, float]] = []     # (λ, weight, ⟨dV/dλ⟩)
+    n_fail = 0
+    for lam, w in gauss_legendre_01(n_lambda):
+        dvdl = _run_window(workdir / f"lam_{lam:.4f}", prm, start, masks, lam,
+                           pmemd, min_cyc, heat_steps, prod_steps, ntpr, timeout)
+        if not dvdl:
+            n_fail += 1
+            continue
+        eq = dvdl[int(len(dvdl) * equil_frac):] or dvdl   # drop equilibration
+        results.append((lam, w, _mean(eq)))
+    if len(results) < 2:
+        raise RuntimeError(f"too few successful λ windows; {n_fail} failed")
+    lams = [r[0] for r in results]
+    means = [r[2] for r in results]
+    if n_fail == 0:
+        dg, method = sum(w * m for _, w, m in results), "gauss"
+    else:                                  # quadrature weights invalid -> trapz
+        dg, method = _trapz(means, lams), "trapz-fallback"
+    return {"dg": dg, "method": method, "lambdas": lams,
+            "dvdl_means": means, "n_fail": n_fail}
