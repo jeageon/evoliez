@@ -54,9 +54,17 @@ class MDStage(Stage):
         # is unchanged. type != smiles entries (path-based) are skipped.
         nac_cfg = getattr(mdcfg, "reactive_geometry", None)
         nac_enabled = bool(nac_cfg and getattr(nac_cfg, "enabled", False))
+        # Prefer the resumed ctx artifact, fall back to the CONFIG: a stage's load()
+        # can drop the ctx "extra_ligands" copy on --resume (s01 load-parity), which
+        # silently strips NAC's co-substrate (formate). The design ligand would then
+        # take the single-ligand build that reads ALL HETATM as one molecule and
+        # mis-matches the NADP(48)+formate(3) block (atom-count gate) -> the whole MD
+        # fails. The config is the static source of truth, so it is never lost.
+        _extra_ligs = (ctx.get("extra_ligands", [])
+                       or ctx.config.input.extra_ligands or [])
         extra_specs = [
             (getattr(e, "id", f"extra{i}"), getattr(e, "value", ""))
-            for i, e in enumerate(ctx.get("extra_ligands", []) or [])
+            for i, e in enumerate(_extra_ligs)
             if getattr(e, "type", "smiles") == "smiles" and getattr(e, "value", "")
         ]
         # WT reference NAC baseline: run the reaction-geometry screen ONCE on the

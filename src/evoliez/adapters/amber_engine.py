@@ -216,8 +216,16 @@ def _build_system(cx: Complex, pdb_path: Path, workdir: Path,
     if r.returncode != 0 or not (workdir / "protein_clean.pdb").exists():
         raise RuntimeError(f"pdb4amber failed: {r.stderr[-400:]}")
 
-    # ligand at the docked pose -> SDF -> antechamber (AM1-BCC, gaff2)
-    rd = _ligand_rdkit_at_pose(pdb_path, cx.ligand.smiles)
+    # design ligand at the docked pose -> SDF -> antechamber (AM1-BCC, gaff2).
+    # Extract ONLY the design ligand from its OWN hetero group; the complex HETATM may
+    # also hold a co-substrate (formate beside NADP) and matching against the merged
+    # block fails the whole-molecule atom-count gate.
+    from evoliez.adapters.openmm_engine import _ligands_at_pose
+    _m = _ligands_at_pose(pdb_path, [(getattr(cx.ligand, "id", None) or "design",
+                                      cx.ligand.smiles)])
+    if not _m:
+        raise _AmberParamUnsupported("design ligand not matched in the complex HETATM")
+    rd = _m[0][1]
     from rdkit import Chem
     with Chem.SDWriter(str(workdir / "ligand.sdf")) as w:
         w.write(rd)
@@ -249,7 +257,12 @@ def parameterize_ligand(cx: Complex, pdb_path: Path, workdir: Path):
     mol2, frcmod = workdir / "ligand.mol2", workdir / "ligand.frcmod"
     if mol2.exists() and frcmod.exists():
         return mol2, frcmod                     # cached (ligand identical per run)
-    rd = _ligand_rdkit_at_pose(Path(pdb_path), cx.ligand.smiles)
+    from evoliez.adapters.openmm_engine import _ligands_at_pose
+    _m = _ligands_at_pose(Path(pdb_path), [(getattr(cx.ligand, "id", None) or "design",
+                                            cx.ligand.smiles)])
+    if not _m:
+        raise _AmberParamUnsupported("design ligand not matched in the complex HETATM")
+    rd = _m[0][1]
     from rdkit import Chem
     with Chem.SDWriter(str(workdir / "ligand.sdf")) as w:
         w.write(rd)
