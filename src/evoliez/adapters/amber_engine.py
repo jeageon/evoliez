@@ -38,6 +38,15 @@ log = logging.getLogger(__name__)
 
 _AMBER_TOOLS = ("pdb4amber", "antechamber", "parmchk2", "tleap", "cpptraj")
 
+# AM1-BCC charges at a SINGLE POINT (sqm maxcyc=0). The -3 NADP (tri-anionic,
+# phosphate-rich) does NOT converge under antechamber's default gas-phase geometry
+# optimisation (the optimiser crawls and would distort the phosphates); a single-point
+# at the docked pose converges in ~1 min and is the right treatment for a bound
+# cofactor. Passing -ek REPLACES the whole &qmmm namelist, so the default AM1 + SCF-
+# convergence settings are restated here (otherwise sqm fails SCF). Same charge METHOD
+# as the OpenMM fixed-charge template (params/nadp_3minus), so the two engines agree.
+_SQM_EK = "qm_theory='AM1', maxcyc=0, scfconv=1.d-10, ndiis_attempts=700"
+
 
 # --------------------------------------------------------------------------- #
 # Environment / tool discovery
@@ -232,7 +241,7 @@ def _build_system(cx: Complex, pdb_path: Path, workdir: Path,
     nc = int(getattr(cx.ligand, "formal_charge", 0) or 0)
     r = _sh(["antechamber", "-i", "ligand.sdf", "-fi", "sdf", "-o", "ligand.mol2",
              "-fo", "mol2", "-c", "bcc", "-nc", str(nc), "-at", "gaff2",
-             "-rn", "LIG"], workdir, 900)
+             "-ek", _SQM_EK, "-rn", "LIG"], workdir, 900)
     if r.returncode != 0 or not (workdir / "ligand.mol2").exists():
         raise _AmberParamUnsupported(
             f"antechamber/AM1-BCC failed (large/charged cofactor?): "
@@ -269,7 +278,7 @@ def parameterize_ligand(cx: Complex, pdb_path: Path, workdir: Path):
     nc = int(getattr(cx.ligand, "formal_charge", 0) or 0)
     r = _sh(["antechamber", "-i", "ligand.sdf", "-fi", "sdf", "-o", "ligand.mol2",
              "-fo", "mol2", "-c", "bcc", "-nc", str(nc), "-at", "gaff2",
-             "-rn", "LIG"], workdir, 900)
+             "-ek", _SQM_EK, "-rn", "LIG"], workdir, 900)
     if r.returncode != 0 or not mol2.exists():
         raise _AmberParamUnsupported(
             f"antechamber/AM1-BCC failed: {(r.stdout + r.stderr)[-400:]}")
