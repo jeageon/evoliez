@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from statistics import mean, pstdev
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from evoliez.adapters.openmm_engine import MDResult
 from evoliez.config import ScoreWeights
@@ -24,6 +24,12 @@ class MDMetrics:
     energy_drift: float = 0.0
     simulation_health_ok: bool = True
     md_lite_score: float = 0.0
+    # Catalytic-power (near-attack-conformation) occupancy: the reaction-
+    # competent frame fraction (md.reactive_geometry). None when NAC was off /
+    # not applicable. This is REACTIVITY and is reported SEPARATELY from
+    # md_lite_score (binding stability) - it is NOT folded into md_lite here.
+    nac_occupancy: Optional[float] = None
+    nac: Dict[str, object] = field(default_factory=dict)
     passed: bool = True
     failure_reasons: List[str] = field(default_factory=list)
 
@@ -38,6 +44,12 @@ CAT_DIST_MAX = 7.0
 
 def analyse(result: MDResult, weights: ScoreWeights) -> MDMetrics:
     m = MDMetrics()
+
+    # Catalytic-power (NAC) is an independent layer: carry it through whatever
+    # the binding verdict is (it is None unless md.reactive_geometry ran). Set
+    # BEFORE the skip/fail early returns so it is never dropped.
+    m.nac_occupancy = result.nac_occupancy
+    m.nac = dict(result.nac or {})
 
     # EVERY skip is NEUTRAL for scoring: a skip means real MD never RAN for
     # this candidate (optional FF unavailable, or no mutant / full-atom
@@ -137,6 +149,8 @@ def to_json(metrics: MDMetrics) -> Dict[str, object]:
         "energy_drift": metrics.energy_drift,
         "simulation_health_ok": metrics.simulation_health_ok,
         "md_lite_score": metrics.md_lite_score,
+        "nac_occupancy": metrics.nac_occupancy,
+        "nac": metrics.nac,
         "passed": metrics.passed,
         "failure_reasons": metrics.failure_reasons,
     }

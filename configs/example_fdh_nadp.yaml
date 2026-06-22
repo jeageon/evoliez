@@ -18,6 +18,14 @@ input:
     id: NADP_cofactor
     type: smiles
     value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2OP([O-])([O-])=O)[C@@H](O)[C@H]1O"
+  # Co-substrate for the CATALYTIC-POWER (NAC) screen below: the hydride DONOR
+  # must be in the box alongside NADP for the reaction geometry to be measured.
+  # Uncomment together with validation.md.reactive_geometry to enable it.
+  # extra_ligands:
+  #   - id: formate
+  #     type: smiles
+  #     value: "[O-]C=O"
+  #     role: substrate
   # NOTE: examples/fdh/target.fasta is an ILLUSTRATIVE placeholder. Tokens
   # are self-consistent with that sequence (His@154, Arg@285, Gly@15/33) so
   # the mock example is coherent - NOT a verified FDH active site. Replace
@@ -82,6 +90,24 @@ validation:
     solvent: implicit
     production_ns: 1.0
     top_candidates: 20
+    # Catalytic-power (near-attack-conformation) screen. md_lite_score measures
+    # only BINDING stability; this adds REACTIVITY = the fraction of frames where
+    # the reacting atoms sit in a productive geometry (transferring atom within
+    # distance_max of the acceptor AND a donor-transfer-acceptor angle >=
+    # angle_min). A mutant beating WT (ΔNAC > 0) has a more productive active
+    # site. Needs the hydride DONOR co-modelled (input.extra_ligands: formate).
+    # Disabled here (mock backend has no real trajectory); flip enabled: true on
+    # the GPU server with backend: real. SMARTS below = FDH formate -> NADP-C4.
+    reactive_geometry:
+      enabled: false
+      donor_smarts: "[CX3H1](=O)[O-]"                  # formate C-H (hydride donor)
+      acceptor_smarts: "[cH1]([cH0]C(=O)[NX3])[cH1]"   # nicotinamide C4
+      donor_idx: 0
+      acceptor_idx: 0
+      transfer_is_h: true
+      distance_max: 3.5      # Å, transferring H -> acceptor
+      angle_min: 150.0       # deg, donor_heavy - H - acceptor (near-linear)
+      label: formate_hydride_to_NADP_C4
 
 output:
   final_library_size: 96

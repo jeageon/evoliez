@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 
 from evoliez.md.nac import (FDH_HYDRIDE, ReactiveSpec, identify_acceptor,
-                            identify_donor, nac_from_frames)
+                            identify_donor, nac_from_frames,
+                            nac_from_subframes, resolve_reactive_indices)
 
 _SPEC = ReactiveSpec(donor_smarts="", acceptor_smarts="",
                      distance_max=3.5, angle_min=150.0)
@@ -58,3 +59,80 @@ def test_fdh_reactive_atom_identification():
     don = identify_donor(fmt, FDH_HYDRIDE)
     assert don is not None and "transfer" in don
     assert fmt.GetAtomWithIdx(don["transfer"]).GetSymbol() == "H"
+
+
+def test_resolve_reactive_indices_separate_residues():
+    """The crux: donor (formate) and acceptor (NADP-C4) live in SEPARATE
+    molecules / residues, each occupying its own global trajectory block. The
+    resolver must find each in its own molecule and return GLOBAL indices."""
+    Chem = pytest.importorskip("rdkit.Chem")
+    nadp = Chem.AddHs(Chem.MolFromSmiles(_NADP))
+    fmt = Chem.AddHs(Chem.MolFromSmiles("[O-]C=O"))
+    # Disjoint, non-zero global blocks (NADP added first, then formate), so a
+    # correct map can't accidentally pass by returning local indices.
+    nadp_blk = list(range(100, 100 + nadp.GetNumAtoms()))
+    fmt_blk = list(range(900, 900 + fmt.GetNumAtoms()))
+
+    res = resolve_reactive_indices([(nadp, nadp_blk), (fmt, fmt_blk)], FDH_HYDRIDE)
+    assert res is not None
+    # acceptor resolved INTO the NADP block, donor INTO the formate block
+    assert res["acceptor"] == nadp_blk[identify_acceptor(nadp, FDH_HYDRIDE)]
+    don = identify_donor(fmt, FDH_HYDRIDE)
+    assert res["donor_heavy"] == fmt_blk[don["heavy"]]
+    assert res["transfer"] == fmt_blk[don["transfer"]]
+    assert res["acceptor"] in nadp_blk and res["transfer"] in fmt_blk
+
+    # order-independent: same answer if formate is added/searched first
+    res2 = resolve_reactive_indices([(fmt, fmt_blk), (nadp, nadp_blk)], FDH_HYDRIDE)
+    assert res2 == res
+
+
+def test_resolve_reactive_indices_missing_partner():
+    """Acceptor present but no donor molecule -> None (honest skip, not a fake)."""
+    Chem = pytest.importorskip("rdkit.Chem")
+    nadp = Chem.AddHs(Chem.MolFromSmiles(_NADP))
+    nadp_blk = list(range(nadp.GetNumAtoms()))
+    assert resolve_reactive_indices([(nadp, nadp_blk)], FDH_HYDRIDE) is None
+
+
+def test_nac_from_subframes_rows_are_dha():
+    # rows [donor_heavy, transfer, acceptor]; close+linear -> reactive
+    sub = np.array([[0, 0, 0], [1.1, 0, 0], [3.6, 0, 0]], float)  # d2.5 ang180
+    res = nac_from_subframes([sub, sub], FDH_HYDRIDE,
+                             atoms={"donor_heavy": 5, "transfer": 6, "acceptor": 7})
+    assert res.occupancy == 1.0 and res.n_frames == 2
+    assert res.atoms == {"donor_heavy": 5, "transfer": 6, "acceptor": 7}
+
+
+def test_nac_engine_dataflow_contract():
+    """Mirror the OpenMM engine's EXACT NAC data-flow: resolve donor/acceptor to
+    GLOBAL indices from per-molecule (rdkit, block) pairs, then for each MD frame
+    slice those three atoms out of the FULL-system coord array (stored in nm) and
+    scale to Angstrom -- exactly what `_run_real` does with
+    ``cur[list(nac_idx)] * 10.0``. Proves the index arithmetic + unit handling
+    the (server-only) OpenMM execution relies on."""
+    Chem = pytest.importorskip("rdkit.Chem")
+    nadp = Chem.AddHs(Chem.MolFromSmiles(_NADP))
+    fmt = Chem.AddHs(Chem.MolFromSmiles("[O-]C=O"))
+    # global topology blocks as the engine assigns them (protein first at 0..,
+    # then each ligand a contiguous block in add order: NADP then formate)
+    base = 1000
+    nadp_blk = list(range(base, base + nadp.GetNumAtoms()))
+    fmt_blk = list(range(base + nadp.GetNumAtoms(),
+                         base + nadp.GetNumAtoms() + fmt.GetNumAtoms()))
+    nac = resolve_reactive_indices([(nadp, nadp_blk), (fmt, fmt_blk)], FDH_HYDRIDE)
+    assert nac is not None
+    dh, tr, ac = nac["donor_heavy"], nac["transfer"], nac["acceptor"]
+    assert dh in fmt_blk and tr in fmt_blk and ac in nadp_blk
+
+    # full-system coords in Angstrom; place the 3 reacting atoms productively
+    # (H->acceptor 2.8 Å, donor_heavy-H-acceptor 180°), rest at origin
+    n_atoms = base + nadp.GetNumAtoms() + fmt.GetNumAtoms()
+    ang = np.zeros((n_atoms, 3))
+    ang[dh], ang[tr], ang[ac] = [0.0, 0, 0], [1.1, 0, 0], [3.9, 0, 0]
+    cur_nm = ang / 10.0                       # engine holds positions in nm
+    # engine's per-frame slice: cur[list(nac_idx)] * 10.0  (nm -> Å)
+    subframes = [cur_nm[[dh, tr, ac]] * 10.0 for _ in range(5)]
+    res = nac_from_subframes(subframes, FDH_HYDRIDE, atoms=nac)
+    assert res.n_frames == 5 and res.occupancy == 1.0
+    assert res.distance_min == 2.8 and res.atoms["acceptor"] == ac

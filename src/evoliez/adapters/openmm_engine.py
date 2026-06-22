@@ -85,6 +85,14 @@ class MDResult:
     # endpoint binding free energy (kcal/mol) per method, e.g. {"gbsa": -28.4,
     # "pbsa": -24.1}; populated by the Amber tier-3 MM-PB/GBSA, empty otherwise.
     binding_dg: Dict[str, float] = field(default_factory=dict)
+    # Catalytic-power (near-attack-conformation) screen, when md.reactive_geometry
+    # is enabled and the donor+acceptor were both resolved in the trajectory.
+    # ``nac_occupancy`` is the reaction-competent frame fraction; ``nac`` is the
+    # full NACResult.to_json() (distances/angles/atoms/note). None / empty when
+    # NAC was off, not applicable (mock / no production frames), or the reaction
+    # partners were absent. See evoliez.md.nac.
+    nac_occupancy: Optional[float] = None
+    nac: Dict[str, object] = field(default_factory=dict)
     integration_failed: bool = False
     failure_reason: Optional[str] = None
 
@@ -117,24 +125,20 @@ _STD_RES = {
 }
 
 
-def _ligand_rdkit_at_pose(pdb_path: Path, smiles: str):
-    """RDKit ligand mol AT THE BOLTZ POSE: read the HETATM + CONECT ligand
-    from the predicted PDB (bonds from CONECT), assign bond orders from the
-    SMILES template, add explicit H with coords. Pure RDKit so it is
-    unit-testable WITHOUT the conda-only openff stack (this is the
-    bug-prone part). Raises on failure - a mis-built/mis-placed ligand
-    must surface as a REAL MD failure, never a silent pass."""
+def _rdkit_from_het_lines(het_lines: "Sequence[str]", smiles: str):
+    """RDKit ligand mol at the pose from ONE set of HETATM(+CONECT) records,
+    bond orders from the SMILES template, explicit H with coords. Returns
+    ``None`` when the template does not match this atom set (a DIFFERENT
+    molecule - the basis for telling NADP apart from a formate co-substrate).
+    Raises only on genuinely corrupt input. Pure RDKit, so unit-testable
+    WITHOUT the conda-only openff stack (this is the bug-prone part)."""
     from rdkit import Chem
     from rdkit.Chem import AllChem
 
-    het = [
-        ln for ln in Path(pdb_path).read_text().splitlines()
-        if ln.startswith(("HETATM", "CONECT"))
-    ]
-    if not any(ln.startswith("HETATM") for ln in het):
+    if not any(ln.startswith("HETATM") for ln in het_lines):
         raise ValueError("no ligand HETATM records in the predicted PDB")
     rd = Chem.MolFromPDBBlock(
-        "\n".join(het) + "\nEND\n",
+        "\n".join(het_lines) + "\nEND\n",
         removeHs=False, sanitize=False, proximityBonding=False,
     )
     if rd is None:
@@ -142,7 +146,18 @@ def _ligand_rdkit_at_pose(pdb_path: Path, smiles: str):
     tmpl = Chem.MolFromSmiles(smiles)
     if tmpl is None:
         raise ValueError(f"unparsable ligand SMILES: {smiles!r}")
-    rd = AllChem.AssignBondOrdersFromTemplate(tmpl, rd)  # orders from SMILES
+    # Heavy-atom count gate FIRST: AssignBondOrdersFromTemplate substructure-
+    # matches the template, so a SMALLER template (formate) could partial-match
+    # a LARGER group (NADP) and silently mis-assign. Requiring equal heavy-atom
+    # counts forces a whole-molecule match, so each group binds to its true
+    # ligand. (Protonation differences don't change the heavy count.)
+    rd_heavy = sum(1 for a in rd.GetAtoms() if a.GetAtomicNum() > 1)
+    if rd_heavy != tmpl.GetNumAtoms():       # SMILES heavy-atom count
+        return None
+    try:
+        rd = AllChem.AssignBondOrdersFromTemplate(tmpl, rd)  # orders from SMILES
+    except Exception:
+        return None                          # template != this molecule
     # Molecule.from_rdkit REQUIRES a SANITIZED mol (valence/aromaticity/ring
     # perception). MolFromPDBBlock used sanitize=False and AddHs leaves the
     # property cache stale, so an unsanitized mol here yields an OpenFF
@@ -156,27 +171,112 @@ def _ligand_rdkit_at_pose(pdb_path: Path, smiles: str):
     return rd
 
 
-def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
-    """OpenFF Molecule for the ligand at the Boltz pose (thin wrapper over
-    the RDKit builder; OpenFF is conda-only so this line is server-only).
+def _ligand_rdkit_at_pose(pdb_path: Path, smiles: str):
+    """RDKit ligand mol AT THE BOLTZ POSE for the SINGLE-ligand path: all
+    HETATM records as one molecule. Raises on failure - a mis-built/mis-placed
+    ligand must surface as a REAL MD failure, never a silent pass."""
+    het = [
+        ln for ln in Path(pdb_path).read_text().splitlines()
+        if ln.startswith(("HETATM", "CONECT"))
+    ]
+    rd = _rdkit_from_het_lines(het, smiles)
+    if rd is None:
+        raise ValueError(
+            "ligand SMILES template did not match the PDB HETATM block "
+            "(atom count / connectivity mismatch)"
+        )
+    return rd
 
-    The RDKit mol read from the PDB carries PDB hierarchy metadata (residue
-    name "LIG", atom/chain names). openmmforcefields' GAFFTemplateGenerator
-    then FAILS to residue-match the molecule against its OWN to_openmm()
-    topology - server-confirmed: a chemically-isomorphic SMILES-built molecule
-    parameterizes, the metadata-carrying PDB one does NOT ("No template found
-    for residue 0 (LIG) ... matches ACE/ILE but missing N H atoms"). This was a
-    real, silent s10 blocker: EVERY pose-built ligand fell to
-    skipped_parameterization regardless of the small molecule. Clearing the
-    per-atom metadata restores the match while keeping the pose conformer.
-    """
+
+def _hetatm_groups(pdb_text: str) -> "List[tuple]":
+    """Split a PDB's HETATM records into per-molecule groups keyed by
+    (chain, resSeq, iCode, resName), each carrying its own HETATM lines plus the
+    CONECT lines whose base atom belongs to the group. This is what lets a
+    co-modelled active site (NADP + a formate co-substrate, ions, ...) be read
+    as SEPARATE molecules. Pure text. Returns [(key, lines), ...] in
+    first-appearance order."""
+    order: List[tuple] = []
+    groups: Dict[tuple, List[str]] = {}
+    serial_key: Dict[int, tuple] = {}
+    conects: List[str] = []
+    for ln in pdb_text.splitlines():
+        if ln.startswith("HETATM"):
+            try:
+                serial = int(ln[6:11])
+            except ValueError:
+                continue
+            key = (ln[21:22], ln[22:26].strip(), ln[26:27], ln[17:20].strip())
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(ln)
+            serial_key[serial] = key
+        elif ln.startswith("CONECT"):
+            conects.append(ln)
+    for c in conects:
+        try:
+            base = int(c[6:11])
+        except ValueError:
+            continue
+        key = serial_key.get(base)
+        if key is not None:
+            groups[key].append(c)
+    return [(k, groups[k]) for k in order]
+
+
+def _ligands_at_pose(pdb_path: Path, specs: "Sequence[tuple]") -> "List[tuple]":
+    """Place the design ligand + any co-substrates/cofactors at the Boltz pose,
+    each as its OWN molecule. ``specs`` = ``[(id, smiles), ...]`` with the design
+    ligand FIRST. Groups the PDB HETATM by residue and matches each group to the
+    spec whose template fits (heavy-atom count + bond-order assignment - no
+    residue-name reliance). Returns ``[(id, rdkit_mol), ...]`` in spec order for
+    the ones found; logs every spec not matched and every hetero group left
+    over (never silent - a missing reaction partner must be visible)."""
+    groups = _hetatm_groups(Path(pdb_path).read_text())
+    out: List[tuple] = []
+    used = set()
+    for sid, smi in specs:
+        found = None
+        for gi, (_key, lines) in enumerate(groups):
+            if gi in used:
+                continue
+            rd = _rdkit_from_het_lines(lines, smi)
+            if rd is not None:
+                found, _u = rd, used.add(gi)
+                break
+        if found is not None:
+            out.append((sid, found))
+        else:
+            log.warning("MD: ligand %s (%s...) not matched to any hetero group "
+                        "in %s", sid, smi[:32], Path(pdb_path).name)
+    leftover = len(groups) - len(used)
+    if leftover:
+        log.info("MD: %d hetero group(s) in %s not matched to a configured "
+                 "ligand (ions/water/unmodelled)", leftover, Path(pdb_path).name)
+    return out
+
+
+def _offmol_from_rdkit(rd):
+    """OpenFF Molecule from a pose RDKit mol, with PDB hierarchy metadata
+    cleared. The metadata (residue name "LIG", atom/chain names) makes
+    openmmforcefields' GAFFTemplateGenerator FAIL to residue-match the molecule
+    against its OWN to_openmm() topology - server-confirmed: a chemically-
+    isomorphic SMILES-built molecule parameterizes, the metadata-carrying PDB
+    one does NOT ("No template found for residue 0 (LIG) ... missing N H
+    atoms"). This was a real, silent s10 blocker (EVERY pose-built ligand fell
+    to skipped_parameterization). Clearing per-atom metadata restores the match
+    while keeping the pose conformer. OpenFF is conda-only -> server-only line."""
     from openff.toolkit import Molecule
 
-    rd = _ligand_rdkit_at_pose(pdb_path, smiles)
     mol = Molecule.from_rdkit(rd, allow_undefined_stereo=True)
     for atom in mol.atoms:          # drop PDB hierarchy metadata (see above)
         atom.metadata.clear()
     return mol
+
+
+def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
+    """OpenFF Molecule for the SINGLE design ligand at the Boltz pose."""
+    return _offmol_from_rdkit(_ligand_rdkit_at_pose(pdb_path, smiles))
 
 
 def _protein_only_pdbfixed(pdb_path: Path):
@@ -285,6 +385,60 @@ def _ligand_system_generator(off_lig, workdir: Path, cache_dir: "Path | None" = 
     raise _LigandParamUnsupported(str(last))
 
 
+def _ligand_system_generator_multi(off_ligs, workdir: Path,
+                                   cache_dir: "Path | None" = None):
+    """A SystemGenerator for the catalytic-screen path with MULTIPLE small
+    molecules (design ligand + co-substrate/cofactor, e.g. NADP + formate).
+    Registers every molecule and probes ligand-only create_system for EACH
+    (the binding constraint is the hardest, usually the cofactor): the FF must
+    handle ALL of them. Same FF ladder + shared ligand-keyed cache as the
+    single-ligand path. Separate from ``_ligand_system_generator`` so the
+    server-verified single-ligand path is left byte-for-byte unchanged."""
+    import hashlib
+
+    import openmm.app as app
+    from openmmforcefields.generators import SystemGenerator
+
+    off_ligs = list(off_ligs)
+    cache_root = cache_dir if cache_dir is not None else workdir
+    cache_root.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha1(
+        "|".join(_ligand_cache_key(o) for o in off_ligs).encode("utf-8")
+    ).hexdigest()[:16]
+
+    ffs = ["gaff-2.11"]
+    try:
+        import espaloma  # noqa: F401
+
+        ffs.append("espaloma-0.3.2")
+    except Exception:
+        pass
+    last = None
+    for ff in ffs:
+        try:
+            sg = SystemGenerator(
+                forcefields=["amber14-all.xml", "implicit/obc2.xml"],
+                small_molecule_forcefield=ff,
+                molecules=list(off_ligs),
+                cache=str(cache_root / f"ligff_multi_{key}_{ff}.json"),
+                forcefield_kwargs={"constraints": app.HBonds},
+                nonperiodic_forcefield_kwargs={
+                    "nonbondedMethod": app.CutoffNonPeriodic,
+                },
+            )
+            for o in off_ligs:                  # PROBE each ligand ALONE
+                sg.create_system(o.to_topology().to_openmm(), molecules=[o])
+            log.info("%d ligand(s) parameterized with %s", len(off_ligs), ff)
+            return sg, ff
+        except Exception as exc:
+            last = exc
+            log.warning(
+                "small-molecule FF %s cannot parameterize the ligand set: %s",
+                ff, str(exc)[:200],
+            )
+    raise _LigandParamUnsupported(str(last))
+
+
 def run_md(
     cx: Complex,
     candidate_id: str,
@@ -296,12 +450,20 @@ def run_md(
     backend: Backend,
     dry_run: bool = False,
     ligand_cache_dir: "Path | None" = None,
+    extra_ligands: "Sequence[tuple] | None" = None,
 ) -> MDResult:
     """``ligand_cache_dir``: shared, stable per-run directory for the ligand
     force-field cache. The ligand is identical across all candidates in a run,
     so AM1-BCC charge derivation (the slow part) is cached here ONCE instead of
     per-candidate under ``workdir``. Defaults to ``workdir`` (legacy behaviour)
-    when not supplied."""
+    when not supplied.
+
+    ``extra_ligands``: ``[(id, smiles), ...]`` co-substrates/cofactors to ALSO
+    place in the system (e.g. formate alongside NADP). Used ONLY by the OpenMM
+    catalytic-screen path when ``cfg.reactive_geometry.enabled`` - the reaction
+    donor (formate hydride) and acceptor (NADP-C4) are then both present so the
+    near-attack-conformation occupancy is measurable. The single-ligand binding
+    path ignores it, so the verified default MD is unchanged."""
     workdir.mkdir(parents=True, exist_ok=True)
     if backend is Backend.real:
         # tier-3 confirmatory engine: dispatch to the Amber pmemd.cuda backend
@@ -327,7 +489,7 @@ def run_md(
             return _run_real(
                 cx, candidate_id, cfg, workdir,
                 catalytic_positions=catalytic_positions, dry_run=dry_run,
-                ligand_cache_dir=ligand_cache_dir,
+                ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_ligands,
             )
         except Exception as exc:  # spec 23 Risk 4: fail gracefully per candidate
             log.warning("MD failed for %s (%s); recording failure", candidate_id, exc)
@@ -412,6 +574,7 @@ def _run_real(
     catalytic_positions: Sequence[int],
     dry_run: bool,
     ligand_cache_dir: "Path | None" = None,
+    extra_ligands: "Sequence[tuple] | None" = None,
 ) -> MDResult:
     if dry_run:
         log.info("[dry-run] would run OpenMM L%d (%s) for %s",
@@ -513,15 +676,37 @@ def _run_real(
         )
 
     # (#4b) Protein + ligand topology assembly + system creation. Standard
-    # openmmforcefields recipe: the ligand enters the system from the OpenFF
+    # openmmforcefields recipe: each ligand enters the system from the OpenFF
     # molecule placed at the BOLTZ POSE (PDB+CONECT, bond orders from the
     # SMILES template) - NOT the bond-sparse/H-less PDB HETATM, which can't
     # graph-match GAFF ("No template for residue LIG"). The protein is
     # PDBFixer-repaired (terminal OXT / missing heavy atoms) with the
     # ligand stripped, then recombined. A failure HERE is a REAL MD failure
     # (structure / chemistry / template), surfaced as failed - never a pass.
+    #
+    # CATALYTIC-SCREEN path (cfg.reactive_geometry.enabled AND extra_ligands):
+    # ALSO place the co-substrate(s)/cofactor(s) (e.g. formate beside NADP) as
+    # SEPARATE molecules so the reaction donor and acceptor are both present and
+    # the near-attack-conformation occupancy is measurable. The DEFAULT binding
+    # path (NAC off / no extras) is the verified single-ligand build, untouched.
+    nac_cfg = getattr(cfg, "reactive_geometry", None)
+    nac_on = bool(nac_cfg and getattr(nac_cfg, "enabled", False))
+    _extras = list(extra_ligands or [])
+    multi = nac_on and bool(_extras)
     try:
-        off_lig = _ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)
+        if multi:
+            specs = [(cx.ligand.id or "design", cx.ligand.smiles)] + [
+                (str(eid), str(esmi)) for eid, esmi in _extras
+            ]
+            matched = _ligands_at_pose(pdb_path, specs)
+            if not matched or matched[0][0] != specs[0][0]:
+                raise ValueError(
+                    "design ligand not found among the complex HETATM groups "
+                    "(catalytic-screen multi-ligand build)"
+                )
+            off_ligs = [_offmol_from_rdkit(rd) for _id, rd in matched]
+        else:
+            off_ligs = [_ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)]
     except Exception as exc:
         # Ligand chemistry could not be built from PDB+CONECT+SMILES
         # (rare; verified-correct for NADP locally) - a real structure
@@ -543,12 +728,17 @@ def _run_real(
         # AM1-BCC/antechamber charge derivation runs ONCE for the run's
         # (identical) ligand instead of re-running under each candidate's
         # workdir. Falls back to workdir when no shared dir was threaded in.
-        system_generator, _ff = _ligand_system_generator(
-            off_lig, workdir, cache_dir=ligand_cache_dir,
-        )
+        if multi:
+            system_generator, _ff = _ligand_system_generator_multi(
+                off_ligs, workdir, cache_dir=ligand_cache_dir,
+            )
+        else:
+            system_generator, _ff = _ligand_system_generator(
+                off_ligs[0], workdir, cache_dir=ligand_cache_dir,
+            )
     except _LigandParamUnsupported as exc:
         log.warning(
-            "no small-molecule FF can parameterize the ligand for %s "
+            "no small-molecule FF can parameterize the ligand(s) for %s "
             "(large/charged cofactor e.g. NADP); recording "
             "skipped_parameterization (NEUTRAL - judged on other layers): "
             "%s", candidate_id, str(exc)[:200],
@@ -560,6 +750,11 @@ def _run_real(
             failure_reason=f"ligand FF unsupported (cofactor): {exc}",
         )
 
+    # mol_blocks: per added ligand, (OpenFF mol, [global topology indices in
+    # atom order]) - the RDKit<->trajectory index map the NAC layer needs. The
+    # OpenFF round-trip preserves atom order, so the block is exactly the
+    # contiguous topology range the molecule occupies.
+    mol_blocks: List[tuple] = []
     try:
         topo, posns = _protein_only_pdbfixed(pdb_path)
         if topo is None:                          # pdbfixer absent
@@ -583,15 +778,20 @@ def _run_real(
                 "ligand is added separately so these must not be present"
             )
         modeller.addHydrogens(system_generator.forcefield)
-        # Add the ligand SOLELY from the OpenFF molecule at its Boltz-pose
-        # conformer (verified 70 atoms incl. 26 H); the only ligand in the
-        # system is now this one, which create_system matches via GAFF.
-        modeller.add(
-            off_lig.to_topology().to_openmm(),
-            off_lig.conformers[0].to_openmm(),
-        )
+        # Add each ligand SOLELY from its OpenFF molecule at its Boltz-pose
+        # conformer; the only ligands in the system are these, which
+        # create_system matches via GAFF. Record each one's topology block.
+        for off in off_ligs:
+            n0 = modeller.topology.getNumAtoms()
+            modeller.add(
+                off.to_topology().to_openmm(),
+                off.conformers[0].to_openmm(),
+            )
+            mol_blocks.append(
+                (off, list(range(n0, modeller.topology.getNumAtoms())))
+            )
         system = system_generator.create_system(
-            modeller.topology, molecules=[off_lig]
+            modeller.topology, molecules=off_ligs
         )
     except Exception as exc:
         log.warning(
@@ -606,6 +806,15 @@ def _run_real(
                            f"creation: {exc}",
         )
 
+    # The DESIGN ligand (off_ligs[0] / mol_blocks[0]) defines the BINDING
+    # metrics; any co-substrate added for the catalytic screen (formate) is NOT
+    # counted as "the ligand", so its free diffusion can't inflate ligand_rmsd.
+    # For the single-ligand path this is exactly the old residue-name set.
+    design_lig_idx = mol_blocks[0][1] if mol_blocks else [
+        a.index for a in modeller.topology.atoms()
+        if a.residue.name in ("LIG", "UNL", "UNK")
+    ]
+
     # Restraint schedule (spec 15.5): tiered POSITIONAL restraints keyed on
     # distance from the ligand, computed in OpenMM (nm) space so they stay
     # consistent with the pocket used for pocket_rmsd below. Distant backbone
@@ -619,8 +828,7 @@ def _run_real(
     # numpy array (no per-element .x/.y/.z) once an OpenFF conformer has been
     # added - value_in_unit gives a clean (N,3) array either way.
     pos_nm = np.array(modeller.positions.value_in_unit(unit.nanometer))
-    _lig_idx0 = [a.index for a in modeller.topology.atoms()
-                 if a.residue.name in ("LIG", "UNL", "UNK")]
+    _lig_idx0 = design_lig_idx          # restrain pocket around the DESIGN ligand
     _ca_atoms = [a for a in modeller.topology.atoms() if a.name == "CA"]
     K_STRONG = (5.0 * unit.kilocalories_per_mole / unit.angstrom**2
                 ).value_in_unit(unit.kilojoule_per_mole / unit.nanometer**2)
@@ -675,9 +883,10 @@ def _run_real(
             sim.topology, sim.context.getState(getPositions=True).getPositions(), fh
         )
 
-    # ligand-specific + pocket-specific atom indices (was whole-system RMSD)
-    lig_idx = [a.index for a in modeller.topology.atoms()
-               if a.residue.name in ("LIG", "UNL", "UNK")]
+    # ligand-specific + pocket-specific atom indices (was whole-system RMSD).
+    # DESIGN ligand only: binding metrics must not include a catalytic-screen
+    # co-substrate (formate), whose free diffusion would dominate ligand_rmsd.
+    lig_idx = design_lig_idx
     init = np.array([[p.x, p.y, p.z] for p in
                      sim.context.getState(getPositions=True).getPositions()])
     if lig_idx:
@@ -757,6 +966,50 @@ def _run_real(
     contact_hits = {r: 0 for r in contact_res}
     hbond_hits = 0
 
+    # ---- catalytic-power (NAC) setup: resolve the reaction donor/acceptor to
+    # GLOBAL trajectory atom indices ONCE, here, using the per-molecule blocks
+    # (so the formate hydride and the NADP-C4 are found across SEPARATE
+    # residues). NAC is an OPTIONAL add-on: any failure logs and disables NAC
+    # for this candidate, never aborts the MD. Per-frame coords for just these
+    # three atoms are collected in the production loop below.
+    nac_idx = None
+    nac_map = None
+    nac_spec = None
+    nac_subframes: List = []
+    if nac_on and mol_blocks:
+        try:
+            from evoliez.md.nac import (ReactiveSpec,
+                                        resolve_reactive_indices)
+            if not (nac_cfg.donor_smarts and nac_cfg.acceptor_smarts):
+                log.warning("MD NAC enabled for %s but donor/acceptor SMARTS "
+                            "are empty; NAC skipped", candidate_id)
+            else:
+                nac_spec = ReactiveSpec(
+                    donor_smarts=nac_cfg.donor_smarts,
+                    acceptor_smarts=nac_cfg.acceptor_smarts,
+                    donor_idx=nac_cfg.donor_idx,
+                    acceptor_idx=nac_cfg.acceptor_idx,
+                    transfer_is_h=nac_cfg.transfer_is_h,
+                    distance_max=nac_cfg.distance_max,
+                    angle_min=nac_cfg.angle_min,
+                    label=nac_cfg.label or "reaction",
+                )
+                rd_blocks = [(off.to_rdkit(), blk) for off, blk in mol_blocks]
+                nac_map = resolve_reactive_indices(rd_blocks, nac_spec)
+                if nac_map:
+                    nac_idx = (nac_map["donor_heavy"], nac_map["transfer"],
+                               nac_map["acceptor"])
+                    log.info("MD NAC for %s: donor_heavy=%d transfer=%d "
+                             "acceptor=%d", candidate_id, *nac_idx)
+                else:
+                    log.warning("MD NAC for %s: donor+acceptor not both "
+                                "resolved in the system (reaction partners "
+                                "absent); NAC skipped", candidate_id)
+        except Exception as exc:                  # NAC must never break MD
+            log.warning("MD NAC setup failed for %s (%s); NAC skipped",
+                        candidate_id, exc)
+            nac_idx = None
+
     lig_series: List[float] = []
     pkt_series: List[float] = []
     e_start = e_last = None
@@ -772,6 +1025,8 @@ def _run_real(
             cur = np.array([[p.x, p.y, p.z] for p in st.getPositions()])
             lig_series.append(round(_rmsd(cur, lig_idx, init), 3))
             pkt_series.append(round(_rmsd(cur, pkt_idx, init), 3))
+            if nac_idx is not None:               # 3 reacting atoms, nm -> Å
+                nac_subframes.append(cur[list(nac_idx)] * 10.0)
             if geom_on:
                 for _p, _ai in cat_idx.items():
                     cat_series[_p].append(
@@ -798,6 +1053,19 @@ def _run_real(
     else:
         key_distances, contact_occupancy, hbond_occupancy = {}, {}, 0.0
 
+    # Catalytic-power (NAC) occupancy from the per-frame reacting-atom geometry.
+    nac_occupancy = None
+    nac_json: Dict[str, object] = {}
+    if nac_idx is not None and nac_subframes:
+        from evoliez.md.nac import nac_from_subframes
+        nac_res = nac_from_subframes(nac_subframes, nac_spec, atoms=nac_map)
+        nac_occupancy = nac_res.occupancy
+        nac_json = nac_res.to_json()
+        log.info("MD NAC for %s: occupancy=%.3f over %d frames "
+                 "(d_min=%.2f Å, ang_mean=%.1f°)", candidate_id,
+                 nac_res.occupancy, nac_res.n_frames,
+                 nac_res.distance_min, nac_res.angle_mean)
+
     drift = abs((e_last - e_start) / e_start) if e_start else 0.0
     status = "unstable" if (lig_series and lig_series[-1] > 5.0) else "ok"
     return MDResult(
@@ -813,5 +1081,7 @@ def _run_real(
         key_distances=key_distances,
         contact_occupancy=contact_occupancy,
         hbond_occupancy=hbond_occupancy,
+        nac_occupancy=nac_occupancy,
+        nac=nac_json,
         energy_drift=round(float(drift), 4),
     )

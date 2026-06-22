@@ -107,6 +107,58 @@ def identify_acceptor(mol, spec: ReactiveSpec) -> Optional[int]:
     return _first_match_atom(mol, spec.acceptor_smarts, spec.acceptor_idx)
 
 
+def resolve_reactive_indices(
+    mol_blocks: "Sequence[tuple]", spec: ReactiveSpec
+) -> Optional[Dict[str, int]]:
+    """Map the RDKit donor/acceptor atoms onto GLOBAL trajectory atom indices.
+
+    ``mol_blocks`` is one entry per small molecule actually placed in the MD
+    system, in the order it was added: ``(rdkit_mol_with_Hs, global_indices)``
+    where ``global_indices[i]`` is the trajectory atom index of atom ``i`` of
+    that RDKit mol (the OpenFF round-trip preserves atom order, so this is just
+    the contiguous topology block the molecule occupies).
+
+    Donor and acceptor are searched INDEPENDENTLY across every molecule, so the
+    formate hydride donor and the NADP-C4 acceptor are correctly found even
+    though they are SEPARATE residues. Returns ``{donor_heavy, transfer,
+    acceptor}`` in global indices, or ``None`` if either side is absent (an
+    honest "reaction partners not both present" -> NAC is skipped, never faked).
+    """
+    donor = donor_blk = None
+    acceptor = acceptor_blk = None
+    for rd, gidx in mol_blocks:
+        if donor is None:
+            d = identify_donor(rd, spec)
+            if d is not None and max(d.values()) < len(gidx):
+                donor, donor_blk = d, gidx
+        if acceptor is None:
+            a = identify_acceptor(rd, spec)
+            if a is not None and a < len(gidx):
+                acceptor, acceptor_blk = a, gidx
+    if donor is None or acceptor is None:
+        return None
+    return {
+        "donor_heavy": int(donor_blk[donor["heavy"]]),
+        "transfer": int(donor_blk[donor["transfer"]]),
+        "acceptor": int(acceptor_blk[acceptor]),
+    }
+
+
+def nac_from_subframes(
+    subframes: "Sequence[np.ndarray]", spec: ReactiveSpec,
+    atoms: "Optional[Dict[str, int]]" = None,
+) -> NACResult:
+    """NAC from pre-extracted 3-atom frames. Each ``subframes`` element is a
+    (3,3) array in Angstrom whose rows are ``[donor_heavy, transfer, acceptor]``
+    -- the engine collects only these three atoms per MD frame rather than the
+    whole system. ``atoms`` (the resolved GLOBAL indices) is recorded for
+    provenance. Thin wrapper over :func:`nac_from_frames` with fixed indices."""
+    res = nac_from_frames(subframes, 0, 1, 2, spec)
+    if atoms:
+        res.atoms = dict(atoms)
+    return res
+
+
 # --------------------------------------------------------------------------- #
 # Geometry + occupancy core (no RDKit; pure NumPy -- unit-testable)
 # --------------------------------------------------------------------------- #
