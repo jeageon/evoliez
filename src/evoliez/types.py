@@ -36,6 +36,12 @@ class Ligand:
     formal_charge: int = 0
     n_rotatable_bonds: int = 0
     source: str = "input"
+    # Charge parameterisation policy (carried from LigandInput). ``charges_mol2`` is a
+    # path to a pre-charged GAFF mol2 used as a fixed-charge template (skips on-the-fly
+    # AM1-BCC); ``allow_am1bcc`` False forbids the AM1-BCC fallback so a missing template
+    # fails loudly. See evoliez.md.charges and params/<name>/README.md.
+    charges_mol2: Optional[str] = None
+    allow_am1bcc: bool = True
 
     @property
     def n_heavy(self) -> int:

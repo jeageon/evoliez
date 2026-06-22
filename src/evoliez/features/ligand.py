@@ -151,13 +151,23 @@ def _parse_rdkit(spec: LigandInput) -> Ligand:
                 pharmacophore=_pharma(sym, atom.GetIsAromatic()),
             )
         )
+    fc = Chem.GetFormalCharge(mol)
+    if spec.net_charge is not None and spec.net_charge != fc:
+        # Explicit net_charge is the source of truth for MD parameterisation, but a
+        # disagreement with the SMILES-derived charge means the config and the
+        # structure point at different microspecies -> surface it loudly.
+        log.warning("ligand %s: config net_charge=%d overrides SMILES formal charge "
+                    "%d (different microspecies?)", spec.id, spec.net_charge, fc)
+        fc = spec.net_charge
     return Ligand(
         id=spec.id,
         smiles=Chem.MolToSmiles(Chem.RemoveHs(mol)),
         atoms=atoms,
-        formal_charge=Chem.GetFormalCharge(mol),
+        formal_charge=fc,
         n_rotatable_bonds=AllChem.CalcNumRotatableBonds(mol),
         source="rdkit",
+        charges_mol2=spec.charges_mol2,
+        allow_am1bcc=spec.allow_am1bcc,
     )
 
 
@@ -207,7 +217,7 @@ def _parse_synthetic(spec: LigandInput) -> Ligand:
                 pharmacophore=_pharma(element, aromatic),
             )
         )
-    fc = sum(a.formal_charge for a in atoms)
+    fc = spec.net_charge if spec.net_charge is not None else sum(a.formal_charge for a in atoms)
     return Ligand(
         id=spec.id,
         smiles=s,
@@ -215,6 +225,8 @@ def _parse_synthetic(spec: LigandInput) -> Ligand:
         formal_charge=fc,
         n_rotatable_bonds=max(0, heavy // 5),
         source="synthetic",
+        charges_mol2=spec.charges_mol2,
+        allow_am1bcc=spec.allow_am1bcc,
     )
 
 

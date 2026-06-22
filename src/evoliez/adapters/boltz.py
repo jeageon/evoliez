@@ -157,6 +157,7 @@ def _predict_mock(
             id=ligand.id, smiles=ligand.smiles, atoms=best.ligand_atoms,
             formal_charge=ligand.formal_charge,
             n_rotatable_bonds=ligand.n_rotatable_bonds, source=ligand.source,
+            charges_mol2=ligand.charges_mol2, allow_am1bcc=ligand.allow_am1bcc,
         ),
         method="boltz-mock",
         path=str(pdb),
@@ -847,4 +848,5 @@ def _parse_real_structure(pdb: Path, sequence: str, ligand: Ligand) -> Complex:
         id=ligand.id, smiles=ligand.smiles, atoms=lig_atoms,
         formal_charge=ligand.formal_charge,
         source=ligand.source if locked else ligand.source + "|reindexed",
+        charges_mol2=ligand.charges_mol2, allow_am1bcc=ligand.allow_am1bcc,
     ))

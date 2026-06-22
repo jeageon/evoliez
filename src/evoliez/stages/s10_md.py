@@ -38,6 +38,30 @@ class MDStage(Stage):
         # so real MD runs the ACTUAL mutant, not the WT-derived proxy that
         # the openmm sequence guard correctly skips.
         mut_complexes = ctx.get("mutant_complexes", {}) or {}
+        # Resume-safe charge policy. A stage's load() can rebuild a complex without the
+        # ligand's charges_mol2 / allow_am1bcc (serialization parity), so re-apply them
+        # from the CONFIG (the static source of truth) onto EVERY complex the MD will
+        # see. This routes the -3 NADP to its fixed-charge template instead of a
+        # non-converging on-the-fly AM1-BCC. charges_mol2 is resolved to an absolute
+        # path here (run CWD = repo root); the engine fails loudly if it is missing.
+        from pathlib import Path as _Path
+        _lig_cfg = ctx.config.input.ligand
+        _cm = _lig_cfg.charges_mol2
+        if _cm and not _Path(_cm).is_absolute():
+            _cm = str((_Path.cwd() / _cm).resolve())
+
+        def _apply_charge_policy(cx):
+            if cx is None or getattr(cx, "ligand", None) is None:
+                return
+            if cx.ligand.id == _lig_cfg.id:
+                cx.ligand.charges_mol2 = _cm
+                cx.ligand.allow_am1bcc = _lig_cfg.allow_am1bcc
+                if _lig_cfg.net_charge is not None:
+                    cx.ligand.formal_charge = _lig_cfg.net_charge
+
+        _apply_charge_policy(wt)
+        for _mc in mut_complexes.values():
+            _apply_charge_policy(_mc)
         # Shared, stable per-run ligand force-field cache. The ligand
         # (cofactor + substrate) is identical across every candidate, so the
         # slow AM1-BCC/antechamber charge derivation is cached HERE once and

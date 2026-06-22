@@ -286,6 +286,56 @@ def _ligand_offmol_at_pose(pdb_path: Path, smiles: str):
     return _offmol_from_rdkit(_ligand_rdkit_at_pose(pdb_path, smiles))
 
 
+class _FixedChargeError(Exception):
+    """A fixed-charge cofactor (e.g. the -3 NADP) could not be charged: a missing/
+    unmatched template, or a high-risk cofactor with no template + AM1-BCC forbidden.
+    Surfaced as a candidate `failed` with a precise reason - never a silent skip and
+    never an on-the-fly sqm that won't converge."""
+
+
+def _apply_fixed_charges(off_lig, lig) -> bool:
+    """Inject fixed partial charges onto the design-ligand OpenFF Molecule so the
+    SystemGenerator uses them instead of on-the-fly AM1-BCC. Returns True if charges
+    were injected. Policy:
+      * ``lig.charges_mol2`` set  -> load the template, graph-match its charges onto
+        this pose's ligand, set ``partial_charges`` (skips AM1-BCC). Raises if the
+        template can't be found or doesn't match (no silent guess).
+      * else high-risk cofactor (``requires_fixed_charge_template``) -> RAISE: a
+        config error (needs charges_mol2 + allow_am1bcc:false), not a silent sqm hang.
+      * else (small/neutral ligand) -> no-op; the SystemGenerator computes AM1-BCC.
+    """
+    from evoliez.md import charges as _charges
+
+    mol2 = getattr(lig, "charges_mol2", None)
+    if mol2:
+        import numpy as np
+        from openff.units import unit
+
+        mol2_path = Path(mol2)
+        if not mol2_path.is_absolute():
+            mol2_path = (Path.cwd() / mol2_path).resolve()
+        sdf_path = Path(str(mol2_path)[:-5] + ".ref.sdf") if str(mol2_path).endswith(".mol2") \
+            else mol2_path.with_suffix(".ref.sdf")
+        if not mol2_path.exists() or not sdf_path.exists():
+            raise _FixedChargeError(
+                f"{lig.id}: charges_mol2 template not found "
+                f"(mol2={mol2_path}, graph-sdf={sdf_path})")
+        ref, ref_q = _charges.load_reference(sdf_path, mol2_path)
+        q = _charges.transfer_charges(off_lig.to_rdkit(), ref, ref_q,
+                                      int(getattr(lig, "formal_charge", 0) or 0))
+        off_lig.partial_charges = np.asarray(q) * unit.elementary_charge
+        log.info("ligand %s: injected %d fixed charges (sum %+.3f) from %s - "
+                 "skipping on-the-fly AM1-BCC", lig.id, len(q), sum(q), mol2_path.name)
+        return True
+    if _charges.requires_fixed_charge_template(lig):
+        raise _FixedChargeError(
+            f"{lig.id}: high-risk cofactor (net charge "
+            f"{getattr(lig, 'formal_charge', '?')}, {getattr(lig, 'n_heavy', '?')} "
+            "heavy atoms) needs a fixed-charge template - set charges_mol2 and "
+            "allow_am1bcc:false. Refusing on-the-fly AM1-BCC (sqm will not converge).")
+    return False
+
+
 def _protein_only_pdbfixed(pdb_path: Path):
     """PDBFixer-repaired PROTEIN-ONLY (topology, positions).
 
@@ -715,6 +765,11 @@ def _run_real(
             off_ligs = [_offmol_from_rdkit(rd) for _id, rd in matched]
         else:
             off_ligs = [_ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)]
+        # Fixed-charge cofactor template (design ligand is always off_ligs[0]): inject
+        # pre-derived charges for a ligand AM1-BCC/sqm can't converge (the -3 NADP), or
+        # RAISE loudly for a high-risk cofactor with no template. Extra co-substrates
+        # (small, e.g. formate) keep the on-the-fly AM1-BCC path.
+        _apply_fixed_charges(off_ligs[0], cx.ligand)
     except Exception as exc:
         # Ligand chemistry could not be built from PDB+CONECT+SMILES
         # (rare; verified-correct for NADP locally) - a real structure
