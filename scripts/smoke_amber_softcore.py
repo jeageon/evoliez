@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-"""Phase-B increment 2: softcore_setup.py hybrid-mutation-topology smoke.
+"""Phase-B increment 2: hybrid-mutation-topology smoke (the RBFE crux).
 
-The RBFE crux is building the alchemical hybrid topology for a residue mutation.
-Amber's softcore_setup.py does it natively: given WT (A) and mutant (B)
-prmtop/rst it aligns B onto A and prints the TI masks (timask/scmask). This
-smoke builds a WT protein prmtop + a single-residue->ALA mutant prmtop and runs
-softcore_setup.py, validating the topology generation. Run with AmberTools on
-PATH. Usage: python smoke_amber_softcore.py <protein.pdb> [resid]
+Builds a WT protein prmtop + a single-residue->ALA mutant prmtop and runs the
+vendored, Py3-patched softcore_setup_py3.py (Amber's stock softcore_setup.py is
+broken on AmberTools25/Py3 - see that file's header) to align the mutant onto WT
+and emit the 3-stage TI protocol (charge->vdW-softcore->charge) with the exact
+crgmask/scmask. Validates the alchemical topology generation end to end. Run
+with AmberTools on PATH. Usage: python smoke_amber_softcore.py <protein.pdb> [resid]
 """
 import shutil
 import subprocess
@@ -58,22 +58,19 @@ if not (build("wt") and build("mut")):
     print("SMOKE: FAIL - tleap build")
     sys.exit(1)
 
-print("\n=== softcore_setup.py wt -> mut ===")
-r = sh(["softcore_setup.py", "wt.prmtop", "wt.rst", "mut.prmtop", "mut.rst"])
+SC = Path(__file__).resolve().parent / "softcore_setup_py3.py"
+print(f"\n=== {SC.name} wt -> mut ===")
+r = sh([sys.executable, str(SC), "wt.prmtop", "wt.rst", "mut.prmtop", "mut.rst"])
 out = (r.stdout or "") + (r.stderr or "")
-# show the suggested TI masks / generated files
+# show the suggested 3-stage TI protocol (masks) it emits
 for line in out.splitlines():
-    if any(k in line.lower() for k in ("timask", "scmask", "crgmask",
-                                       "generated", "written", "softcore",
-                                       "new ", "perturb")):
+    if any(k in line.lower() for k in ("icfe", "scmask", "crgmask",
+                                       "stage", "generating mut")):
         print("  ", line.strip())
-generated = sorted(p.name for p in WORK.glob("*")
-                   if p.suffix in (".new", "") and "mut" in p.name
-                   and p.name not in ("mut.pdb", "mut.in", "mut_c.pdb"))
-print("  generated files:", [p.name for p in WORK.glob("*.new")] or generated[:6])
+sc_prm = WORK / "mut.SC.prmtop"
+print("  generated:", [p.name for p in sorted(WORK.glob("mut.SC.*"))])
 
-ok = ("timask" in out.lower() or "scmask" in out.lower()
-      or any(WORK.glob("*.new")))
-print("\nSMOKE:", "PASS - softcore_setup.py produced the hybrid TI setup"
+ok = sc_prm.exists() and "scmask" in out.lower()
+print("\nSMOKE:", "PASS - softcore_setup_py3 built the hybrid topology + TI masks"
       if ok else "FAIL (check output above)")
 sys.exit(0 if ok else 1)
