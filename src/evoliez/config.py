@@ -43,6 +43,18 @@ class LigandInput(_Base):
     role: Optional[str] = None
     dock: Optional[bool] = None
     keep_as_context: Optional[bool] = None
+    # Charge / parameterization (cofactor microspecies safety). `net_charge` is the
+    # design-ligand TOTAL charge for MD/parameterization. NADP+ is net -3 at pH 7 --
+    # the "+" in the name is the nicotinamide pyridinium REDOX state, NOT the
+    # molecular charge (RCSB CCD `NAP` is the neutral 76-atom microspecies; the
+    # physiological -3 species is 73 atoms). Leave None to infer from the structure.
+    # For a large charged cofactor AM1-BCC/sqm does NOT converge, so supply FIXED
+    # charges via `charges_mol2` (a pre-charged GAFF mol2) and set `allow_am1bcc:
+    # false` -- the pipeline then NEVER falls back to the failing on-the-fly charge
+    # derivation and fails LOUDLY if no fixed charges are available.
+    net_charge: Optional[int] = None
+    charges_mol2: Optional[str] = None      # path to a pre-charged GAFF mol2 (skips AM1-BCC)
+    allow_am1bcc: bool = True               # set false for NADP/NADPH/ATP-class cofactors
 
 
 class InputConfig(_Base):
