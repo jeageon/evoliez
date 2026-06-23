@@ -109,9 +109,13 @@ def place_formate_for_nac(nadp_mol, formate_mol, donor_spec, acceptor_spec,
     nadp_coords = np.asarray(nadp_mol.GetConformer().GetPositions(), float)
     acc_pos = nadp_coords[acc]
     normal = ring_normal(nadp_coords, acceptor_ring(nadp_mol, acc))
-    face = None
     if catalytic_coords is not None and len(catalytic_coords):
         face = np.asarray(catalytic_coords, float).mean(axis=0)
+    else:
+        # No catalytic anchor: use the EXPOSED ring face -- away from the cofactor's own
+        # ribose/adenine bulk, which is the side the substrate pocket / catalytic residues
+        # occupy -- so the formate doesn't land against NADP itself.
+        face = acc_pos + (acc_pos - nadp_coords.mean(axis=0))
     formate_coords = np.asarray(formate_mol.GetConformer().GetPositions(), float)
     return place_cosubstrate(formate_coords, don["heavy"], don["transfer"],
                              acc_pos, normal, face_toward=face, nac_distance=nac_distance)

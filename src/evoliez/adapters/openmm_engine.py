@@ -361,6 +361,41 @@ def _add_cosubstrate_retention_restraint(system, mol_blocks, nac_map,
     return True
 
 
+def _apply_nac4_placement(matched, nac_cfg) -> bool:
+    """NAC-4: reposition the co-substrate (the reaction donor, e.g. formate) into the
+    near-attack geometry off the design ligand's acceptor face, in place on the matched
+    RDKit mols. Best-effort -- if the reacting atoms can't be resolved the predictor pose
+    is left untouched (the NAC gate then handles it honestly). Returns True if a mol was
+    repositioned."""
+    from rdkit.Geometry import Point3D
+
+    from evoliez.md.cosubstrate_placement import place_formate_for_nac
+    from evoliez.md.nac import ReactiveSpec
+
+    if len(matched) < 2:
+        return False
+    spec = ReactiveSpec(
+        donor_smarts=nac_cfg.donor_smarts, acceptor_smarts=nac_cfg.acceptor_smarts,
+        donor_idx=nac_cfg.donor_idx, acceptor_idx=nac_cfg.acceptor_idx,
+        transfer_is_h=nac_cfg.transfer_is_h)
+    nadp = matched[0][1]                         # design ligand carries the acceptor
+    done = False
+    for _id, mol in matched[1:]:                 # co-substrate(s); only the donor matches
+        try:
+            new = place_formate_for_nac(nadp, mol, spec, spec)
+        except Exception as exc:                 # placement must never break MD
+            log.warning("MD NAC-4 placement failed for %s (%s); keeping pose", _id, exc)
+            continue
+        if new is None:
+            continue
+        conf = mol.GetConformer()
+        for i, (x, y, z) in enumerate(new):
+            conf.SetAtomPosition(i, Point3D(float(x), float(y), float(z)))
+        log.info("MD NAC-4: repositioned co-substrate '%s' into the near-attack geometry", _id)
+        done = True
+    return done
+
+
 def _protein_only_pdbfixed(pdb_path: Path):
     """PDBFixer-repaired PROTEIN-ONLY (topology, positions).
 
@@ -787,6 +822,12 @@ def _run_real(
                     "design ligand not found among the complex HETATM groups "
                     "(catalytic-screen multi-ligand build)"
                 )
+            # NAC-4: replace the predictor's (often random) co-substrate pose with the
+            # constructed near-attack geometry off the acceptor face, so a mis-placed
+            # formate is not wrongly skipped. The MD + retention restraint then test
+            # whether the active site MAINTAINS the reactive arrangement.
+            if getattr(nac_cfg, "template_cosubstrate_placement", False):
+                _apply_nac4_placement(matched, nac_cfg)
             off_ligs = [_offmol_from_rdkit(rd) for _id, rd in matched]
         else:
             off_ligs = [_ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)]

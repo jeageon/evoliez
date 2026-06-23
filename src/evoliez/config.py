@@ -234,6 +234,11 @@ class ReactiveGeometryConfig(_Base):
     # angle (that would manufacture NAC). Off by default; when on the NAC is labelled
     # valid_restrained_retention_screen and the restraint energy is reported.
     restrain_cosubstrate: bool = False
+    # NAC-4: before the MD, REPLACE the predictor's (often random) co-substrate pose with
+    # the constructed near-attack geometry off the acceptor face, so a mis-placed formate
+    # is not wrongly scored / skipped. The MD + retention restraint then test whether the
+    # active site MAINTAINS that reactive arrangement.
+    template_cosubstrate_placement: bool = False
     restraint_radius_A: float = 5.0       # flat-bottom radius, formate COM -> acceptor atom
     restraint_k: float = 2.0              # kcal/mol/Å² harmonic beyond the flat well
 
