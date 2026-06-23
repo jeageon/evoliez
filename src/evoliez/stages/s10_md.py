@@ -125,11 +125,12 @@ class MDStage(Stage):
                     "status": wt_res.status, "solvent_mode": wt_res.solvent_mode,
                     "simulation_time_ns": wt_res.simulation_time_ns,
                     "protocol_level": wt_res.protocol_level,
+                    "nac_status": wt_metrics.nac_status,
                     "nac_occupancy": wt_metrics.nac_occupancy,
-                    "nac": wt_metrics.nac, "binding_dg": wt_metrics.binding_dg,
+                    "nac": wt_metrics.nac, "binding_dg": wt_metrics.binding_dg or None,
                 }
-                self.log.info("WT reference NAC occupancy: %s (status=%s)",
-                              wt_nac, wt_res.status)
+                self.log.info("WT reference NAC: status=%s occupancy=%s (md=%s)",
+                              wt_metrics.nac_status, wt_nac, wt_res.status)
             except Exception as exc:    # the reference is a diagnostic, never fatal
                 self.log.warning("WT reference NAC run failed (%s); ΔNAC "
                                  "unavailable", exc)
@@ -200,10 +201,14 @@ class MDStage(Stage):
                 "hbond_occupancy": metrics.hbond_occupancy,
                 "catalytic_distance_mean": metrics.catalytic_distance_mean,
                 "energy_drift": metrics.energy_drift,
+                "md_lite_status": "valid",
+                "nac_status": metrics.nac_status,
                 "nac_occupancy": metrics.nac_occupancy,
                 "nac_delta_vs_wt": cand.scores.get("nac_delta_vs_wt"),
                 "nac": metrics.nac,
-                "binding_dg": metrics.binding_dg,
+                "binding_dg": metrics.binding_dg or None,
+                "binding_dg_status": ("computed" if metrics.binding_dg
+                                      else "not_calculated_openmm_screening"),
                 "failure_reasons": metrics.failure_reasons,
             })
             with ctx.store.session() as s:

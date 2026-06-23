@@ -45,11 +45,34 @@ class ReactiveSpec:
     distance_max: float = 3.5     # Å, transferring atom -> acceptor (hydride ~2.7-3.5)
     angle_min: float = 150.0      # deg, donor_heavy - transferring - acceptor (~linear)
     label: str = "reaction"
+    # NAC-validity gates (decouple placement / retention / reactive geometry, so an
+    # unrestrained co-substrate that simply diffuses away is reported as INVALID rather
+    # than as "low reactivity"). Lit. hydride-transfer NAC: dist<=3.0 Å, angle 132-180°.
+    placement_distance_max: float = 4.0   # Å, frame-0 transfer->acceptor (Michaelis-like start)
+    placement_angle_min: float = 0.0      # deg, frame-0 angle gate (0 = off by default)
+    retention_distance_max: float = 6.0   # Å, "still in the active-site pocket" cutoff
+    retention_min_fraction: float = 0.8   # require this fraction of frames retained for a valid NAC
+
+
+# NAC validity states (decoupled from md_status: the MD may run perfectly while the
+# NAC is uninterpretable because the co-substrate never sampled the reactive site).
+NAC_VALID = "valid_unrestrained"
+NAC_VALID_RESTRAINED = "valid_restrained_retention_screen"
+NAC_SKIP_PLACEMENT = "skipped_bad_initial_cosubstrate_pose"
+NAC_INVALID_DIFFUSED = "invalid_cosubstrate_diffused"
+NAC_SKIP_NO_ATOMS = "skipped_missing_reactive_atoms"
+_NAC_CONSUMABLE = frozenset({NAC_VALID, NAC_VALID_RESTRAINED})
+
+
+def nac_status_is_valid(status: "Optional[str]") -> bool:
+    """Whether a nac_status may feed ranking / ΔNAC (s11). Only states where the
+    co-substrate was actually retained in a reactive arrangement qualify."""
+    return status in _NAC_CONSUMABLE
 
 
 @dataclass
 class NACResult:
-    occupancy: float = 0.0        # fraction of reaction-competent frames
+    occupancy: float = 0.0        # reaction-competent frames / ALL frames
     n_frames: int = 0
     n_reactive: int = 0
     distance_mean: float = float("nan")
@@ -60,13 +83,35 @@ class NACResult:
     atoms: Dict[str, int] = field(default_factory=dict)   # trajectory atom indices
     label: str = "reaction"
     note: str = ""
+    # validity accounting (NAC-1/2): separate placement, retention, reactive geometry
+    status: str = NAC_VALID
+    distance_initial: float = float("nan")
+    angle_initial: float = float("nan")
+    retention_fraction: float = float("nan")   # frames with the co-substrate still in the pocket
+    n_retained: int = 0
+    occupancy_retained: float = float("nan")   # reactive frames / RETAINED frames
+    escape: bool = False
+    restrained: bool = False
+
+    @property
+    def occupancy_or_none(self) -> "Optional[float]":
+        """The occupancy ONLY when the NAC is interpretable, else None -- this is
+        what ranking / ΔNAC must read (never the raw occupancy of a diffused pose)."""
+        return self.occupancy if nac_status_is_valid(self.status) else None
 
     def to_json(self) -> Dict[str, object]:
         return {
-            "label": self.label, "nac_occupancy": self.occupancy,
+            "label": self.label, "nac_status": self.status,
+            "nac_occupancy": self.occupancy_or_none,
+            "nac_occupancy_raw": self.occupancy,
+            "occupancy_retained": self.occupancy_retained,
             "n_frames": self.n_frames, "n_reactive": self.n_reactive,
-            "distance_mean": self.distance_mean, "distance_min": self.distance_min,
-            "angle_mean": self.angle_mean, "atoms": self.atoms, "note": self.note,
+            "n_retained": self.n_retained, "retention_fraction": self.retention_fraction,
+            "escape": self.escape, "restrained": self.restrained,
+            "distance_initial": self.distance_initial, "distance_min": self.distance_min,
+            "distance_mean": self.distance_mean,
+            "angle_initial": self.angle_initial, "angle_mean": self.angle_mean,
+            "atoms": self.atoms, "note": self.note,
         }
 
 
@@ -186,15 +231,22 @@ def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
     dists: List[float] = []
     angles: List[float] = []
     hits = 0
+    retained_hits = 0
+    n_retained = 0
     for fr in frames:
         d = _dist(fr[transfer], fr[acceptor])
         ang = _angle(fr[donor_heavy], fr[transfer], fr[acceptor])
         dists.append(round(d, 3))
         angles.append(round(ang, 1))
-        if d <= spec.distance_max and ang >= spec.angle_min:
+        reactive = d <= spec.distance_max and ang >= spec.angle_min
+        if reactive:
             hits += 1
+        if d <= spec.retention_distance_max:           # co-substrate still in the pocket
+            n_retained += 1
+            if reactive:
+                retained_hits += 1
     n = len(dists)
-    return NACResult(
+    res = NACResult(
         occupancy=round(hits / n, 4) if n else 0.0,
         n_frames=n, n_reactive=hits,
         distance_mean=round(float(np.mean(dists)), 3) if dists else float("nan"),
@@ -204,7 +256,30 @@ def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
         atoms={"donor_heavy": donor_heavy, "transfer": transfer,
                "acceptor": acceptor},
         label=spec.label,
+        distance_initial=dists[0] if dists else float("nan"),
+        angle_initial=angles[0] if angles else float("nan"),
+        n_retained=n_retained,
+        retention_fraction=round(n_retained / n, 3) if n else float("nan"),
+        occupancy_retained=round(retained_hits / n_retained, 4) if n_retained else float("nan"),
     )
+    # Gate the NAC into a validity STATUS (decouple placement / retention / geometry).
+    res.escape = bool(n and res.retention_fraction < spec.retention_min_fraction)
+    if not n:
+        res.status = NAC_SKIP_NO_ATOMS
+    elif (res.distance_initial > spec.placement_distance_max
+          or res.angle_initial < spec.placement_angle_min):
+        # never started in a Michaelis-like pose (e.g. formate placed 8 Å away)
+        res.status = NAC_SKIP_PLACEMENT
+        res.note = (f"initial pose out of range (d0={res.distance_initial} Å, "
+                    f"a0={res.angle_initial}°)")
+    elif res.retention_fraction < spec.retention_min_fraction:
+        # co-substrate diffused out of the pocket -> occupancy reflects diffusion, not geometry
+        res.status = NAC_INVALID_DIFFUSED
+        res.note = (f"co-substrate diffused (retained {res.retention_fraction} < "
+                    f"{spec.retention_min_fraction}); occupancy not interpretable")
+    else:
+        res.status = NAC_VALID
+    return res
 
 
 # the FDH formate -> NADP-C4 hydride transfer, as a ready ReactiveSpec. Lives

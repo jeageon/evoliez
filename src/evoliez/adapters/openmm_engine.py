@@ -1122,12 +1122,15 @@ def _run_real(
     if nac_idx is not None and nac_subframes:
         from evoliez.md.nac import nac_from_subframes
         nac_res = nac_from_subframes(nac_subframes, nac_spec, atoms=nac_map)
-        nac_occupancy = nac_res.occupancy
+        # GATED occupancy: None unless the co-substrate was actually retained in a
+        # reactive arrangement (a diffused / mis-placed formate is NOT "low reactivity").
+        nac_occupancy = nac_res.occupancy_or_none
         nac_json = nac_res.to_json()
-        log.info("MD NAC for %s: occupancy=%.3f over %d frames "
-                 "(d_min=%.2f Å, ang_mean=%.1f°)", candidate_id,
-                 nac_res.occupancy, nac_res.n_frames,
-                 nac_res.distance_min, nac_res.angle_mean)
+        log.info("MD NAC for %s: status=%s occupancy=%s retained=%.2f over %d frames "
+                 "(d0=%.2f, d_min=%.2f Å, ang_mean=%.1f°)", candidate_id,
+                 nac_res.status, nac_res.occupancy_or_none, nac_res.retention_fraction,
+                 nac_res.n_frames, nac_res.distance_initial, nac_res.distance_min,
+                 nac_res.angle_mean)
 
     drift = abs((e_last - e_start) / e_start) if e_start else 0.0
     status = "unstable" if (lig_series and lig_series[-1] > 5.0) else "ok"

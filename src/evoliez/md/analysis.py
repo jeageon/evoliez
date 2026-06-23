@@ -29,6 +29,11 @@ class MDMetrics:
     # not applicable. This is REACTIVITY and is reported SEPARATELY from
     # md_lite_score (binding stability) - it is NOT folded into md_lite here.
     nac_occupancy: Optional[float] = None
+    # NAC validity status (separate from the MD status): the MD can run perfectly
+    # while the NAC is uninterpretable because the co-substrate diffused / was
+    # mis-placed. Ranking (s11) may consume nac_occupancy ONLY when this is a valid_*
+    # state; nac_occupancy is already None in the invalid/skipped cases.
+    nac_status: Optional[str] = None
     nac: Dict[str, object] = field(default_factory=dict)
     # Endpoint binding free energy per method (kcal/mol), e.g. {"gbsa": -28.4}.
     # Populated by the Amber tier-3 MM-PB/GBSA; must be carried into to_json /
@@ -54,6 +59,7 @@ def analyse(result: MDResult, weights: ScoreWeights) -> MDMetrics:
     # BEFORE the skip/fail early returns so it is never dropped.
     m.nac_occupancy = result.nac_occupancy
     m.nac = dict(result.nac or {})
+    m.nac_status = m.nac.get("nac_status")
     m.binding_dg = dict(result.binding_dg or {})
 
     # EVERY skip is NEUTRAL for scoring: a skip means real MD never RAN for
@@ -154,9 +160,13 @@ def to_json(metrics: MDMetrics) -> Dict[str, object]:
         "energy_drift": metrics.energy_drift,
         "simulation_health_ok": metrics.simulation_health_ok,
         "md_lite_score": metrics.md_lite_score,
+        "md_lite_status": "valid",
+        "nac_status": metrics.nac_status,
         "nac_occupancy": metrics.nac_occupancy,
         "nac": metrics.nac,
-        "binding_dg": metrics.binding_dg,
+        "binding_dg": metrics.binding_dg or None,
+        "binding_dg_status": ("computed" if metrics.binding_dg
+                              else "not_calculated_openmm_screening"),
         "passed": metrics.passed,
         "failure_reasons": metrics.failure_reasons,
     }
