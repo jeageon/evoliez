@@ -90,3 +90,28 @@ def place_cosubstrate(formate_coords: np.ndarray, donor_heavy: int, transfer: in
     out[others[1]] = p_O2
     # any extra atoms (shouldn't exist for formate) keep their original coords
     return out
+
+
+def place_formate_for_nac(nadp_mol, formate_mol, donor_spec, acceptor_spec,
+                          catalytic_coords: "Optional[np.ndarray]" = None,
+                          nac_distance: float = _NAC_DISTANCE):
+    """Reposition ``formate_mol``'s conformer into the near-attack geometry off
+    ``nadp_mol``'s acceptor face, biased toward the catalytic residues. Identifies the
+    acceptor / donor via the same SMARTS the NAC screen uses. Returns the new formate
+    coordinates (in formate_mol's atom order), or ``None`` if the reacting atoms can't
+    be resolved (the caller then leaves the predictor's pose untouched)."""
+    from evoliez.md.nac import identify_acceptor, identify_donor
+
+    acc = identify_acceptor(nadp_mol, acceptor_spec)
+    don = identify_donor(formate_mol, donor_spec)
+    if acc is None or don is None:
+        return None
+    nadp_coords = np.asarray(nadp_mol.GetConformer().GetPositions(), float)
+    acc_pos = nadp_coords[acc]
+    normal = ring_normal(nadp_coords, acceptor_ring(nadp_mol, acc))
+    face = None
+    if catalytic_coords is not None and len(catalytic_coords):
+        face = np.asarray(catalytic_coords, float).mean(axis=0)
+    formate_coords = np.asarray(formate_mol.GetConformer().GetPositions(), float)
+    return place_cosubstrate(formate_coords, don["heavy"], don["transfer"],
+                             acc_pos, normal, face_toward=face, nac_distance=nac_distance)
