@@ -17,6 +17,27 @@ from evoliez.logging_utils import get_logger
 
 log = get_logger("evoliez.exec")
 
+# Bind every child's lifetime to the parent (evoliez): when the parent dies -- killed
+# (pkill), OOM, or crashed -- the kernel SIGKILLs the child too, so a stopped/crashed run
+# never leaves an ORPHANED boltz/gnina/diffdock subprocess hung on a GPU. (A real bug: an
+# s08b `boltz predict` child whose parent was killed reparented to init and held a GPU for
+# 23 h.) Linux-only via prctl(PR_SET_PDEATHSIG). libc is loaded ONCE here, and the
+# post-fork hook does nothing but a single allocation-free syscall (no imports / no Python
+# locks), so it is safe even if the parent has threads at fork time.
+try:
+    import ctypes as _ctypes
+    import signal as _signal
+
+    _LIBC = _ctypes.CDLL("libc.so.6", use_errno=True)
+    _SIGKILL = int(_signal.SIGKILL)
+except Exception:                                    # non-Linux / no libc -> no-op
+    _LIBC = None
+
+
+def _set_pdeathsig() -> None:                        # runs in the child, between fork+exec
+    if _LIBC is not None:
+        _LIBC.prctl(1, _SIGKILL)                     # PR_SET_PDEATHSIG = 1
+
 
 class ToolNotFoundError(RuntimeError):
     """Raised when a ``real`` backend tool is not on PATH."""
@@ -90,6 +111,8 @@ def run(
         capture_output=True,
         text=True,
         timeout=timeout,
+        # die with the parent (Linux) so a killed/crashed run leaves no GPU-holding orphan
+        preexec_fn=_set_pdeathsig if _LIBC is not None else None,
     )
     if check and proc.returncode != 0:
         raise RuntimeError(
