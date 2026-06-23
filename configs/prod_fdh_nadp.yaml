@@ -156,6 +156,10 @@ validation:
       # Retention restraint (NAC-3): keep the free formate in the pocket so NAC
       # measures active-site geometry, not implicit-solvent diffusion (distance-only).
       restrain_cosubstrate: true
+      # NAC-4: start the formate in the constructed near-attack pose (off the catalytic
+      # face) instead of the predictor's random one, so a mis-placed formate is not
+      # wrongly skipped; the restraint + MD then test if the site MAINTAINS it.
+      template_cosubstrate_placement: true
       restraint_radius_A: 5.0
       restraint_k: 2.0
       enabled: true

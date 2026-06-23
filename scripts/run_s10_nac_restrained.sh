@@ -32,6 +32,7 @@ for i, ln in enumerate(L):
             if nxt.strip():
                 ind = " " * (len(nxt) - len(nxt.lstrip())); break
         out += [ind + "restrain_cosubstrate: true",
+                ind + "template_cosubstrate_placement: true",
                 ind + "restraint_radius_A: 5.0", ind + "restraint_k: 2.0"]
 open(p, "w").write("\n".join(out) + "\n"); print("  restraint enabled in config")
 PY
