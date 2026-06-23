@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 
 from evoliez.md.nac import (
-    NAC_INVALID_DIFFUSED, NAC_SKIP_PLACEMENT, NAC_VALID, ReactiveSpec,
-    nac_from_frames, nac_status_is_valid)
+    NAC_INVALID_DIFFUSED, NAC_SKIP_PLACEMENT, NAC_VALID, NAC_VALID_RESTRAINED,
+    ReactiveSpec, nac_from_frames, nac_status_is_valid)
 
 
 def _frames(distances, angles):
@@ -57,6 +57,16 @@ def test_genuinely_reactive_is_valid_nonzero():
     r = nac_from_frames(_frames([2.9] * 50, [160] * 50), 0, 1, 2, SPEC)
     assert r.status == NAC_VALID
     assert r.occupancy_or_none == 1.0
+
+
+def test_restrained_retention_screen_status():
+    # a retained run flagged restrained -> the restrained valid status (still consumable)
+    r = nac_from_frames(_frames([3.4] * 50, [74] * 50), 0, 1, 2, SPEC, restrained=True)
+    assert r.status == NAC_VALID_RESTRAINED
+    assert r.restrained and nac_status_is_valid(r.status)
+    # restraint does NOT rescue a mis-placed start (placement gate still fails)
+    bad = nac_from_frames(_frames([9.0] * 50, [120] * 50), 0, 1, 2, SPEC, restrained=True)
+    assert bad.status == NAC_SKIP_PLACEMENT
 
 
 def test_status_validity_helper():

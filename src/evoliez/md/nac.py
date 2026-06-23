@@ -191,14 +191,16 @@ def resolve_reactive_indices(
 
 def nac_from_subframes(
     subframes: "Sequence[np.ndarray]", spec: ReactiveSpec,
-    atoms: "Optional[Dict[str, int]]" = None,
+    atoms: "Optional[Dict[str, int]]" = None, restrained: bool = False,
 ) -> NACResult:
     """NAC from pre-extracted 3-atom frames. Each ``subframes`` element is a
     (3,3) array in Angstrom whose rows are ``[donor_heavy, transfer, acceptor]``
     -- the engine collects only these three atoms per MD frame rather than the
     whole system. ``atoms`` (the resolved GLOBAL indices) is recorded for
-    provenance. Thin wrapper over :func:`nac_from_frames` with fixed indices."""
-    res = nac_from_frames(subframes, 0, 1, 2, spec)
+    provenance. ``restrained`` flags a retention-restrained run (the valid status
+    becomes ``valid_restrained_retention_screen``). Thin wrapper over
+    :func:`nac_from_frames` with fixed indices."""
+    res = nac_from_frames(subframes, 0, 1, 2, spec, restrained=restrained)
     if atoms:
         res.atoms = dict(atoms)
     return res
@@ -222,7 +224,8 @@ def _angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
 
 
 def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
-                    transfer: int, acceptor: int, spec: ReactiveSpec) -> NACResult:
+                    transfer: int, acceptor: int, spec: ReactiveSpec,
+                    restrained: bool = False) -> NACResult:
     """Per-frame transfer distance (transferring atom -> acceptor) and
     donor_heavy--transfer--acceptor angle; a frame is reaction-competent when
     distance <= spec.distance_max AND angle >= spec.angle_min. ``frames`` are
@@ -263,6 +266,7 @@ def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
         occupancy_retained=round(retained_hits / n_retained, 4) if n_retained else float("nan"),
     )
     # Gate the NAC into a validity STATUS (decouple placement / retention / geometry).
+    res.restrained = bool(restrained)
     res.escape = bool(n and res.retention_fraction < spec.retention_min_fraction)
     if not n:
         res.status = NAC_SKIP_NO_ATOMS
@@ -278,7 +282,7 @@ def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
         res.note = (f"co-substrate diffused (retained {res.retention_fraction} < "
                     f"{spec.retention_min_fraction}); occupancy not interpretable")
     else:
-        res.status = NAC_VALID
+        res.status = NAC_VALID_RESTRAINED if restrained else NAC_VALID
     return res
 
 

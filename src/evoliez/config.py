@@ -223,6 +223,19 @@ class ReactiveGeometryConfig(_Base):
     distance_max: float = 3.5     # Å, transferring atom -> acceptor
     angle_min: float = 150.0      # deg, donor_heavy - transfer - acceptor
     label: str = "reaction"
+    # NAC validity gates (decouple placement / retention / reactive geometry, so a
+    # diffused or mis-placed co-substrate is reported INVALID, not "low reactivity").
+    placement_distance_max: float = 4.0   # Å, frame-0 transfer->acceptor (Michaelis-like start)
+    retention_distance_max: float = 6.0   # Å, "still in the active-site pocket" cutoff
+    retention_min_fraction: float = 0.8   # require this fraction retained for a valid NAC
+    # Co-substrate retention restraint (NAC-3): keep a FREE co-substrate (e.g. formate)
+    # from diffusing out of the pocket in implicit solvent. A flat-bottom restraint on
+    # the formate-COM -> acceptor DISTANCE only -- it must NOT restrain the reactive
+    # angle (that would manufacture NAC). Off by default; when on the NAC is labelled
+    # valid_restrained_retention_screen and the restraint energy is reported.
+    restrain_cosubstrate: bool = False
+    restraint_radius_A: float = 5.0       # flat-bottom radius, formate COM -> acceptor atom
+    restraint_k: float = 2.0              # kcal/mol/Å² harmonic beyond the flat well
 
 
 class RBFEConfig(_Base):

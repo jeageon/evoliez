@@ -336,6 +336,31 @@ def _apply_fixed_charges(off_lig, lig) -> bool:
     return False
 
 
+def _add_cosubstrate_retention_restraint(system, mol_blocks, nac_map,
+                                         radius_A: float, k_kcal: float) -> bool:
+    """Flat-bottom restraint keeping the co-substrate (the DONOR molecule, e.g. formate)
+    centre of mass within ``radius_A`` of the acceptor atom. RETENTION ONLY: it stops a
+    free co-substrate diffusing out of the implicit-solvent pocket, but the reactive
+    ANGLE is never restrained -- restraining the angle would MANUFACTURE NAC, so the
+    energy is a function of the COM<->acceptor DISTANCE alone (flat below r0, harmonic
+    above). Returns True if the restraint was added (donor molecule located)."""
+    import openmm
+
+    donor = nac_map.get("donor_heavy")
+    cosub = next((gidx for _off, gidx in mol_blocks if donor in gidx), None)
+    if not cosub or "acceptor" not in nac_map:
+        return False
+    force = openmm.CustomCentroidBondForce(
+        2, "0.5*k*step(d-r0)*(d-r0)^2; d=distance(g1,g2)")
+    force.addGlobalParameter("k", float(k_kcal) * 418.4)     # kcal/mol/Å² -> kJ/mol/nm²
+    force.addGlobalParameter("r0", float(radius_A) * 0.1)    # Å -> nm
+    force.addGroup([int(i) for i in cosub])                  # co-substrate COM
+    force.addGroup([int(nac_map["acceptor"])])               # acceptor atom
+    force.addBond([0, 1], [])
+    system.addForce(force)
+    return True
+
+
 def _protein_only_pdbfixed(pdb_path: Path):
     """PDBFixer-repaired PROTEIN-ONLY (topology, positions).
 
@@ -1056,6 +1081,9 @@ def _run_real(
                     distance_max=nac_cfg.distance_max,
                     angle_min=nac_cfg.angle_min,
                     label=nac_cfg.label or "reaction",
+                    placement_distance_max=getattr(nac_cfg, "placement_distance_max", 4.0),
+                    retention_distance_max=getattr(nac_cfg, "retention_distance_max", 6.0),
+                    retention_min_fraction=getattr(nac_cfg, "retention_min_fraction", 0.8),
                 )
                 rd_blocks = [(off.to_rdkit(), blk) for off, blk in mol_blocks]
                 nac_map = resolve_reactive_indices(rd_blocks, nac_spec)
@@ -1072,6 +1100,25 @@ def _run_real(
             log.warning("MD NAC setup failed for %s (%s); NAC skipped",
                         candidate_id, exc)
             nac_idx = None
+
+    # Co-substrate retention restraint (NAC-3): keep the free donor (formate) in the
+    # pocket so the NAC reflects active-site geometry, not implicit-solvent diffusion.
+    # Distance-only flat-bottom (the reactive ANGLE is never restrained); added to the
+    # System and the Context re-initialised before production. Opt-in.
+    nac_restrained = False
+    if nac_idx is not None and getattr(nac_cfg, "restrain_cosubstrate", False):
+        try:
+            if _add_cosubstrate_retention_restraint(
+                    system, mol_blocks, nac_map,
+                    nac_cfg.restraint_radius_A, nac_cfg.restraint_k):
+                sim.context.reinitialize(preserveState=True)
+                nac_restrained = True
+                log.info("MD NAC for %s: co-substrate retention restraint ON "
+                         "(flat-bottom r0=%.1f Å, k=%.1f, distance-only)",
+                         candidate_id, nac_cfg.restraint_radius_A, nac_cfg.restraint_k)
+        except Exception as exc:                  # restraint must never break MD
+            log.warning("MD NAC restraint failed for %s (%s); unrestrained",
+                        candidate_id, exc)
 
     lig_series: List[float] = []
     pkt_series: List[float] = []
@@ -1121,7 +1168,8 @@ def _run_real(
     nac_json: Dict[str, object] = {}
     if nac_idx is not None and nac_subframes:
         from evoliez.md.nac import nac_from_subframes
-        nac_res = nac_from_subframes(nac_subframes, nac_spec, atoms=nac_map)
+        nac_res = nac_from_subframes(nac_subframes, nac_spec, atoms=nac_map,
+                                     restrained=nac_restrained)
         # GATED occupancy: None unless the co-substrate was actually retained in a
         # reactive arrangement (a diffused / mis-placed formate is NOT "low reactivity").
         nac_occupancy = nac_res.occupancy_or_none
