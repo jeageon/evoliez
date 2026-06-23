@@ -153,6 +153,11 @@ validation:
     # ΔNAC vs WT (mutant > WT == geometrically more productive active site).
     # Requires the hydride donor co-modelled (input.extra_ligands: formate).
     reactive_geometry:
+      # Retention restraint (NAC-3): keep the free formate in the pocket so NAC
+      # measures active-site geometry, not implicit-solvent diffusion (distance-only).
+      restrain_cosubstrate: true
+      restraint_radius_A: 5.0
+      restraint_k: 2.0
       enabled: true
       donor_smarts: "[CX3H1](=O)[O-]"                  # formate C-H (hydride donor)
       acceptor_smarts: "[cH1]([cH0]C(=O)[NX3])[cH1]"   # nicotinamide C4
