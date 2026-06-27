@@ -165,9 +165,13 @@ def _ca(atoms: Sequence[_Atom]) -> Dict[Tuple[str, int], _Atom]:
             if a.record == "ATOM" and a.name == "CA"}
 
 
-def _ligand_atoms(atoms: Sequence[_Atom], resname: Optional[str],
-                  heavy_only: bool = True) -> List[_Atom]:
-    out = []
+def _het_residues(atoms: Sequence[_Atom], resname: Optional[str] = None,
+                  heavy_only: bool = True) -> List[List[_Atom]]:
+    """HETATM grouped by (chain, resseq), LARGEST group first. Optional resname
+    filter. The largest group is the design ligand (e.g. NADP); the next is the
+    co-substrate (e.g. formate) — so ligand_rank=0/1 selects them even when an MD
+    PDB labels both 'UNK'."""
+    groups: Dict[Tuple[str, int], List[_Atom]] = {}
     for a in atoms:
         if a.record != "HETATM":
             continue
@@ -175,27 +179,29 @@ def _ligand_atoms(atoms: Sequence[_Atom], resname: Optional[str],
             continue
         if heavy_only and a.element == "H":
             continue
-        out.append(a)
-    return out
+        groups.setdefault((a.chain, a.resseq), []).append(a)
+    return sorted(groups.values(), key=len, reverse=True)
 
 
 def gate_from_pdb(
     ref_pdb, test_pdb, *, ligand_resname: Optional[str] = None,
-    ligand_id: str = "ligand", role: str = "other",
+    ligand_rank: int = 0, ligand_id: str = "ligand", role: str = "other",
     pocket_cutoff: float = 12.0, thresholds: Optional[PoseThresholds] = None,
 ) -> PoseGateResult:
-    """Convenience: gate a test PDB against a reference PDB. Pocket = protein Cα
-    within ``pocket_cutoff`` Å of any reference ligand atom (matched to the test by
-    (chain, resseq)); ligand matched by resname + heavy-atom order. When the test
-    has fewer atoms (e.g. a point mutation drops a side chain), only the Cα that
-    exist in BOTH are used — Cα are present for every residue, so the pocket set is
-    preserved."""
+    """Convenience: gate a test PDB against a reference PDB. The ligand is the
+    ``ligand_rank``-th largest HETATM residue (rank 0 = design ligand / NADP, rank 1
+    = co-substrate / formate) optionally filtered by ``ligand_resname`` — this
+    survives MD PDBs that label every het 'UNK'. Pocket = protein Cα within
+    ``pocket_cutoff`` Å of any reference ligand atom (matched to the test by
+    (chain, resseq)); only Cα present in BOTH are used, so a point mutation dropping
+    a side chain does not break the pocket set."""
     ref, test = read_pdb_atoms(ref_pdb), read_pdb_atoms(test_pdb)
-    r_lig = _ligand_atoms(ref, ligand_resname)
-    t_lig = _ligand_atoms(test, ligand_resname)
-    if not r_lig or not t_lig:
+    r_groups = _het_residues(ref, ligand_resname)
+    t_groups = _het_residues(test, ligand_resname)
+    if len(r_groups) <= ligand_rank or len(t_groups) <= ligand_rank:
         return PoseGateResult(ligand_id, role, SKIPPED, None, None,
-                              len(r_lig), 0, note="ligand not found")
+                              0, 0, note="ligand rank not present")
+    r_lig, t_lig = r_groups[ligand_rank], t_groups[ligand_rank]
     r_lig_xyz = np.array([a.xyz for a in r_lig], float)
     # pocket Cα (reference) within cutoff of the reference ligand
     r_ca = _ca(ref); t_ca = _ca(test)

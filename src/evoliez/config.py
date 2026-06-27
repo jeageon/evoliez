@@ -292,6 +292,18 @@ class MDConfig(_Base):
     # (boltz_delta_source=="real"), never a WT-coords identity-swap proxy. Falls back
     # to the full kept set only when NOTHING was folded (configs without s08b).
     require_real_structure: bool = True
+    # Functional-state anchored validation: build each mutant from the REFERENCE
+    # complex (reference backbone + reference cofactor/substrate poses + only the
+    # point mutation, via md.anchored_build) instead of a fresh per-mutant Boltz
+    # pose. Separates the mutation effect from pose-search noise; the s08b Boltz
+    # pose is kept as an alternative-pose HYPOTHESIS, not the validated structure.
+    # Falls back to the Boltz/proxy structure when no reference PDB is on disk.
+    anchored_validation: bool = True
+    # Reference-like pose gate (md.pose_gate): per-ligand pocket-aligned RMSD +
+    # internal-shape RMSD vs the reference; tags reference_like / alternative_pose /
+    # displaced. A non-reference-like cofactor pose is never silently an "improved
+    # mutant".
+    pose_gate_enabled: bool = True
 
 
 class ValidationConfig(_Base):
