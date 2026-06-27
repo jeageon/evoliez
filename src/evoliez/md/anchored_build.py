@@ -34,15 +34,21 @@ _AA1TO3 = {
 }
 
 
-def _split_protein_ligand(pdb_text: str) -> Tuple[List[str], List[str]]:
-    """(protein ATOM lines, ligand HETATM lines). Drops CONECT/TER/END/etc."""
-    prot, het = [], []
+def _split_protein_ligand(
+        pdb_text: str) -> Tuple[List[str], List[str], List[str]]:
+    """(protein ATOM lines, ligand HETATM lines, CONECT lines). CONECT is kept:
+    run_md's ligand reader uses proximityBonding=False, so the ligand bond graph
+    comes ONLY from CONECT — dropping it leaves a bondless het that fails the
+    SMILES-template match ('design ligand not found')."""
+    prot, het, conect = [], [], []
     for ln in pdb_text.splitlines():
         if ln.startswith("ATOM"):
             prot.append(ln)
         elif ln.startswith("HETATM"):
             het.append(ln)
-    return prot, het
+        elif ln.startswith("CONECT"):
+            conect.append(ln)
+    return prot, het, conect
 
 
 def _atom_chain(protein_lines: Sequence[str]) -> str:
@@ -89,7 +95,7 @@ def build_anchored_mutant_pdb(
     from pdbfixer import PDBFixer
 
     text = Path(ref_pdb).read_text()
-    prot, het = _split_protein_ligand(text)
+    prot, het, conect = _split_protein_ligand(text)
     if not prot:
         raise ValueError(f"{ref_pdb}: no protein ATOM records")
     ch = chain or _atom_chain(prot)
@@ -142,14 +148,52 @@ def build_anchored_mutant_pdb(
     PDBFile.writeFile(fixer.topology, fixer.positions, buf, keepIds=True)
     prot_out = [ln for ln in buf.getvalue().splitlines() if ln.startswith("ATOM")]
 
-    out_lines = prot_out + ["TER"] + het + ["END"]
+    # Keep ligand HEAVY atoms (the reference pose) re-serialised AFTER the protein
+    # (so serials never collide with the rebuilt protein), and carry the heavy-atom
+    # CONECT bonds remapped to the new serials. run_md rebuilds H from the SMILES;
+    # the heavy het + CONECT is exactly the Boltz-style block _ligands_at_pose
+    # matches (proximityBonding=False -> CONECT is the only bond source).
+    def _is_h(ln: str) -> bool:
+        return (ln[76:78].strip() or ln[12:16].strip()[:1]).upper() == "H"
+
+    het_out: List[str] = []
+    old2new: dict = {}
+    serial = len(prot_out)
+    for ln in het:
+        if _is_h(ln):
+            continue
+        try:
+            old = int(ln[6:11])
+        except ValueError:
+            continue
+        serial += 1
+        old2new[old] = serial
+        # rename resName -> LIG: PDBFixer.removeHeterogens treats "UNK" as an
+        # unknown PROTEIN residue and KEEPS it (then it collides with the
+        # separately-added OpenFF ligand); "LIG" is a clear heterogen and is
+        # dropped, matching the Boltz-complex form the engine expects.
+        het_out.append(ln[:6] + f"{serial:>5}" + ln[11:17] + "LIG" + ln[20:])
+    conect_out: List[str] = []
+    for ln in conect:
+        raw = ln.rstrip()
+        serials = []
+        for i in range(6, len(raw), 5):
+            seg = raw[i:i + 5].strip()
+            if seg.isdigit():
+                serials.append(int(seg))
+        if not serials or serials[0] not in old2new:
+            continue                       # base atom is an H / not a kept het atom
+        mapped = [old2new[s] for s in serials if s in old2new]
+        if len(mapped) >= 2:               # base + >=1 heavy neighbour
+            conect_out.append("CONECT" + "".join(f"{m:>5}" for m in mapped))
+    out_lines = prot_out + ["TER"] + het_out + conect_out + ["END"]
     Path(out_pdb).write_text("\n".join(out_lines) + "\n")
     try:
         prot_pdb.unlink()
     except OSError:
         pass
     return AnchoredBuildResult(str(out_pdb), applied, skipped,
-                               len(prot_out), len(het))
+                               len(prot_out), len(het_out))
 
 
 def build_anchored_mutant_complex(ref_complex, mutations, out_pdb, **kw):
