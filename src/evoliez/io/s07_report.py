@@ -441,6 +441,11 @@ def _svg_design_heatmap(design_rows: Sequence[dict], *, width: int = 760,
         ("MSA permissive", "permissive", "#BA7517"),
         ("# candidates", "_cand_norm", "#9b59b6"),
     ]
+    # Left padding must fit the LONGEST y-axis metric label (drawn anchored-end at
+    # x = pad_l - 8). The 64 default clipped "ligand closeness"/"MSA permissive"
+    # off the SVG's left edge (x < 0, viewBox starts at 0); size pad_l to the
+    # labels (~6.5px/char at the 10.5px label font) + an 8px gap + margin.
+    pad_l = max(pad_l, int(max(len(m[0]) for m in metrics) * 6.5) + 14)
     # derive the two normalised metrics (closeness from distance; candidate count
     # scaled to its own max) so every cell is on a 0..1 shade scale.
     maxc = max((d["n_candidates"] for d in rows), default=0) or 1
