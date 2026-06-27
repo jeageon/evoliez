@@ -530,14 +530,28 @@ class NonMDValidationStage(Stage):
 
         kept.sort(key=_md_key, reverse=True)
         _n_md = ctx.config.validation.md.top_candidates
-        if getattr(ctx.config.validation.md, "require_real_structure", True):
-            # Paper-grade MD set: only candidates with a REAL s08b Boltz mutant
-            # complex (boltz_delta_source=="real"), so s10 never validates a WT-coords
-            # identity-swap proxy. The proxy-top picks that were never folded are
-            # excluded even when _md_key ranks them high — they carry no real Boltz Δ
-            # penalty, an unfair advantage over the folded set. Fall back to the full
-            # kept set ONLY when nothing was folded (configs without s08b).
-            _real = [c for c in kept if c.details.get("boltz_delta_source") == "real"]
+        _req_real = getattr(ctx.config.validation.md, "require_real_structure", True)
+        # Paper-grade MD set: only candidates with a REAL s08b Boltz mutant complex
+        # (boltz_delta_source=="real"), so s10 never validates a WT-coords identity-
+        # swap proxy. Fall back to the full kept set ONLY when nothing was folded.
+        _real = [c for c in kept if c.details.get("boltz_delta_source") == "real"]
+        _pool = _real if (_req_real and _real) else kept
+        _slcfg = getattr(ctx.config, "selection_lanes", None)
+        if _slcfg is not None and getattr(_slcfg, "enabled", False):
+            # ML is a PRIOR, not a hard cut: build the MD set as a UNION of lanes
+            # (ml-high / stability-high / geometry-high / diversity / low-ml control)
+            # so an ML false negative in one lane is caught by another.
+            from evoliez.ranking.multi_lane import (
+                LaneConfig, lane_counts, select_multi_lane)
+            md_top = select_multi_lane(_pool, LaneConfig(
+                enabled=True, from_ml_high=_slcfg.from_ml_high,
+                from_stability_high=_slcfg.from_stability_high,
+                from_geometry_high=_slcfg.from_geometry_high,
+                from_diversity=_slcfg.from_diversity,
+                low_ml_controls=_slcfg.low_ml_controls))
+            self.log.info("MD shortlist via MULTI-LANE: %d candidate(s) %s",
+                          len(md_top), lane_counts(md_top))
+        elif _req_real:
             md_top = (_real if _real else kept)[:_n_md]
             if _real and len(_real) < _n_md:
                 self.log.info(

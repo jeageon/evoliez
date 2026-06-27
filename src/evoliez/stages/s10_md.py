@@ -429,6 +429,26 @@ class MDStage(Stage):
             except Exception as exc:  # noqa: BLE001
                 self.log.warning("RBFE stage failed (%s); MD scores intact", exc)
 
+        # Gate-stack verdict per candidate — the honest final claim from the
+        # accumulated gates (stability -> reference-pose -> functional geometry ->
+        # energetic). Non-fatal; mirrors into the on-disk record AND the in-memory
+        # candidate (for s11 / the report).
+        try:
+            from evoliez.md.gate_stack import evaluate_gate_stack
+            _cby = {c.candidate_id: c for c in candidates}
+            _vc: dict = {}
+            for _rec in md_records:
+                _gj = evaluate_gate_stack(_rec).to_json()
+                _rec["gate_stack"] = _gj
+                _vc[_gj["verdict"]] = _vc.get(_gj["verdict"], 0) + 1
+                _c = _cby.get(_rec["candidate_id"])
+                if _c is not None:
+                    _c.details["gate_stack"] = _gj
+            if _vc:
+                self.log.info("gate-stack verdicts: %s", _vc)
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("gate-stack pass failed (%s); records intact", exc)
+
         n_pass = sum(1 for c in candidates if c.details.get("md_passed"))
         ctx.put("md_candidates", candidates)
         ctx.persist_meta("n_md_passed", n_pass)

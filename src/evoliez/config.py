@@ -553,6 +553,19 @@ class ProjectConfig(_Base):
     output_dir: str = "runs/evoliez_project"
 
 
+class SelectionLanesConfig(_Base):
+    """Multi-lane candidate selection (ranking.multi_lane) — ML as a PRIOR, not a
+    hard filter. When enabled, s09 builds the MD set as a UNION of lanes instead of
+    the single _md_key cut, so an ML false negative in one lane is caught by another
+    (incl. a low_ml_control probe). Opt-in: default off keeps the existing behaviour."""
+    enabled: bool = False
+    from_ml_high: int = 25
+    from_stability_high: int = 12
+    from_geometry_high: int = 12
+    from_diversity: int = 8
+    low_ml_controls: int = 8
+
+
 class Config(_Base):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     input: InputConfig
@@ -571,6 +584,8 @@ class Config(_Base):
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     scoring: ScoreWeights = Field(default_factory=ScoreWeights)
+    selection_lanes: SelectionLanesConfig = Field(
+        default_factory=SelectionLanesConfig)
 
     # Global default backend and optional per-stage overrides
     # (keys = stage name, e.g. {"s04_complex": "real"}).
