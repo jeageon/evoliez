@@ -23,6 +23,7 @@ validated_candidates}.json + the WT and lead post-MD PDBs; reproduces from disk.
 """
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime
 from pathlib import Path
@@ -110,6 +111,19 @@ def _find_first(run_dir: Path, *globs) -> Optional[Path]:
         if hits:
             return hits[0]
     return None
+
+
+def _gif_panel(run_dir: Path, base: str, cap: str) -> str:
+    """Base64-embed an active-site GIF (scripts/_make_gif.py output) so the report
+    stays self-contained. Empty string if the GIF is not on disk."""
+    p = run_dir / "reports" / "movie" / f"{base}_active.gif"
+    if not p.exists():
+        return ""
+    b = base64.b64encode(p.read_bytes()).decode()
+    return (f'<div><img alt="{kit.esc(cap)}" '
+            f'src="data:image/gif;base64,{b}" '
+            'style="width:100%;border:1px solid var(--line);border-radius:8px"/>'
+            f'<div class="cap">{cap}</div></div>')
 
 
 # ----------------------------------------------------------- dual 3Dmol viewer
@@ -276,8 +290,18 @@ short restrained molecular dynamics (binding stability), a near-attack-conformat
 (NAC) reactive-geometry screen (catalytic power), and binding free energies
 (relative TI = confirmatory; MM-GBSA = auxiliary). md_lite + NAC are the primary
 signals; everything quoted below is a computational screen, not a kinetic
-measurement.</p>
+measurement. This is a computational <b>candidate-prioritization</b> workflow, not a
+demonstrated improvement — see §8 for the validation required.</p>
 {cards}
+<div class="note" style="border-left-color:#BA7517"><b>Status — computational
+candidate-prioritization, not a demonstrated improvement.</b> EvoLiEZ narrowed 467
+in-silico variants to a clean MD-validated shortlist; ML/reranking enriched MD-pass
+variants (AUC {_f(auc_pass)}) and the NAC MD layer added catalytic-geometry
+information ML alone missed. <b>{kit.esc(lead_mut)}</b> is the strongest
+catalytic-geometry lead; <i>separate</i> variants are binding-favourable by RBFE —
+no single variant wins every metric. <b>No activity, stability, or expression has
+been measured; every value here is in-silico and requires the biochemical
+validation in §8.</b></div>
 
 <h2>1 · Design → validation pipeline</h2>
 <div class="note">Candidates enter from the ML design/ranking stages
@@ -306,8 +330,14 @@ geometry) and <b>ΔNAC vs WT</b>; then Amber <b>MM-GBSA</b> and softcore-TI
     samples a reaction-competent geometry.</div></div>
 </div>
 <div class="cap">Both panels are post-MD minimised complexes (identical protocol);
-drag to rotate, “active site” buttons not shown — use scroll to zoom. Rendering is
-client-side 3Dmol.js on the embedded PDB.</div>
+drag to rotate, scroll to zoom. Rendering is client-side 3Dmol.js on the embedded PDB.</div>
+
+<h3>Trajectory — active-site dynamics over the MD (time evolution)</h3>
+<div class="grid2">{_gif_panel(RD, '_wt_reference', 'WT — cofactor in the pocket across the trajectory (25 frames, ~50 ps apart). No productive hydride-transfer geometry forms (NAC 0).')}{_gif_panel(RD, lead_id or '', kit.esc(lead_mut) + ' — the co-substrate stays poised toward NADP⁺ C4; the active site is more reaction-competent than WT (NAC ' + _f((lead or {}).get('nac_occupancy'), 2) + ').')}</div>
+<div class="cap">Element-coloured cofactor + co-substrate, faint pocket dots, slow spin
+(matplotlib render of the OpenMM DCD). For an <b>interactive play / pause / speed /
+rotate</b> animation of all candidates, open the companion
+<a href="s10_md_movie.html">s10_md_movie.html</a>.</div>
 
 <h2>3 · Per-candidate metrics (Table 1)</h2>
 <div class="note">Sorted by md_lite (primary binding-stability). <b>ΔNAC&gt;0</b> =
@@ -387,7 +417,36 @@ near-attack geometry rather than binding alone. Several candidates fall in the
 cofactor-contacting region the literature implicates; the kinetic assay of the lead
 is the decisive next experiment. <i>(Literature retrieved from PubMed.)</i></div>
 
-<h2>8 · Honesty &amp; limitations</h2>
+<h2>8 · Required experimental validation &amp; roadmap</h2>
+<div class="note">A protein-<i>improvement</i> claim requires wet-lab data; the
+strongest defensible statement today is candidate <i>prioritization</i>.
+<b>Safe claim:</b> “EvoLiEZ narrowed 467 computational variants to a clean
+MD-validated shortlist; ML/reranking enriched MD-pass variants, while NAC-based MD
+revealed catalytic-geometry information not captured by ML alone. {kit.esc(lead_mut)}
+emerged as the strongest catalytic-geometry lead, whereas RBFE identified separate
+binding-favourable variants. These candidates require biochemical validation.”</div>
+<h3>Experimental validation — the decisive next step</h3>
+<ul style="color:var(--mut);font-size:.9rem;line-height:1.7">
+<li><b>Constructs (12–24):</b> WT, {kit.esc(lead_mut)} (lead), N260H;S130V + P262R;R207K
+(RBFE-favourable), N288T / R207N;N288K (NAC co-substrate diffusers = negative
+controls), plus 4–8 additional controls.</li>
+<li><b>Assays:</b> expression / solubility; NADP⁺ &amp; formate steady-state activity;
+k<sub>cat</sub>/K<sub>m</sub> for NADP⁺ vs NAD⁺ (the field-standard FDH
+cofactor-specificity endpoint); thermostability (T<sub>m</sub>); biological replicates.</li>
+</ul>
+<h3>Next computational steps — strengthen the in-silico case</h3>
+<ul style="color:var(--mut);font-size:.9rem;line-height:1.7">
+<li><b>{kit.esc(lead_mut)} RBFE rescue</b> — the catalytic lead has no converged
+ΔΔG_bind (softcore singularity → NaN); re-run with softcore-α tuning / replicates.</li>
+<li><b>Expand s10 to 24–40 candidates</b>, stratified top / mid / low, so the
+ML-vs-MD enrichment (currently n={len(cands)}) becomes statistically defensible
+rather than a within-shortlist trend.</li>
+<li><b>Unrestrained validation MD</b> of {kit.esc(lead_mut)} and the RBFE-favourable
+variants — confirm the formate / NADP⁺ geometry persists without the retention
+restraint (the restraint enables the screen but must not be the source of the signal).</li>
+</ul>
+
+<h2>9 · Honesty &amp; limitations</h2>
 <ul style="color:var(--mut);font-size:.9rem;line-height:1.7">
 <li>This is a <b>screen</b>, not a QM/MM barrier: NAC occupancy is a geometric
 reaction-competence proxy, not a rate.</li>
@@ -399,6 +458,11 @@ the NAC-occupancy correlation is one-point-dominated and not interpretable on it
 RBFE is reported only for converged TI windows.</li>
 <li>The co-substrate restraint is <b>distance-only</b>; angle is always free, so a
 productive angle is an emergent result, never imposed.</li>
+<li><b>No single variant wins every metric</b>: the catalytic lead lacks a converged
+RBFE, and the RBFE-favourable variants show no NAC gain — these are distinct
+candidate strengths, not one finished winner.</li>
+<li>MD is <b>screening-grade</b> (2 ns implicit + top-3 × 3-replica 2 ns explicit) —
+adequate for triage, short of a mechanistic (QM/MM, long-timescale) proof.</li>
 </ul>
 
 {kit.citations([
