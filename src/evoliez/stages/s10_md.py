@@ -323,6 +323,7 @@ class MDStage(Stage):
                         key=lambda c: -c.scores["md_lite_score"])[: rbcfg.top_n]
                     self.log.info(
                         "RBFE (ΔΔG_bind, softcore TI): %d candidate(s)", len(ranked))
+                    rbfe_rec = {r["candidate_id"]: r for r in md_records}
                     for cand in ranked:
                         res = run_rbfe(
                             wt_pdb_text, lig_mol2, lig_frcmod, cand.mutations,
@@ -333,6 +334,14 @@ class MDStage(Stage):
                         cand.details["rbfe"] = res
                         if res.get("ddg_bind") is not None:
                             cand.scores["rbfe_ddg_bind"] = res["ddg_bind"]
+                        # Persist into the on-disk MD record so RBFE reaches
+                        # md_candidates.json + the report (the binding_dg tier does
+                        # the same; without this the ΔΔG only ever hit the log --
+                        # the s11-merge data-loss trap, cf [[resume-load-parity]]).
+                        rec = rbfe_rec.get(cand.candidate_id)
+                        if rec is not None:
+                            rec["rbfe_ddg_bind"] = res.get("ddg_bind")
+                            rec["rbfe_mode"] = res.get("mode") or res.get("skipped")
                         self.log.info("  %s: ΔΔG_bind=%s kcal/mol (%s)",
                                       cand.candidate_id, res.get("ddg_bind"),
                                       res.get("mode") or res.get("skipped"))
