@@ -33,6 +33,18 @@ class MDStage(Stage):
         weights = ctx.config.scoring
         backend = ctx.config.backend_for(self.name)
 
+        # Functional-state anchored validation + reference-like pose gate.
+        from evoliez.md.anchored_build import build_anchored_mutant_complex
+        from evoliez.md.pose_gate import gate_from_pdb
+        anchored_on = (bool(getattr(mdcfg, "anchored_validation", False))
+                       and bool(getattr(wt.structure, "pdb_path", None)))
+        pose_gate_on = bool(getattr(mdcfg, "pose_gate_enabled", False))
+        _design_role = getattr(ctx.config.input.ligand, "role", None) or "cofactor"
+        if anchored_on:
+            self.log.info("s10 anchored validation ON: mutants built from the "
+                          "reference complex (ligand poses kept); Boltz pose -> "
+                          "alternative hypothesis")
+
         assert ctx.store is not None
         # Real per-mutant Boltz structures from s08b (if it ran): use them
         # so real MD runs the ACTUAL mutant, not the WT-derived proxy that
@@ -135,6 +147,14 @@ class MDStage(Stage):
                 self.log.warning("WT reference NAC run failed (%s); ΔNAC "
                                  "unavailable", exc)
 
+        # Reference structure for the pose gate: prefer the WT post-MD minimised
+        # complex (same protocol as the candidates), else the WT input PDB.
+        wt_ref_pdb = getattr(wt.structure, "pdb_path", None)
+        _wt_min = (ctx.paths.md_candidate("_wt_reference")
+                   / "_wt_reference_minimized.pdb")
+        if _wt_min.exists():
+            wt_ref_pdb = str(_wt_min)
+
         # Per-candidate MD provenance: a self-contained on-disk record (what
         # ACTUALLY ran -- solvent/ns/status -- plus every metric) so the s10
         # report regenerates from disk with no DB and no stage re-run.
@@ -142,9 +162,27 @@ class MDStage(Stage):
 
         n_ran = n_skipped = n_failed = 0
         for cand in candidates:
-            mc = mut_complexes.get(cand.candidate_id) or _mutant_complex(
-                wt, cand
-            )
+            boltz_mc = mut_complexes.get(cand.candidate_id)
+            anchored_used = False
+            if anchored_on:
+                try:
+                    _apdb = (ctx.paths.md_candidate(cand.candidate_id)
+                             / f"{cand.candidate_id}_anchored.pdb")
+                    _apdb.parent.mkdir(parents=True, exist_ok=True)
+                    mc, _abuild = build_anchored_mutant_complex(
+                        wt, cand.mutations, _apdb)
+                    cand.details["anchored_build"] = {
+                        "applied": _abuild.applied, "skipped": _abuild.skipped}
+                    anchored_used = bool(_abuild.applied)
+                    if not anchored_used:        # nothing applied -> not a mutant
+                        mc = boltz_mc or _mutant_complex(wt, cand)
+                except Exception as _aexc:       # noqa: BLE001
+                    self.log.warning("anchored build failed for %s (%s); using "
+                                     "Boltz/proxy", cand.candidate_id, _aexc)
+                    mc = boltz_mc or _mutant_complex(wt, cand)
+            else:
+                mc = boltz_mc or _mutant_complex(wt, cand)
+            _apply_charge_policy(mc)
             inst = cand.scores.get("instability", 0.3)
             result = run_md(
                 mc, cand.candidate_id, mdcfg,
@@ -176,6 +214,42 @@ class MDStage(Stage):
                     )
                 if metrics.nac:
                     cand.details["nac"] = metrics.nac
+
+            # Reference-like pose gate: did the candidate keep the reference
+            # cofactor/substrate pose through MD? Anchored mutants should stay
+            # reference_like; the Boltz pose is recorded as an alternative hypothesis.
+            pose_gate_json = None
+            if pose_gate_on and wt_ref_pdb:
+                _cpdb = (ctx.paths.md_candidate(cand.candidate_id)
+                         / f"{cand.candidate_id}_minimized.pdb")
+                if _cpdb.exists():
+                    try:
+                        pgd = gate_from_pdb(wt_ref_pdb, str(_cpdb), ligand_rank=0,
+                                            role=_design_role,
+                                            ligand_id="design_ligand")
+                        pose_gate_json = {"design_ligand": pgd.to_json()}
+                        co = gate_from_pdb(wt_ref_pdb, str(_cpdb), ligand_rank=1,
+                                           role="substrate", ligand_id="cosubstrate")
+                        if co.status != "skipped_no_correspondence":
+                            pose_gate_json["cosubstrate"] = co.to_json()
+                        cand.details["pose_gate"] = pose_gate_json
+                        if pgd.pocket_pose_rmsd is not None:
+                            cand.scores["design_pose_rmsd"] = round(
+                                pgd.pocket_pose_rmsd, 3)
+                        cand.scores["pose_reference_like"] = (
+                            1.0 if pgd.reference_like else 0.0)
+                    except Exception as _pexc:        # noqa: BLE001
+                        self.log.warning("pose gate failed for %s (%s)",
+                                         cand.candidate_id, _pexc)
+                if (anchored_used and boltz_mc is not None
+                        and getattr(boltz_mc.structure, "pdb_path", None)):
+                    try:
+                        _alt = gate_from_pdb(
+                            wt_ref_pdb, boltz_mc.structure.pdb_path, ligand_rank=0,
+                            role=_design_role, ligand_id="design_ligand")
+                        cand.details["alternative_pose_boltz"] = _alt.to_json()
+                    except Exception:                 # noqa: BLE001
+                        pass
             cand.details["md_passed"] = metrics.passed
             if metrics.failure_reasons:
                 cand.details["md_failure_reasons"] = "; ".join(
@@ -209,6 +283,11 @@ class MDStage(Stage):
                 "binding_dg": metrics.binding_dg or None,
                 "binding_dg_status": ("computed" if metrics.binding_dg
                                       else "not_calculated_openmm_screening"),
+                "validation_structure": ("wt_anchored" if anchored_used
+                                         else ("boltz" if boltz_mc is not None
+                                               else "proxy")),
+                "pose_gate": pose_gate_json,
+                "alternative_pose_boltz": cand.details.get("alternative_pose_boltz"),
                 "failure_reasons": metrics.failure_reasons,
             })
             with ctx.store.session() as s:
