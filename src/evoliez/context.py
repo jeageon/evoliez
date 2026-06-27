@@ -40,6 +40,7 @@ class RunContext:
         self.dry_run: bool = False
         self.store: Optional[Store] = None
         self.invalidated: bool = False  # resume state wiped (inputs changed)
+        self._purge_refused: bool = False  # safety guard tripped (non-empty run)
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -176,13 +177,36 @@ class RunContext:
         idempotent inserts (audit P0 #4) and stale globbed artifacts (e.g.
         boltz_results_*, docked poses) could be mis-read as this run's. Purge
         both so the re-run is a clean slate — preserving only the expensive,
-        content-pinned GNN checkpoint and the logs."""
-        if self.store is not None:
-            self.store.reset()
+        content-pinned GNN checkpoint and the logs.
+
+        SAFETY GUARD (added after a single config-field edit silently rmtree'd a
+        finished multi-hour run): if any stage dir already holds output, REFUSE to
+        delete it unless the operator explicitly opts in with
+        ``EVOLIEZ_ALLOW_PURGE=1``. The run is still marked ``invalidated`` (so a
+        resume won't trust stale checkpoints), but NOTHING is deleted. The operator
+        then chooses: start fresh (set the flag) or resume without purge (patch the
+        _state.json fingerprint, scripts/check_run_fingerprint.py --patch). A
+        fingerprint change must never be an irreversible data-loss event."""
+        import os
         p = self.paths
         stale = [p.inputs, p.homologs, p.msa, p.structures, p.complexes,
                  p.docking, p.interaction_graphs, p.mutations, p.validation,
                  p.md, p.ml_datasets, p.root / "datasets", p.reports]
+        nonempty = [d for d in stale if d.exists() and any(d.iterdir())]
+        allow = os.environ.get("EVOLIEZ_ALLOW_PURGE", "").lower() in (
+            "1", "true", "yes")
+        if nonempty and not allow:
+            self._purge_refused = True
+            log.error(
+                "REFUSING to purge %d non-empty stage dir(s) on a fingerprint "
+                "change (%s) — this would delete prior run output. The run is "
+                "marked invalidated but NOTHING was deleted. To start fresh set "
+                "EVOLIEZ_ALLOW_PURGE=1; to resume without purge, patch the "
+                "_state.json fingerprint (scripts/check_run_fingerprint.py "
+                "--patch).", len(nonempty), ", ".join(d.name for d in nonempty))
+            return
+        if self.store is not None:
+            self.store.reset()
         for d in stale:
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
