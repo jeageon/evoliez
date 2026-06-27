@@ -163,6 +163,11 @@ def build_paper_report_html(run_dir) -> str:
     mc = json.loads((PROV / "md_candidates.json").read_text())
     rr = _idx(PROV, "reranked_candidates.json")
     vv = _idx(PROV, "validated_candidates.json")
+    pg_path = PROV / "nadp_pose_gate.json"
+    pose_gate = json.loads(pg_path.read_text()) if pg_path.exists() else {}
+    n_nonwt = sum(1 for v in pose_gate.values()
+                  if isinstance(v.get("pose_pocket"), (int, float))
+                  and v["pose_pocket"] > 5.0)
 
     cands = mc.get("candidates") or []
     wt_nac = mc.get("wt_nac_occupancy")
@@ -227,6 +232,10 @@ def build_paper_report_html(run_dir) -> str:
     for c in ranked:
         cid = c["candidate_id"]
         nac = c.get("nac") or {}
+        pp = (pose_gate.get(cid) or {}).get("pose_pocket")
+        pp_cell = (f'<span style="color:{BAD}">{pp:.1f}</span>'
+                   if isinstance(pp, (int, float)) and pp > 5.0
+                   else (f'{pp:.1f}' if isinstance(pp, (int, float)) else "—"))
         nv = str(c.get("nac_status") or "").startswith("valid")
         g = (c.get("binding_dg") or {}).get("gbsa") if isinstance(
             c.get("binding_dg"), dict) else None
@@ -247,6 +256,7 @@ def build_paper_report_html(run_dir) -> str:
             f'<td>{_f(nac.get("angle_mean"), 0)}</td>'
             f'<td>{_f(g, 1, plus=True)}</td>'
             f'<td>{rb_s}</td>'
+            f'<td>{pp_cell}</td>'
             f'<td>{"✓" if c.get("passed") else "·"}</td></tr>')
 
     # --------------------------------------------------------------- figures
@@ -281,6 +291,22 @@ def build_paper_report_html(run_dir) -> str:
     # ---------------------------------------------------------------- the body
     lead_mut = lead["mutation_string"] if lead else "—"
     lead_nac = lead.get("nac") if lead else {}
+    _lg = pose_gate.get(lead_id or "", {})
+    redflag = (
+        '<div class="note" style="border-left-color:#C0392B">'
+        '<b>⚠ Red flag — starting-pose artifact, not validated WT-like binding.</b> '
+        'Independent check (pocket-Cα-aligned NADP heavy-atom RMSD vs WT): '
+        f'<b>{n_nonwt}/{len(pose_gate)} candidates place NADP &gt;5 Å from the WT '
+        f'binding mode</b> (lead {kit.esc(lead_mut)} at {_lg.get("pose_pocket", "?")} Å, '
+        f'internal-shape {_lg.get("internal", "?")} Å). MD stays internally stable '
+        '(Cα ~0.5 Å) so this is not MD blow-up — each mutant is a <i>fresh per-mutant '
+        'Boltz prediction</i> that picked a different NADP conformation, which a few '
+        'point mutations cannot physically cause. <b>Consequence:</b> s10 here validates '
+        'mutant-Boltz-pose stability, NOT that a WT-like NADP/formate binding mode '
+        'survives the mutation. Every catalytic claim below (incl. the lead NAC) is '
+        'provisional until the <b>WT-anchored re-validation (§8)</b> reproduces it — '
+        'see the “NADP vs WT” column in Table 1.</div>'
+    ) if pose_gate else ""
     body = f"""
 <h1>{kit.esc(target)} — MD/NAC validation of ML-designed NADP⁺ variants</h1>
 <p class="sub">The target is an <b>already cofactor-switched</b> FDH (the engineered
@@ -302,6 +328,7 @@ catalytic-geometry lead; <i>separate</i> variants are binding-favourable by RBFE
 no single variant wins every metric. <b>No activity, stability, or expression has
 been measured; every value here is in-silico and requires the biochemical
 validation in §8.</b></div>
+{redflag}
 
 <h2>1 · Design → validation pipeline</h2>
 <div class="note">Candidates enter from the ML design/ranking stages
@@ -346,7 +373,8 @@ ranking</b> (per-mutant Boltz starting structures confound the absolute value �
 see §5). RBFE is reported only where the TI windows converged.</div>
 <div class="scroll"><table><thead><tr>
 <th>variant</th><th>status</th><th>md_lite</th><th>ML %ile</th><th>NAC</th>
-<th>ΔNAC</th><th>d_min Å</th><th>angle °</th><th>GBSA*</th><th>ΔΔG_bind</th><th>pass</th>
+<th>ΔNAC</th><th>d_min Å</th><th>angle °</th><th>GBSA*</th><th>ΔΔG_bind</th>
+<th>NADP vs WT Å</th><th>pass</th>
 </tr></thead><tbody>{trows}</tbody></table></div>
 <div class="cap">*GBSA in kcal/mol, auxiliary (not a ranking criterion). ΔΔG_bind in
 kcal/mol (softcore TI, &lt;0 = tighter than WT). ML %ile = the variant's GNN
@@ -390,7 +418,13 @@ NAC-invalid). The s09 stability score tracks md_lite best
 ML/s09 is a binding filter; the MD/NAC layer adds the orthogonal catalytic signal
 ML alone misses. (n={len(cands)} — a within-shortlist trend, not a population ROC.)
 Claim it as <i>enrichment of binding-valid candidates</i>, never as activity
-prediction.</div>
+prediction. <b>⚠ False-negative caveat:</b> every variant in this s10 set is already
+ML-top, so we have <b>not</b> MD-tested ML-rejected candidates — the ML
+false-negative rate (good catalytic variants ML discarded) is unknown. The single
+highest-ML variant (N288T) is itself NAC-invalid, and the only NAC-positive lead was
+not the top ML pick. ML is therefore a <b>cost-saving prior, not a hard filter</b>;
+a stratified MD audit (high / mid / low ML + a catalytic-proxy lane) is required to
+bound false negatives before trusting ML to discard candidates.</div>
 
 <h2>6 · The catalytic lead — {kit.esc(lead_mut)}</h2>
 <div class="note">{kit.esc(lead_mut)} is the only variant combining stable binding
@@ -402,7 +436,11 @@ d<sub>min</sub> {_f((lead_nac or {}).get('distance_min'))} Å,
 kcal/mol), and a high ML rank ({_f(mlpct(lead_id))} percentile). It is the primary
 recommendation to carry to <b>steady-state kinetics</b> (k<sub>cat</sub>/K<sub>m</sub>
 for NADP⁺ vs NAD⁺), the field-standard experimental endpoint for an FDH
-cofactor-specificity claim.</div>
+cofactor-specificity claim. <b>⚠ Caveat (read first):</b> in this run its NADP sits
+<b>{_lg.get('pose_pocket', '?')} Å</b> from the WT binding mode (internal-shape
+{_lg.get('internal', '?')} Å), because the lead came from a fresh per-mutant Boltz
+pose — so the NAC signal is on a non-WT NADP conformation. This lead must FIRST be
+reproduced by the WT-anchored MD (§8) before any catalytic-improvement claim.</div>
 
 <h2>7 · Literature context</h2>
 <div class="note">FDH cofactor-specificity engineering (NAD→NADP) is well established:
@@ -436,6 +474,13 @@ cofactor-specificity endpoint); thermostability (T<sub>m</sub>); biological repl
 </ul>
 <h3>Next computational steps — strengthen the in-silico case</h3>
 <ul style="color:var(--mut);font-size:.9rem;line-height:1.7">
+<li><b>WT-anchored re-validation (CRITICAL — do first)</b> — rebuild each lead on the
+<i>WT backbone + WT NADP/formate pose</i> with only the point mutation introduced,
+then minimise / MD. This is the only test of whether a WT-like binding mode survives
+the mutation: the mutant Boltz complexes do <b>not</b> preserve it
+({n_nonwt}/{len(pose_gate)} place NADP &gt;5 Å off WT after active-site alignment), so
+every current catalytic result is provisional. Add a <b>NADP-pose gate</b>
+(pocket-aligned RMSD &lt; ~3–5 Å, internal &lt; ~2 Å, C4 position) as a hard filter.</li>
 <li><b>{kit.esc(lead_mut)} RBFE rescue</b> — the catalytic lead has no converged
 ΔΔG_bind (softcore singularity → NaN); re-run with softcore-α tuning / replicates.</li>
 <li><b>Expand s10 to 24–40 candidates</b>, stratified top / mid / low, so the
