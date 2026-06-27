@@ -3,6 +3,12 @@
 > EvoLigand-Enzyme Engineer (`evoliez`) — a ligand-aware, enzyme-family-specific protein-engineering pipeline.
 > This document describes the architecture of the whole codebase (`src/evoliez/`, ~11k LOC).
 
+> ⚠️ **The `sequence + ligand → … → final rank` contract below is the v1 contract.** It is
+> being superseded by the **functional-state contract** in
+> [ROADMAP_V2_FUNCTIONAL_STATE.md](ROADMAP_V2_FUNCTIONAL_STATE.md) (v2.0 epoch) — read that
+> for the target flow (role-tagged reference state → functional-state graph → multi-lane →
+> anchored validation → evidence-class library).
+
 ---
 
 ## 1. The system at a glance

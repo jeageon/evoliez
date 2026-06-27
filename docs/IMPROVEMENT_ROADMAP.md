@@ -2,6 +2,11 @@
 
 Generated: 2026-05-20. Last revised: 2026-06-16.
 
+> 📐 **For the v2.0 architectural overhaul** (functional-state contract, multi-lane,
+> anchored features, evidence-class output) see
+> [ROADMAP_V2_FUNCTIONAL_STATE.md](ROADMAP_V2_FUNCTIONAL_STATE.md). This file remains the
+> per-stage SOTA/model-selection source (the *what model* layer); v2 is the *what contract* layer.
+
 This document is the single source of truth for the EvoLiEZ improvement plan. It
 merges two earlier views:
 
