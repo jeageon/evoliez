@@ -164,7 +164,12 @@ validation:
       # wrongly skipped; the restraint + MD then test if the site MAINTAINS it.
       template_cosubstrate_placement: true
       restraint_radius_A: 5.0
-      restraint_k: 2.0
+      # k=20 (not 2): a k=2 flat-bottom held the formate at 50 ps (smoke) but was
+      # too weak over the 2 ns production -- ~half of the mutant co-substrates
+      # diffused out (retention <0.8 -> NAC invalid_cosubstrate_diffused). k=20
+      # holds it inside the 5 A pocket over 2 ns while staying FREE within r0
+      # (distance-only; it never restrains the angle, so it can't manufacture NAC).
+      restraint_k: 20.0
       enabled: true
       donor_smarts: "[CX3H1](=O)[O-]"                  # formate C-H (hydride donor)
       acceptor_smarts: "[cH1]([cH0]C(=O)[NX3])[cH1]"   # nicotinamide C4
