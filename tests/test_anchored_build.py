@@ -22,10 +22,11 @@ def test_split_protein_ligand():
         "TER",
         "END",
     ])
-    prot, het = _split_protein_ligand(txt)
-    assert len(prot) == 2 and len(het) == 1
+    prot, het, conect = _split_protein_ligand(txt)
+    assert len(prot) == 2 and len(het) == 1 and len(conect) == 1
     assert all(p.startswith("ATOM") for p in prot)
     assert het[0].startswith("HETATM")
+    assert conect[0].startswith("CONECT")
 
 
 def test_atom_chain_majority():
