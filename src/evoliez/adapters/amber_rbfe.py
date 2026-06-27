@@ -76,7 +76,8 @@ class TIMasks:
         """The whole mutated residue -- a compact superset of both perturbed
         regions (softcore bonds can't be SHAKEn) that keeps the mdin line under
         the 80-column Fortran namelist limit, unlike the explicit atom union."""
-        return self.timask1.split("@", 1)[0]   # ':188'
+        mask = self.timask1 or self.timask2
+        return mask.split("@", 1)[0] if mask else ""
 
 
 def _union_mask(m1: str, m2: str) -> str:
@@ -88,15 +89,25 @@ def _union_mask(m1: str, m2: str) -> str:
     return f"{r1}@{','.join(atoms)}" if r1 == r2 else f"({m1})|({m2})"
 
 
+def _normalise_amber_mask(mask: str) -> str:
+    mask = (mask or "").strip()
+    if not mask:
+        return ""
+    return mask if mask.startswith((":", "@", "(")) else f":{mask}"
+
+
 def _parse_softcore_masks(text: str) -> TIMasks:
     """Pull the two 'Alchemy step' scmasks softcore_setup prints: the first is
     the WT-unique region (for wt.prmtop), the second the mutant-unique region
     (for mut.SC.prmtop)."""
-    sc = re.findall(r"scmask\s*=\s*':([^']*)'", text)
+    sc = re.findall(r"\bscmask\s*=\s*['\"]([^'\"]*)['\"]", text)
     if len(sc) < 2:
         raise RuntimeError(
             f"softcore_setup did not emit two scmasks (got {sc}). Output:\n{text[-800:]}")
-    return TIMasks(timask1=f":{sc[0]}", timask2=f":{sc[1]}")
+    return TIMasks(
+        timask1=_normalise_amber_mask(sc[0]),
+        timask2=_normalise_amber_mask(sc[1]),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -166,7 +177,13 @@ def _tleap_from_pdb(pdb_name: str, tag: str, box: Tuple[float, float, float],
                     ligand: bool) -> str:
     """Build a prmtop from an already-solvated structure via loadpdb, restoring
     the rectangular box. Used for BOTH end states (identical path)."""
-    lig = ("source leaprc.gaff2\nloadamberparams ligand.frcmod\n") if ligand else ""
+    # The LIG residue TEMPLATE (loadmol2) must be loaded here too, not just in
+    # _tleap_solvate: loadpdb provides only coordinates, so without the unit the
+    # complex's LIG atoms have no gaff2 types and tleap FATALs ("Atom ... does
+    # not have a type"). loadmol2 defines the types; loadpdb supplies the (solvated)
+    # coordinates -- consistent because wt_solv.pdb's LIG came from this same mol2.
+    lig = ("source leaprc.gaff2\nloadamberparams ligand.frcmod\n"
+           "LIG = loadmol2 ligand.mol2\n") if ligand else ""
     a, b, c = box
     return (
         "source leaprc.protein.ff19SB\nsource leaprc.water.opc\n"
@@ -298,6 +315,10 @@ def build_hybrid(clean_pdb: Path, mutation: Mutation, workdir: Path,
     # 5. hybrid topology + masks
     r = _sh([sys.executable, str(_SOFTCORE), "wt.prmtop", "wt.rst",
              "mut.prmtop", "mut.rst"], workdir, 600)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"softcore_setup failed (rc={r.returncode}). Output:\n"
+            f"{((r.stdout or '') + (r.stderr or ''))[-800:]}")
     masks = _parse_softcore_masks((r.stdout or "") + (r.stderr or ""))
     if not (workdir / "mut.SC.prmtop").exists():
         raise RuntimeError(

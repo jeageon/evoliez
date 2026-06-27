@@ -258,12 +258,23 @@ class RBFEConfig(_Base):
     multipoint: str = "additive"   # additive (sum per-residue) | skip
 
 
+class BindingDGConfig(_Base):
+    """Endpoint binding free energy via the Amber MM-PB/GBSA tier.
+
+    OpenMM deliberately leaves ``binding_dg`` empty; when enabled, s10 runs a
+    separate explicit-solvent Amber/MMPBSA confirmation on the top MD candidates
+    and copies only the endpoint ΔG values back into the MD report/provenance."""
+    enabled: bool = False
+    top_n: int = 3
+
+
 class MDConfig(_Base):
     enabled: bool = True
     engine: str = "openmm"
     reactive_geometry: ReactiveGeometryConfig = Field(
         default_factory=ReactiveGeometryConfig)
     rbfe: RBFEConfig = Field(default_factory=RBFEConfig)
+    binding_dg: BindingDGConfig = Field(default_factory=BindingDGConfig)
     protocol_level: int = Field(1, ge=0, le=3)  # spec 15.2
     # implicit (GBSA/obc2) is what the OpenMM path actually runs today. "explicit"
     # is NOT yet wired (no addSolvent/PME) — it is accepted but the engine warns

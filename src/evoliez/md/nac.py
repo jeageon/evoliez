@@ -192,15 +192,19 @@ def resolve_reactive_indices(
 def nac_from_subframes(
     subframes: "Sequence[np.ndarray]", spec: ReactiveSpec,
     atoms: "Optional[Dict[str, int]]" = None, restrained: bool = False,
+    initial_subframe: "Optional[np.ndarray]" = None,
 ) -> NACResult:
     """NAC from pre-extracted 3-atom frames. Each ``subframes`` element is a
     (3,3) array in Angstrom whose rows are ``[donor_heavy, transfer, acceptor]``
     -- the engine collects only these three atoms per MD frame rather than the
     whole system. ``atoms`` (the resolved GLOBAL indices) is recorded for
     provenance. ``restrained`` flags a retention-restrained run (the valid status
-    becomes ``valid_restrained_retention_screen``). Thin wrapper over
-    :func:`nac_from_frames` with fixed indices."""
-    res = nac_from_frames(subframes, 0, 1, 2, spec, restrained=restrained)
+    becomes ``valid_restrained_retention_screen``). ``initial_subframe`` may be
+    supplied for the placement gate only; it is not counted in occupancy."""
+    res = nac_from_frames(
+        subframes, 0, 1, 2, spec, restrained=restrained,
+        initial_frame=initial_subframe,
+    )
     if atoms:
         res.atoms = dict(atoms)
     return res
@@ -225,11 +229,14 @@ def _angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
 
 def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
                     transfer: int, acceptor: int, spec: ReactiveSpec,
-                    restrained: bool = False) -> NACResult:
+                    restrained: bool = False,
+                    initial_frame: "Optional[np.ndarray]" = None) -> NACResult:
     """Per-frame transfer distance (transferring atom -> acceptor) and
     donor_heavy--transfer--acceptor angle; a frame is reaction-competent when
     distance <= spec.distance_max AND angle >= spec.angle_min. ``frames`` are
     (N,3) coordinate arrays in Angstrom; the three indices are into that frame.
+    ``initial_frame`` overrides the placement gate frame but is not counted in
+    occupancy or retention.
     """
     dists: List[float] = []
     angles: List[float] = []
@@ -249,6 +256,15 @@ def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
             if reactive:
                 retained_hits += 1
     n = len(dists)
+    if initial_frame is not None:
+        initial_distance = round(_dist(initial_frame[transfer],
+                                       initial_frame[acceptor]), 3)
+        initial_angle = round(_angle(initial_frame[donor_heavy],
+                                     initial_frame[transfer],
+                                     initial_frame[acceptor]), 1)
+    else:
+        initial_distance = dists[0] if dists else float("nan")
+        initial_angle = angles[0] if angles else float("nan")
     res = NACResult(
         occupancy=round(hits / n, 4) if n else 0.0,
         n_frames=n, n_reactive=hits,
@@ -259,8 +275,8 @@ def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
         atoms={"donor_heavy": donor_heavy, "transfer": transfer,
                "acceptor": acceptor},
         label=spec.label,
-        distance_initial=dists[0] if dists else float("nan"),
-        angle_initial=angles[0] if angles else float("nan"),
+        distance_initial=initial_distance,
+        angle_initial=initial_angle,
         n_retained=n_retained,
         retention_fraction=round(n_retained / n, 3) if n else float("nan"),
         occupancy_retained=round(retained_hits / n_retained, 4) if n_retained else float("nan"),

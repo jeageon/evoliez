@@ -148,6 +148,9 @@ validation:
       n_lambda: 9                        #   Gauss-Legendre λ windows / leg
       prod_steps: 50000                  #   50 ps / window
       multipoint: additive               #   sum per-residue cycles for multi-point candidates
+    binding_dg:                          # endpoint MM-PB/GBSA confirmation via Amber MMPBSA.py
+      enabled: true                      #   OpenMM keeps binding_dg null; Amber fills top-N only
+      top_n: 3
     # Catalytic-power (near-attack-conformation) screen: REACTIVITY on top of the
     # binding-stability md_lite_score. Reports per-candidate NAC occupancy and
     # ΔNAC vs WT (mutant > WT == geometrically more productive active site).

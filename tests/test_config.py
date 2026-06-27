@@ -55,6 +55,13 @@ def test_default_config_loads():
     assert cfg.backend_for("s04_complex") is Backend.mock
 
 
+def test_prod_config_enables_amber_binding_dg_tier():
+    cfg = load_config(ROOT / "configs" / "prod_fdh_nadp.yaml")
+    assert cfg.validation.md.engine == "openmm"
+    assert cfg.validation.md.binding_dg.enabled is True
+    assert cfg.validation.md.binding_dg.top_n == 3
+
+
 def test_overrides_and_per_stage_backend():
     cfg = load_config(
         ROOT / "configs" / "example_fdh_nadp.yaml",

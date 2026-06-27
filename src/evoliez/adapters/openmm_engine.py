@@ -935,6 +935,71 @@ def _run_real(
                            f"creation: {exc}",
         )
 
+    # Catalytic-power (NAC) setup is resolved BEFORE minimization so the
+    # optional co-substrate retention restraint is active during the first
+    # relaxation step. NAC-4 deliberately places formate in a near-attack pose;
+    # if the restraint is only added after minimization, that pose can drift
+    # before the placement gate ever sees frame 0.
+    nac_idx = None
+    nac_map = None
+    nac_spec = None
+    nac_subframes: List = []
+    nac_initial_subframe = None
+    nac_restrained = False
+    if nac_on and mol_blocks:
+        try:
+            from evoliez.md.nac import (ReactiveSpec,
+                                        resolve_reactive_indices)
+            if not (nac_cfg.donor_smarts and nac_cfg.acceptor_smarts):
+                log.warning("MD NAC enabled for %s but donor/acceptor SMARTS "
+                            "are empty; NAC skipped", candidate_id)
+            else:
+                nac_spec = ReactiveSpec(
+                    donor_smarts=nac_cfg.donor_smarts,
+                    acceptor_smarts=nac_cfg.acceptor_smarts,
+                    donor_idx=nac_cfg.donor_idx,
+                    acceptor_idx=nac_cfg.acceptor_idx,
+                    transfer_is_h=nac_cfg.transfer_is_h,
+                    distance_max=nac_cfg.distance_max,
+                    angle_min=nac_cfg.angle_min,
+                    label=nac_cfg.label or "reaction",
+                    placement_distance_max=getattr(nac_cfg, "placement_distance_max", 4.0),
+                    retention_distance_max=getattr(nac_cfg, "retention_distance_max", 6.0),
+                    retention_min_fraction=getattr(nac_cfg, "retention_min_fraction", 0.8),
+                )
+                rd_blocks = [(off.to_rdkit(), blk) for off, blk in mol_blocks]
+                nac_map = resolve_reactive_indices(rd_blocks, nac_spec)
+                if nac_map:
+                    nac_idx = (nac_map["donor_heavy"], nac_map["transfer"],
+                               nac_map["acceptor"])
+                    log.info("MD NAC for %s: donor_heavy=%d transfer=%d "
+                             "acceptor=%d", candidate_id, *nac_idx)
+                else:
+                    log.warning("MD NAC for %s: donor+acceptor not both "
+                                "resolved in the system (reaction partners "
+                                "absent); NAC skipped", candidate_id)
+        except Exception as exc:                  # NAC must never break MD
+            log.warning("MD NAC setup failed for %s (%s); NAC skipped",
+                        candidate_id, exc)
+            nac_idx = None
+
+    # Co-substrate retention restraint (NAC-3): active for minimization AND
+    # production. Distance-only flat-bottom; the reactive angle is never
+    # restrained, so it cannot manufacture NAC occupancy.
+    if nac_idx is not None and getattr(nac_cfg, "restrain_cosubstrate", False):
+        try:
+            if _add_cosubstrate_retention_restraint(
+                    system, mol_blocks, nac_map,
+                    nac_cfg.restraint_radius_A, nac_cfg.restraint_k):
+                nac_restrained = True
+                log.info("MD NAC for %s: co-substrate retention restraint ON "
+                         "(flat-bottom r0=%.1f Å, k=%.1f, distance-only; "
+                         "active during minimization)",
+                         candidate_id, nac_cfg.restraint_radius_A, nac_cfg.restraint_k)
+        except Exception as exc:                  # restraint must never break MD
+            log.warning("MD NAC restraint failed for %s (%s); unrestrained",
+                        candidate_id, exc)
+
     # The DESIGN ligand (off_ligs[0] / mol_blocks[0]) defines the BINDING
     # metrics; any co-substrate added for the catalytic screen (formate) is NOT
     # counted as "the ligand", so its free diffusion can't inflate ligand_rmsd.
@@ -957,6 +1022,8 @@ def _run_real(
     # numpy array (no per-element .x/.y/.z) once an OpenFF conformer has been
     # added - value_in_unit gives a clean (N,3) array either way.
     pos_nm = np.array(modeller.positions.value_in_unit(unit.nanometer))
+    if nac_idx is not None:
+        nac_initial_subframe = pos_nm[list(nac_idx)] * 10.0
     _lig_idx0 = design_lig_idx          # restrain pocket around the DESIGN ligand
     _ca_atoms = [a for a in modeller.topology.atoms() if a.name == "CA"]
     K_STRONG = (5.0 * unit.kilocalories_per_mole / unit.angstrom**2
@@ -1095,72 +1162,6 @@ def _run_real(
     contact_hits = {r: 0 for r in contact_res}
     hbond_hits = 0
 
-    # ---- catalytic-power (NAC) setup: resolve the reaction donor/acceptor to
-    # GLOBAL trajectory atom indices ONCE, here, using the per-molecule blocks
-    # (so the formate hydride and the NADP-C4 are found across SEPARATE
-    # residues). NAC is an OPTIONAL add-on: any failure logs and disables NAC
-    # for this candidate, never aborts the MD. Per-frame coords for just these
-    # three atoms are collected in the production loop below.
-    nac_idx = None
-    nac_map = None
-    nac_spec = None
-    nac_subframes: List = []
-    if nac_on and mol_blocks:
-        try:
-            from evoliez.md.nac import (ReactiveSpec,
-                                        resolve_reactive_indices)
-            if not (nac_cfg.donor_smarts and nac_cfg.acceptor_smarts):
-                log.warning("MD NAC enabled for %s but donor/acceptor SMARTS "
-                            "are empty; NAC skipped", candidate_id)
-            else:
-                nac_spec = ReactiveSpec(
-                    donor_smarts=nac_cfg.donor_smarts,
-                    acceptor_smarts=nac_cfg.acceptor_smarts,
-                    donor_idx=nac_cfg.donor_idx,
-                    acceptor_idx=nac_cfg.acceptor_idx,
-                    transfer_is_h=nac_cfg.transfer_is_h,
-                    distance_max=nac_cfg.distance_max,
-                    angle_min=nac_cfg.angle_min,
-                    label=nac_cfg.label or "reaction",
-                    placement_distance_max=getattr(nac_cfg, "placement_distance_max", 4.0),
-                    retention_distance_max=getattr(nac_cfg, "retention_distance_max", 6.0),
-                    retention_min_fraction=getattr(nac_cfg, "retention_min_fraction", 0.8),
-                )
-                rd_blocks = [(off.to_rdkit(), blk) for off, blk in mol_blocks]
-                nac_map = resolve_reactive_indices(rd_blocks, nac_spec)
-                if nac_map:
-                    nac_idx = (nac_map["donor_heavy"], nac_map["transfer"],
-                               nac_map["acceptor"])
-                    log.info("MD NAC for %s: donor_heavy=%d transfer=%d "
-                             "acceptor=%d", candidate_id, *nac_idx)
-                else:
-                    log.warning("MD NAC for %s: donor+acceptor not both "
-                                "resolved in the system (reaction partners "
-                                "absent); NAC skipped", candidate_id)
-        except Exception as exc:                  # NAC must never break MD
-            log.warning("MD NAC setup failed for %s (%s); NAC skipped",
-                        candidate_id, exc)
-            nac_idx = None
-
-    # Co-substrate retention restraint (NAC-3): keep the free donor (formate) in the
-    # pocket so the NAC reflects active-site geometry, not implicit-solvent diffusion.
-    # Distance-only flat-bottom (the reactive ANGLE is never restrained); added to the
-    # System and the Context re-initialised before production. Opt-in.
-    nac_restrained = False
-    if nac_idx is not None and getattr(nac_cfg, "restrain_cosubstrate", False):
-        try:
-            if _add_cosubstrate_retention_restraint(
-                    system, mol_blocks, nac_map,
-                    nac_cfg.restraint_radius_A, nac_cfg.restraint_k):
-                sim.context.reinitialize(preserveState=True)
-                nac_restrained = True
-                log.info("MD NAC for %s: co-substrate retention restraint ON "
-                         "(flat-bottom r0=%.1f Å, k=%.1f, distance-only)",
-                         candidate_id, nac_cfg.restraint_radius_A, nac_cfg.restraint_k)
-        except Exception as exc:                  # restraint must never break MD
-            log.warning("MD NAC restraint failed for %s (%s); unrestrained",
-                        candidate_id, exc)
-
     lig_series: List[float] = []
     pkt_series: List[float] = []
     e_start = e_last = None
@@ -1210,7 +1211,8 @@ def _run_real(
     if nac_idx is not None and nac_subframes:
         from evoliez.md.nac import nac_from_subframes
         nac_res = nac_from_subframes(nac_subframes, nac_spec, atoms=nac_map,
-                                     restrained=nac_restrained)
+                                     restrained=nac_restrained,
+                                     initial_subframe=nac_initial_subframe)
         # GATED occupancy: None unless the co-substrate was actually retained in a
         # reactive arrangement (a diffused / mis-placed formate is NOT "low reactivity").
         nac_occupancy = nac_res.occupancy_or_none

@@ -234,6 +234,71 @@ class MDStage(Stage):
                     )
                 )
 
+        # Endpoint binding free energy (MM-PB/GBSA) confirmation tier. OpenMM
+        # remains the NAC-capable screening engine and leaves binding_dg empty;
+        # this optional pass runs Amber explicit-solvent MMPBSA only on the top
+        # MD candidates, then copies the ΔG values into per-candidate
+        # analysis/provenance without replacing the screening MD status.
+        bdcfg = getattr(mdcfg, "binding_dg", None)
+        if (bdcfg and getattr(bdcfg, "enabled", False)
+                and backend is Backend.real and not ctx.dry_run):
+            try:
+                import json as _json
+
+                amber_cfg = mdcfg.model_copy(deep=True)
+                amber_cfg.engine = "amber"
+                amber_cfg.solvent = "explicit"
+                if getattr(amber_cfg, "reactive_geometry", None):
+                    amber_cfg.reactive_geometry.enabled = False
+                record_by_id = {r["candidate_id"]: r for r in md_records}
+                ranked = sorted(
+                    (c for c in candidates
+                     if c.scores.get("md_lite_score") is not None),
+                    key=lambda c: -c.scores["md_lite_score"])[: bdcfg.top_n]
+                self.log.info(
+                    "Amber binding_dg (MM-PB/GBSA): %d candidate(s)", len(ranked))
+                for cand in ranked:
+                    mc = mut_complexes.get(cand.candidate_id) or _mutant_complex(
+                        wt, cand
+                    )
+                    res = run_md(
+                        mc, cand.candidate_id, amber_cfg,
+                        ctx.paths.md / "_binding_dg" / cand.candidate_id,
+                        instability=cand.scores.get("instability", 0.3),
+                        catalytic_positions=catalytic,
+                        backend=backend, dry_run=False,
+                        ligand_cache_dir=ligand_cache_dir, extra_ligands=None,
+                    )
+                    binding = res.binding_dg or {}
+                    status = "computed" if binding else "not_computed_amber_mmpbsa"
+                    cand.details["binding_dg"] = binding or None
+                    cand.details["binding_dg_status"] = status
+                    if res.failure_reason and not binding:
+                        cand.details["binding_dg_failure"] = res.failure_reason
+                    rec = record_by_id.get(cand.candidate_id)
+                    if rec is not None:
+                        rec["binding_dg"] = binding or None
+                        rec["binding_dg_status"] = status
+                    aj_path = ctx.paths.md_candidate(cand.candidate_id) / "analysis.json"
+                    if aj_path.exists():
+                        aj = _json.loads(aj_path.read_text())
+                        aj["binding_dg"] = binding or None
+                        aj["binding_dg_status"] = status
+                        aj_path.write_text(_json.dumps(aj, indent=2))
+                        with ctx.store.session() as s:
+                            row = (s.query(MDSimulation)
+                                   .filter_by(project_id=ctx.project_id,
+                                              candidate_id=cand.candidate_id)
+                                   .order_by(MDSimulation.md_id.desc())
+                                   .first())
+                            if row is not None:
+                                row.analysis_json = aj
+                    self.log.info("  %s: binding_dg=%s (%s)",
+                                  cand.candidate_id, binding or None, res.status)
+            except Exception as exc:  # noqa: BLE001
+                self.log.warning("Amber binding_dg tier failed (%s); MD scores intact",
+                                 exc)
+
         # Relative binding free energy (ΔΔG_bind, mutant vs WT) — FINAL confirmatory
         # tier on the top-N MD candidates by md_lite_score. Opt-in (md.rbfe.enabled),
         # real backend only; softcore TI via Amber pmemd.cuda (adapters/amber_rbfe).

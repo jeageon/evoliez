@@ -3,6 +3,7 @@ non-reactive-but-retained co-substrate from one that simply DIFFUSED away or was
 mis-placed. Only a retained, reactive-geometry NAC may feed ranking; a diffused/
 mis-placed formate yields nac_occupancy = None (never a fake "low reactivity")."""
 import math
+import inspect
 
 import numpy as np
 import pytest
@@ -59,6 +60,17 @@ def test_genuinely_reactive_is_valid_nonzero():
     assert r.occupancy_or_none == 1.0
 
 
+def test_initial_frame_gates_placement_but_does_not_count_occupancy():
+    initial = _frames([2.8], [180])[0]
+    prod = _frames([3.4] * 50, [74] * 50)
+    r = nac_from_frames(prod, 0, 1, 2, SPEC, initial_frame=initial)
+    assert r.status == NAC_VALID
+    assert r.distance_initial == 2.8
+    assert r.n_frames == 50
+    assert r.n_reactive == 0
+    assert r.occupancy_or_none == 0.0
+
+
 def test_restrained_retention_screen_status():
     # a retained run flagged restrained -> the restrained valid status (still consumable)
     r = nac_from_frames(_frames([3.4] * 50, [74] * 50), 0, 1, 2, SPEC, restrained=True)
@@ -83,3 +95,15 @@ def test_to_json_exposes_status_and_gates():
               "distance_initial", "angle_initial", "occupancy_retained"):
         assert k in j
     assert j["nac_occupancy"] == 0.0           # valid -> the gated value
+
+
+def test_openmm_nac_restraint_is_wired_before_minimization():
+    """NAC-4 regression guard: placed formate must be restrained during minimization,
+    not only after it may already have drifted past the placement gate."""
+    from evoliez.adapters.openmm_engine import _run_real
+
+    src = inspect.getsource(_run_real)
+    assert src.index("_add_cosubstrate_retention_restraint") < src.index(
+        "sim.minimizeEnergy")
+    assert src.index("nac_initial_subframe = pos_nm[list(nac_idx)]") < src.index(
+        "sim.minimizeEnergy")

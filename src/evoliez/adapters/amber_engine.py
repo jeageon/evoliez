@@ -208,8 +208,15 @@ def cpptraj_script(catalytic_positions: Sequence[int],
 # Execution helpers
 # --------------------------------------------------------------------------- #
 def _sh(cmd: List[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess:
+    # PR_SET_PDEATHSIG: bind these children (tleap/antechamber/parmchk2/MMPBSA
+    # and, via amber_rbfe._run_window, pmemd.cuda) to the pipeline parent so a
+    # parent crash/kill cannot leave an orphaned GPU-holding pmemd or a runaway
+    # MMPBSA (subprocess_utils.run() applies the same guard; this raw path
+    # bypassed it -- a killed smoke just orphaned its MMPBSA at 0.2% CPU).
+    from evoliez.utils.subprocess_utils import _LIBC, _set_pdeathsig
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                          timeout=timeout)
+                          timeout=timeout,
+                          preexec_fn=_set_pdeathsig if _LIBC is not None else None)
 
 
 def _build_system(cx: Complex, pdb_path: Path, workdir: Path,
@@ -371,11 +378,12 @@ def _analyze(workdir: Path, cfg: MDConfig, catalytic_positions: Sequence[int],
 
 def _mmpbsa(workdir: Path, trajs: Sequence[str],
             total_frames: int = 200) -> Dict[str, float]:
-    """Endpoint MM-GBSA + MM-PBSA binding free energy over the replica
-    trajectories. ante-MMPBSA.py splits the solvated complex prmtop into dry
-    complex/receptor/ligand; MMPBSA.py computes dG_bind (GB igb8 + PB, 0.15 M
-    salt). OPTIONAL: returns {} on any failure - the candidate is still ranked
-    on the MD geometry metrics. PB is costly, so subsample to ~100 frames."""
+    """Endpoint MM-GBSA binding free energy over the replica trajectories.
+    ante-MMPBSA.py splits the solvated complex prmtop into dry
+    complex/receptor/ligand; MMPBSA.py computes dG_bind (GB igb8, 0.15 M salt).
+    PB is omitted (see mmpbsa.in note) -- it is the wall-time bottleneck under
+    shared-CPU contention. OPTIONAL: returns {} on any failure - the candidate is
+    still ranked on the MD geometry metrics. Subsample to ~100 frames."""
     interval = max(2, total_frames // 100)
     strip = ":WAT,Na+,Cl-,K+"
     r = _sh(["ante-MMPBSA.py", "-p", "complex.prmtop", "-c", "com.prmtop",
@@ -384,10 +392,15 @@ def _mmpbsa(workdir: Path, trajs: Sequence[str],
     if not (workdir / "com.prmtop").exists():
         log.warning("ante-MMPBSA failed: %s", (r.stderr or "")[-300:])
         return {}
+    # GB-only (igb8) endpoint MM-GBSA. PB (&pb / 3D-FDPB) is intentionally
+    # omitted: it is the single-threaded, far-costlier term and under shared-CPU
+    # contention it dominates wall-time (it stalled the smoke at ~0.2% CPU for
+    # ~50 min). igb8 MM-GBSA is the standard fast endpoint and is what the
+    # binding_dg deliverable reports; re-add the &pb namelist when the box has
+    # spare CPU and a PB estimate is wanted.
     (workdir / "mmpbsa.in").write_text(
-        f"MM-PB/GBSA\n&general\n startframe=1, interval={interval}, keep_files=0,\n"
-        f" strip_mask='{strip}',\n/\n&gb\n igb=8, saltcon=0.15,\n/\n"
-        "&pb\n istrng=0.15,\n/\n")
+        f"MM-GBSA\n&general\n startframe=1, interval={interval}, keep_files=0,\n"
+        f" strip_mask='{strip}',\n/\n&gb\n igb=8, saltcon=0.15,\n/\n")
     r = _sh(["MMPBSA.py", "-O", "-i", "mmpbsa.in", "-o", "mmpbsa.out",
              "-sp", "complex.prmtop", "-cp", "com.prmtop", "-rp", "rec.prmtop",
              "-lp", "lig.prmtop", "-y"] + list(trajs), workdir, 7200)
