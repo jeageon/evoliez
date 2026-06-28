@@ -566,6 +566,17 @@ class SelectionLanesConfig(_Base):
     low_ml_controls: int = 8
 
 
+class ComputeConfig(_Base):
+    """GPU-first, CPU-bounded execution (ROADMAP_V2 §2b / Phase H1). `cpu_core_budget` caps
+    OMP/MKL/OpenBLAS/NumExpr + every process pool so no stage trips the shared-server
+    watchdog (~48 cores for 10 min); `gpu_pool` is the GPU set the GPU-bound stages
+    (s04/s08b/s09/s06b/s10) fan across. Empty `gpu_pool` = inherit CUDA_VISIBLE_DEVICES.
+    `fail_loud_on_cpu_md` makes s10 raise instead of silently running MD on CPU (~200x slow)."""
+    cpu_core_budget: int = 16
+    gpu_pool: List[int] = Field(default_factory=list)
+    fail_loud_on_cpu_md: bool = True
+
+
 class Config(_Base):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     input: InputConfig
@@ -586,6 +597,7 @@ class Config(_Base):
     scoring: ScoreWeights = Field(default_factory=ScoreWeights)
     selection_lanes: SelectionLanesConfig = Field(
         default_factory=SelectionLanesConfig)
+    compute: ComputeConfig = Field(default_factory=ComputeConfig)
 
     # Global default backend and optional per-stage overrides
     # (keys = stage name, e.g. {"s04_complex": "real"}).
