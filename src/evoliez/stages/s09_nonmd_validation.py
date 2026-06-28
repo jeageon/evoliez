@@ -20,6 +20,16 @@ from evoliez.stages.s05_docking import redock_with
 from evoliez.types import Candidate, Complex, Pose
 
 
+def _all_ligand_atoms(primary, cx):
+    """v2 multi-ligand: the primary ligand atoms + every co-modelled EXTRA ligand's atoms, so
+    the catalytic geometry reflects the FULL functional state (cofactor/substrate/metal), not
+    only the primary design ligand. Back-compat: no extras -> primary only."""
+    atoms = list(primary or [])
+    for ex in (getattr(cx, "extra_ligand_atoms", {}) or {}).values():
+        atoms.extend(ex or [])
+    return atoms
+
+
 def _context_chains_for(redock_structure) -> Optional[List[str]]:
     """The co-modelled context-ligand chains to keep as FIXED receptor context
     when redocking the design ligand (audit P1 #1).
@@ -145,7 +155,8 @@ class NonMDValidationStage(Stage):
         dcfg = ctx.config.validation.redocking
         backend = ctx.config.backend_for(self.name)
 
-        wt_cat = catalytic_distances(wt.structure, ref_atoms, catalytic)
+        wt_cat = catalytic_distances(
+            wt.structure, _all_ligand_atoms(ref_atoms, wt), catalytic)
         wt_mech = ctx.get("mechanism")
         pfeats = ctx.get("position_features", [])
         adv = ctx.config.advanced
@@ -355,12 +366,14 @@ class NonMDValidationStage(Stage):
             # its structure + its ligand atoms makes the penalty actually capture
             # how the mutation moved the active site. Fall back to the proxy (WT
             # coords + WT reference ligand) when no real mutant complex exists.
+            # v2 multi-ligand: measure the catalytic geometry against the FULL functional
+            # state (primary + extra cofactor/substrate/metal), not only the primary ligand.
             if redock_cx is not None:
                 geom_structure = redock_cx.structure
-                geom_ligand = redock_cx.ligand.atoms
+                geom_ligand = _all_ligand_atoms(redock_cx.ligand.atoms, redock_cx)
             else:
                 geom_structure = mc.structure
-                geom_ligand = ref_atoms
+                geom_ligand = _all_ligand_atoms(ref_atoms, mc)
             mut_cat = catalytic_distances(geom_structure, geom_ligand, catalytic)
             geom_pen = 0.0
             for k, v in mut_cat.items():
