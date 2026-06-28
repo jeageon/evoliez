@@ -149,8 +149,9 @@ make the roadmap unsafe to hand to an implementer as-is.
    (matches the charge template; altloc + missing-loop policy recorded). "End-to-end runs" is
    **not** sufficient — a wrong mapping runs and silently produces garbage.
 
-4. **Version honesty.** `0.2.0` ships contract + guard + lane-boundary only; the "platform"
-   claim waits for `1.0` (a second, non-FDH target passes). See the version progression at top.
+4. **Version honesty.** `0.2.0` ships the **§8 `0.2.0` preview scope** (functional-state
+   contract + ReferenceState hard gates + lane boundary + clean-run gate + Phase H1 compute);
+   the "platform" claim waits for `1.0` (a second, non-FDH target). See the progression at top + §8.
 
 ---
 
@@ -261,7 +262,7 @@ features* still run on the primary ligand and the de novo Boltz pose.
 
 ---
 
-## 5. Phased roadmap (A–G)
+## 5. Phased roadmap (A–H)
 
 > Each phase is independently shippable, mock-testable, and gated on user review.
 > Template: **Goal · Changes · Contract · Deliverables · Acceptance · Depends · Effort/Risk.**
