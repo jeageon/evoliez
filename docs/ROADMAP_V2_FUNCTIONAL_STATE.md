@@ -149,6 +149,56 @@ make the roadmap unsafe to hand to an implementer as-is.
 
 ---
 
+## 2b. Execution model — GPU-first, CPU-bounded (shared server)
+
+**Server reality.** `evo` is a 48-core box shared with other tenants whose CPU jobs (e.g.
+GROMACS) routinely saturate the cores, and a **watchdog caps any process that holds ~48
+cores for 10+ min down to ~0.2 cores** (root-only to clear) — so heavy CPU jobs must stay
+**≤16–24 cores**. Its **4× A6000 GPUs are usually free** (the co-tenants are CPU-bound).
+**⟹ GPU is the abundant resource; CPU is the hard constraint.** v2 is therefore designed to
+**push work onto the GPU and keep the CPU footprint bounded and watchdog-safe.**
+
+**Principle.** Every stage declares a **resource class** (`gpu` / `cpu` / `io`). The runner
+(a) fans `gpu` stages across a configurable **GPU pool**, and (b) holds *total* `cpu` use
+under a single **CPU budget** (default **≤16 cores**, under the watchdog line) by deriving
+`OMP/MKL/OPENBLAS/NUMEXPR_NUM_THREADS` **and** every `ProcessPoolExecutor(max_workers=…)`
+from that one budget. The current launcher already pins `OMP_NUM_THREADS=4` +
+`CUDA_VISIBLE_DEVICES=0,2,3`; v2 promotes both to config — `compute.cpu_core_budget` and
+`compute.gpu_pool` — applied uniformly across every stage and subprocess pool.
+
+**Per-stage resource map (the expensive work is already GPU-capable):**
+
+| stage | dominant compute | v2 action |
+|---|---|---|
+| s02 homolog | CPU (mmseqs/jackhmmer/hhblits/foldseek) | prefer **GPU tracks** (mmseqs-GPU `mmseqs_gpu:true`, colabfold, foldseek-GPU); bound the CPU tracks (`jackhmmer_chunks`, hhblits threads) to the budget; cache-first |
+| s03 MSA | CPU (align) | content-cache (≈0 on hit); bound align threads |
+| s04 complex | **GPU (Boltz)** | already GPU |
+| s05 docking | **GPU (gnina/diffdock)** | GPU; bound CPU prep |
+| s06 graph | CPU (light) | negligible |
+| s06b interaction | **GPU docking** + CPU (XGBoost) | multi-GPU docking fan-out; **prefer the GNN (GPU, `amp:true`) over XGBoost (CPU)** for the heavy model |
+| s07 mutation gen | **GPU (LigandMPNN)** + CPU (rules) | LigandMPNN is GPU; rules / MSA-sampler are CPU-light; bound |
+| s08 rerank | CPU (XGBoost, light) | small; bound (or XGBoost-GPU `device=cuda`) |
+| s08b mutant Boltz | **GPU (Boltz), multi-GPU** | primary GPU win — fan across the GPU pool |
+| s09 nonmd | **GPU (gnina/diffdock/ThermoMPNN)** + CPU | GPU; bound CPU prep |
+| s10 MD | **GPU (OpenMM/Amber)** | other primary GPU win — per-candidate MD across the GPU pool |
+| s11 final | CPU (light) | negligible |
+
+**Synergy with multi-lane (Phase C).** More lanes = more candidates *folded* (s08b Boltz) and
+*validated* (s10 MD) = **more GPU jobs on otherwise-idle GPUs, at ~no extra CPU cost.** The
+GPU-first model is exactly what makes multi-lane affordable here — the only added CPU is the
+bounded orchestration loop, not the compute.
+
+**CPU bottlenecks to remove (not merely bound):** (1) the **XGBoost interaction model** →
+GNN-GPU; (2) **CPU MSA tracks** (jackhmmer/hhblits) → lean on the mmseqs/colabfold/foldseek
+GPU tracks + the content cache; (3) **AM1-BCC `sqm` charge fitting** → already avoided via
+pre-computed `charges_mol2` (`allow_am1bcc:false`) — keep it that way.
+
+**Hard rule (v2 invariant, §7).** No stage may exceed `cpu_core_budget` for >10 min; GPU work
+is unconstrained (use the full free `gpu_pool`). A GPU-capable path, where one exists, is the
+default; a CPU fallback must be opt-in and budget-bounded.
+
+---
+
 ## 3. Already landed — Phase 0 (6-principle anchored redesign)
 
 These exist and are unit-tested; v2 promotes them from "available" to "default contract."
@@ -333,6 +383,9 @@ A–E ─> Phase G (generalization) <──────────────�
 - Restraints stay **distance-only, never angle** (an angle restraint would manufacture NAC).
 - Pipeline/stage names unchanged; changes are to the **contract inside** each stage.
 - Shared-server discipline + purge-safety guard remain in force.
+- **GPU-first, CPU-bounded** (§2b): no stage exceeds `cpu_core_budget` (≤16–24, watchdog-safe)
+  for >10 min; GPU work uses the full free `gpu_pool`; a GPU-capable path is the default and
+  any CPU fallback is opt-in + budget-bounded.
 - v2 is **not** "add every new model" — it is "fix the contract, then re-evaluate models."
 
 ---
@@ -354,6 +407,10 @@ A–E ─> Phase G (generalization) <──────────────�
 6. ML is retrained on anchored features and **evaluated on functional-state preservation**,
    with a measured false-negative rate from the control lane — and remains a prior.
 7. A **second, non-FDH target** runs end-to-end with config only.
+8. **GPU-first, CPU-bounded** (§2b): every stage declares a resource class; total CPU stays
+   under `compute.cpu_core_budget` (no >10-min spike near the watchdog line) and GPU-bound
+   stages fan across `compute.gpu_pool`; the XGBoost interaction model is replaced by the
+   GNN-GPU and the CPU MSA tracks are cache/GPU-first.
 
 ---
 
