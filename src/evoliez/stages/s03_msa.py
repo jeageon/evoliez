@@ -106,9 +106,25 @@ class MSAStage(Stage):
             self.log.info("ESM2 prior attached to %d positions (model=%s)",
                           len(priors), mcfg.esm_model)
 
-        # MSA QC (spec 8.2): effective sequence count.
+        # MSA QC (spec 8.2 + ROADMAP_V2 Phase G): depth is NOT diversity. Report the effective
+        # sequence count (Neff via subfamily clusters), subfamily balance, and the real-vs-
+        # synthetic source breakdown, so a shallow/redundant/synthetic-padded MSA is visible.
         neff = len(msa)
         ctx.persist_meta("msa_depth", neff)
+        from collections import Counter as _Counter
+
+        from evoliez.features.msa_qc import msa_qc as _msa_qc
+        _qc = _msa_qc(
+            depth=neff,
+            cluster_ids=[h.cluster_id for h in homologs
+                         if getattr(h, "cluster_id", None) is not None],
+            source_breakdown=dict(_Counter(getattr(h, "source", "?")
+                                           for h in homologs)))
+        ctx.persist_meta("msa_qc", _qc)
+        self.log.info(
+            "MSA QC: depth=%d Neff(subfamilies)=%s balance=%s real_frac=%s",
+            neff, _qc.get("neff_clusters"), _qc.get("subfamily_balance"),
+            _qc.get("real_fraction"))
         ctx.persist_meta(
             "mean_conservation",
             round(sum(f.conservation_score for f in feats) / max(1, len(feats)), 4),
