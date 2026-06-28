@@ -50,6 +50,11 @@ class FinalRankingStage(Stage):
                 )
                 if "nac" in md_by_id[c.candidate_id].details:
                     c.details["nac"] = md_by_id[c.candidate_id].details["nac"]
+                # carry the anchored gate-stack verdict + pose gate into the final
+                # candidate so the report/CSV + evidence library see the verdict (Phase E).
+                for _k in ("gate_stack", "pose_gate", "alternative_pose_boltz"):
+                    if _k in md_by_id[c.candidate_id].details:
+                        c.details[_k] = md_by_id[c.candidate_id].details[_k]
             c.scores.setdefault("md_lite_score", 0.0)
             c.scores.setdefault("md_instability", 0.0)
 
@@ -103,6 +108,28 @@ class FinalRankingStage(Stage):
                         setattr(row, k, v)
 
         written = write_reports(ctx.config, ctx.paths, ranked, breakdowns)
+
+        # Evidence-class library (ROADMAP_V2 Phase E): alongside the scalar ranking, group the
+        # MD candidates by gate-stack verdict + a Pareto front + the anchored paper-grade gate,
+        # so the final claim is an evidence class (not just a sorted position that silently
+        # mixes binding/stability/catalysis). Reads the s10 provenance; non-fatal.
+        try:
+            import json as _json
+
+            from evoliez.ranking.evidence import build_evidence_library
+            _mcj = ctx.paths.reports / "provenance" / "md_candidates.json"
+            if _mcj.exists():
+                _recs = _json.loads(_mcj.read_text()).get("candidates", [])
+                _lib = build_evidence_library(_recs)
+                (ctx.paths.reports / "provenance" / "evidence_classes.json").write_text(
+                    _json.dumps(_lib.to_json(), indent=2))
+                ctx.persist_meta("evidence_counts", _lib.counts)
+                ctx.persist_meta("n_paper_grade", len(_lib.paper_grade))
+                self.log.info(
+                    "evidence-class library: %s; paper-grade=%d; pareto=%d",
+                    _lib.counts, len(_lib.paper_grade), len(_lib.pareto))
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("evidence-class library skipped (%s)", exc)
 
         # model-used transparency (expert review #5): make the fallback
         # explicit in the human report so results are never over-trusted.
