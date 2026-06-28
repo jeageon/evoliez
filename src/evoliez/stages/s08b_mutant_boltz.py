@@ -233,6 +233,25 @@ class MutantBoltzStage(Stage):
             update={"diffusion_samples": rcfg.mutant_boltz_diffusion_samples}
         )
         top = candidates[: rcfg.mutant_boltz_top_n]
+        # ROADMAP_V2 Phase C — lane boundary at the FOLD QUEUE, not s09. The ml_score cut
+        # above silently drops candidates ML scores low, so they never get a real structure
+        # and can never reach MD (require_real_structure) — the s09 multi-lane can then only
+        # re-rank the already-folded ML-top set, leaving the low-ML control inert. When
+        # selection_lanes is enabled, fold a UNION of lanes instead. Only ML/diversity/
+        # low-ML-control are feasible here (stability/geometry are s09 products, not yet
+        # computed); the low-ML control is the point — it folds low-ML candidates so an ML
+        # false negative can still surface in MD. Default off = the existing cut.
+        _sl = getattr(ctx.config, "selection_lanes", None)
+        if _sl is not None and getattr(_sl, "enabled", False) and candidates:
+            from evoliez.ranking.multi_lane import (
+                LaneConfig, lane_counts, select_multi_lane)
+            _fold = LaneConfig(
+                enabled=True, from_ml_high=_sl.from_ml_high,
+                from_stability_high=0, from_geometry_high=0,
+                from_diversity=_sl.from_diversity, low_ml_controls=_sl.low_ml_controls)
+            top = select_multi_lane(candidates, _fold)
+            self.log.info("s08b fold queue via MULTI-LANE: %d candidate(s) %s",
+                          len(top), lane_counts(top))
         outdir = ctx.paths.complexes / "mutant_boltz"
 
         # GPU fan-out: re-predicting N mutant complexes is the same independent-
