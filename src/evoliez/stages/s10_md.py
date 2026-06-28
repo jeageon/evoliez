@@ -161,6 +161,9 @@ class MDStage(Stage):
         md_records: List[dict] = []
 
         n_ran = n_skipped = n_failed = 0
+        # ROADMAP_V2 Phase H1 — fan the EXPENSIVE step (run_md) across the GPU pool.
+        # Phase 0: build the (anchored) mutant complex per candidate (CPU, fast).
+        _prebuilt: dict = {}
         for cand in candidates:
             boltz_mc = mut_complexes.get(cand.candidate_id)
             anchored_used = False
@@ -183,14 +186,36 @@ class MDStage(Stage):
             else:
                 mc = boltz_mc or _mutant_complex(wt, cand)
             _apply_charge_policy(mc)
-            inst = cand.scores.get("instability", 0.3)
-            result = run_md(
-                mc, cand.candidate_id, mdcfg,
-                ctx.paths.md_candidate(cand.candidate_id),
-                instability=inst, catalytic_positions=catalytic,
-                backend=backend, dry_run=ctx.dry_run,
-                ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_specs,
-            )
+            _prebuilt[cand.candidate_id] = (mc, boltz_mc, anchored_used)
+
+        # Phase 1: run_md — fanned across compute.gpu_pool when >1 real GPU, else serial
+        # (byte-identical to the previous per-candidate loop). MDResult is picklable.
+        from evoliez.utils.compute import gpu_pool_list
+        _gpu_pool = gpu_pool_list(getattr(ctx.config.compute, "gpu_pool", None))
+        _md_tasks = [(c.candidate_id, _prebuilt[c.candidate_id][0],
+                      str(ctx.paths.md_candidate(c.candidate_id)),
+                      c.scores.get("instability", 0.3)) for c in candidates]
+        _results: dict = {}
+        if len(_gpu_pool) > 1 and backend is Backend.real and not ctx.dry_run:
+            from evoliez.adapters.md_batch import run_md_batches
+            self.log.info("s10 run_md FAN-OUT across GPUs %s (%d candidate(s))",
+                          _gpu_pool, len(_md_tasks))
+            _results = run_md_batches(
+                _md_tasks, _gpu_pool, mdcfg,
+                ligand_cache_dir=str(ligand_cache_dir) if ligand_cache_dir
+                else None, extra_specs=extra_specs, catalytic=catalytic)
+        else:
+            for _cid, _mc, _wd, _inst in _md_tasks:
+                _results[_cid] = run_md(
+                    _mc, _cid, mdcfg, ctx.paths.md_candidate(_cid),
+                    instability=_inst, catalytic_positions=catalytic,
+                    backend=backend, dry_run=ctx.dry_run,
+                    ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_specs)
+
+        # Phase 2: analyse + scores + pose gate + record + DB (serial, main process).
+        for cand in candidates:
+            mc, boltz_mc, anchored_used = _prebuilt[cand.candidate_id]
+            result = _results[cand.candidate_id]
             _st = str(result.status)
             if result.integration_failed or _st == "failed":
                 n_failed += 1
