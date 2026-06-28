@@ -681,7 +681,7 @@ def _parse_real_samples(outdir: Path, lig_atoms, structure_files=None) -> List[B
         # ensemble contact-frequency feature was degenerate (freq always 0/1).
         pose = canonical
         if i < len(structure_files):
-            _res, model_lig = _parse_structure_atoms(structure_files[i])
+            _res, model_lig, _extra = _parse_structure_atoms(structure_files[i])
             if model_lig:
                 if canonical:
                     relabeled, _ok = relabel_to_canonical(model_lig, canonical)
@@ -730,6 +730,7 @@ def _parse_cif_atoms(path: Path):
     cols: list[str] = []
     residues: list[Residue] = []
     lig: list[LigandAtom] = []
+    extra: dict = {}                       # v2 multi-ligand: non-primary ligand chains
     primary_chain: Optional[str] = None   # first ligand chain = primary (chain B)
     i = 0
     while i < len(lines):
@@ -767,24 +768,30 @@ def _parse_cif_atoms(path: Path):
                                             sidechain_centroid=(x, y, z))
                                 )
                             elif grp == "HETATM":
-                                # primary ligand only (first ligand chain);
-                                # co-modelled extra ligands are other chains.
+                                # primary ligand = first ligand chain -> lig;
+                                # co-modelled extra ligands (other chains) -> extra
+                                # (v2 multi-ligand: full functional state for s06).
                                 ck = ("label_asym_id" if "label_asym_id" in idx
                                       else "auth_asym_id" if "auth_asym_id" in idx
                                       else None)
                                 ch = p[idx[ck]] if ck else None
                                 if primary_chain is None:
                                     primary_chain = ch
+                                el = p[idx["type_symbol"]]
                                 if ch is None or ch == primary_chain:
-                                    el = p[idx["type_symbol"]]
                                     lig.append(LigandAtom(
                                         id=f"{el}{len(lig)}", element=el or "C",
+                                        coord=(x, y, z)))
+                                else:
+                                    _e = extra.setdefault(ch, [])
+                                    _e.append(LigandAtom(
+                                        id=f"{el}{len(_e)}", element=el or "C",
                                         coord=(x, y, z)))
                         j += 1
                 i = j
                 continue
         i += 1
-    return residues, lig
+    return residues, lig, extra
 
 
 def _parse_pdb_atoms(path: Path):
@@ -795,6 +802,7 @@ def _parse_pdb_atoms(path: Path):
 
     residues: list[Residue] = []
     lig: list[LigandAtom] = []
+    extra: dict = {}                       # v2 multi-ligand: non-primary ligand chains
     primary_chain: Optional[str] = None
     for line in path.read_text().splitlines():
         if line.startswith("ATOM") and line[12:16].strip() == "CA":
@@ -806,25 +814,25 @@ def _parse_pdb_atoms(path: Path):
                         sidechain_centroid=(x, y, z))
             )
         elif line.startswith("HETATM"):
-            # Keep ONLY the primary (design-target) ligand = the FIRST ligand
-            # chain (chain B). Co-modelled cofactors/substrates are separate
-            # chains (C, D, …); merging them into one atom list pollutes the
-            # primary ligand's contacts, docking reference and canonical relabel
-            # (e.g. NADP 48 atoms + formate 3 -> a 51-atom mismatch vs the 48-atom
-            # template). The PDB chain id is column 22 (0-based index 21).
+            # The PRIMARY (design-target) ligand = the FIRST ligand chain (chain B); keep it
+            # in `lig` (its contacts/docking-reference/canonical-relabel must NOT be polluted
+            # by other ligands). Co-modelled cofactors/substrates/metals are separate chains
+            # (C, D, …) -> collected into `extra` (v2 multi-ligand: the FULL functional state
+            # for the s06 design mask). The PDB chain id is column 22 (0-based index 21).
             chain = line[21] if len(line) > 21 else " "
             if primary_chain is None:
                 primary_chain = chain
-            elif chain != primary_chain:
-                continue
             x, y, z = (float(line[30:38]), float(line[38:46]),
                        float(line[46:54]))
             el = line[76:78].strip() or line[12:14].strip()
-            lig.append(
-                LigandAtom(id=f"{el}{len(lig)}", element=el or "C",
-                           coord=(x, y, z))
-            )
-    return residues, lig
+            if chain == primary_chain:
+                lig.append(LigandAtom(id=f"{el}{len(lig)}", element=el or "C",
+                                      coord=(x, y, z)))
+            else:
+                _e = extra.setdefault(chain, [])
+                _e.append(LigandAtom(id=f"{el}{len(_e)}", element=el or "C",
+                                     coord=(x, y, z)))
+    return residues, lig, extra
 
 
 def _parse_structure_atoms(path: Path):
@@ -837,7 +845,7 @@ def _parse_structure_atoms(path: Path):
 def _parse_real_structure(pdb: Path, sequence: str, ligand: Ligand) -> Complex:
     from evoliez.types import ProteinStructure
 
-    residues, lig_atoms = _parse_structure_atoms(pdb)
+    residues, lig_atoms, extra_poses = _parse_structure_atoms(pdb)
     for i, r in enumerate(residues):
         if i < len(sequence):
             r.aa = sequence[i]
@@ -864,4 +872,4 @@ def _parse_real_structure(pdb: Path, sequence: str, ligand: Ligand) -> Complex:
         formal_charge=ligand.formal_charge,
         source=ligand.source if locked else ligand.source + "|reindexed",
         charges_mol2=ligand.charges_mol2, allow_am1bcc=ligand.allow_am1bcc,
-    ))
+    ), extra_ligand_atoms=extra_poses)
