@@ -1,7 +1,12 @@
 # EvoLiEZ v2 — Functional-State Engineering Platform
 **Strategy & phased roadmap for a major architectural overhaul**
 
-- **Version mark:** **v2.0 epoch** (target `__version__` `0.2.0`; current `0.1.0`)
+- **Version progression** (release-honest — "v2" is the internal *epoch* name for this
+  whole arc, **not** a single release; current `__version__` `0.1.0`):
+  - **`0.2.0` — functional-state *contract* + purge guard + *lane boundary* fix** (preview)
+  - **`0.3.x` — functional-state *graph* + *ML retrain*** on de-contaminated features
+  - **`1.0` — *non-FDH-validated* platform** (a second target passes end-to-end)
+  - Do **not** claim "platform" before `1.0` (second target). `0.2.0` is a contract preview.
 - **Status:** **STRATEGY / DESIGN ONLY.** No code is changed by this document. Each
   phase is implemented only on explicit, per-phase user request.
 - **Date:** 2026-06-28
@@ -102,6 +107,48 @@ Pipeline stage **names stay the same**; the **contract inside each stage changes
 
 ---
 
+## 2a. Non-negotiable contract decisions (lock these BEFORE any implementation)
+
+These four are prerequisites the phased roadmap assumes. Each was a P0/P1 risk that would
+make the roadmap unsafe to hand to an implementer as-is.
+
+1. **Lane-selection boundary = s08, NOT s09.** The real ML cut is the **s08b fold queue**
+   (`src/evoliez/stages/s08b_mutant_boltz.py:235` — `candidates[:mutant_boltz_top_n]`,
+   ml_score-sorted) plus `top_for_redocking` (`src/evoliez/stages/s08_reranker.py:229`). A
+   low-ML candidate that is never folded has no real structure, so `require_real_structure`
+   excludes it from s09/s10 — **the s09 multi-lane can only re-rank *within* the ML-top
+   subset, so the low-ML control lane is inert there.** The lane *union* (incl. low-ML
+   control + geometry/stability lanes) must select the **s08b fold queue and the s08
+   redocking set**, not only the s09 MD shortlist. (The current opt-in s09 wiring is
+   necessary but **not sufficient** — it is a re-ranker, not the funnel boundary.)
+
+2. **Feature-source matrix — never mix sources as one score.** Tag every quantitative
+   feature by provenance; never average or compare across provenance:
+
+   | source | example metrics | meaning |
+   |---|---|---|
+   | `anchored` | anchored_catalytic_geometry (NAC/dist/angle), anchored_contact/PLIF recovery vs WT | mutation effect on the WT-like functional state |
+   | `de_novo_boltz` | `d_ligand_iptm`, mutant-Boltz ΔpLDDT | **alternative-pose hypothesis** confidence — NOT a functional-state metric |
+   | `redock` | anchored_redock_score, redock_consistency | a docker reproduces a given pose |
+   | `MD` | md_lite, pose_gate, ΔNAC | dynamics stability + reactivity |
+   | `RBFE/GBSA` | ΔΔG_bind | energetic confirmatory tier |
+
+   **There is no Boltz `d_ligand_iptm` on an anchored structure** (it is *built*, not
+   predicted). Phase D therefore computes anchored **geometry / contact / redock / RBFE**
+   metrics — it must never emit a "binding delta" that implies the de-novo-Boltz delta.
+
+3. **ReferenceState hard gates (curated-PDB path).** A curated reference is admissible only
+   if it passes, as **hard gates** (not warnings): `sequence_to_structure_mapping` (residue
+   numbering ↔ target sequence), `reference_atom_map_verified` (ligand atom correspondence),
+   `ligand_role_chain_map` (which chain/het = which role), `charge/protonation_provenance`
+   (matches the charge template; altloc + missing-loop policy recorded). "End-to-end runs" is
+   **not** sufficient — a wrong mapping runs and silently produces garbage.
+
+4. **Version honesty.** `0.2.0` ships contract + guard + lane-boundary only; the "platform"
+   claim waits for `1.0` (a second, non-FDH target passes). See the version progression at top.
+
+---
+
 ## 3. Already landed — Phase 0 (6-principle anchored redesign)
 
 These exist and are unit-tested; v2 promotes them from "available" to "default contract."
@@ -155,8 +202,12 @@ features* still run on the primary ligand and the de novo Boltz pose.
   (curated|boltz), role-tagged ligand poses, catalytic residues, waters/metals}.
 - **Deliverables.** config `RoleSpec`/`ReferenceState`; reference loader; provenance flag
   `reference_source ∈ {curated_pdb, computed_boltz}`; s04/s05/s10 consume `ReferenceState`.
-- **Acceptance.** A target with a curated PDB + role-tagged ligands runs end-to-end; every
-  downstream artifact records which reference it anchored on.
+- **Acceptance.** (a) **Hard gates before a curated reference is used** (§2a.3):
+  `sequence_to_structure_mapping`, `reference_atom_map_verified`, `ligand_role_chain_map`,
+  `charge/protonation_provenance` — a failed gate **aborts**, never warns-and-continues
+  (a wrong mapping otherwise runs and silently produces garbage). (b) The target then runs
+  end-to-end; every downstream artifact records `reference_source ∈ {curated_pdb,
+  computed_boltz}` + the verified maps.
 - **Depends.** Phase 0 (anchored_build). **Effort/Risk.** M / medium (touches s01/s04 contracts).
 
 ### Phase B — Functional-state graph `[s06, s06b]`
@@ -173,27 +224,38 @@ features* still run on the primary ligand and the de novo Boltz pose.
 
 ### Phase C — Multi-lane generation + ML-as-prior `[s07, s08, s08b]`
 - **Goal.** Stop ML from being a hard funnel; never lose a catalytic candidate to a binding prior.
-- **Changes.** Lane-aware generation (binding / catalytic-geometry / stability / diversity /
-  control). Turn `selection_lanes.enabled` **on by default** in the paper/production profile
-  (the schema already exists, `config.py:560`). Tag s08b de novo poses as alternative
-  hypotheses; keep them separate from anchored structures.
-- **Contract.** MD shortlist = **union of lanes incl. low-ML control**, each candidate
-  carrying `selection_lane`.
-- **Deliverables.** lane-aware s07; production profile YAML with lanes on + tuned counts;
-  pose-hypothesis tagging in s08b.
-- **Acceptance.** MD set is provably a lane union (not a single ML cut); ≥1 low-ML control
-  reaches MD; de novo poses are never labeled "improved mutant."
-- **Depends.** Phase 0 (multi_lane). **Effort/Risk.** M / low-medium (largely wiring + a profile).
+- **Changes.** Move the lane *union* to the **funnel boundary**, where the ML cut actually
+  happens: the pure ml_score slices at `s08_reranker.py:229` (`top_for_redocking`) **and**
+  `s08b_mutant_boltz.py:235` (`candidates[:mutant_boltz_top_n]`, the **fold queue**) become a
+  lane union (binding / catalytic-geometry / stability / diversity / **low-ML control**).
+  Lane-aware generation in s07. Turn `selection_lanes.enabled` on by default in the paper/
+  production profile (schema exists, `config.py`). The already-wired **s09 multi-lane stays as
+  a re-ranker *within* the folded set — necessary but NOT the boundary** (§2a.1). Tag s08b de
+  novo poses as alternative hypotheses.
+- **Contract.** The **s08b fold queue + s08 redocking set** are a lane union incl. low-ML
+  control, each candidate carrying `selection_lane`. (Fixing s09 alone is inert — a low-ML
+  candidate that is never folded can never reach MD; §2a.1.)
+- **Deliverables.** lane union at the s08/s08b boundary; lane-aware s07; production profile
+  YAML with lanes on + tuned per-lane counts; pose-hypothesis tagging in s08b.
+- **Acceptance.** A **low-ML control candidate is actually FOLDED (s08b) and reaches s10** —
+  the union changed *what gets a real structure*, not merely the order of the ML-top set; de
+  novo poses are never labeled "improved mutant."
+- **Depends.** Phase 0 (multi_lane). **Effort/Risk.** M / medium (the s08/s08b boundary is the
+  funnel, not just wiring — handle Boltz fold-budget cost of extra lanes).
 
 ### Phase D — Anchored features upstream `[s09]`  ← directly fixes the §1 corollary
 - **Goal.** Compute selection/validation features on **anchored** structures, not the
   per-mutant Boltz pose.
-- **Changes.** In s09, build the WT-anchored mutant (Phase 0 builder) and compute
-  `catalytic_geometry_penalty` / binding delta there; keep the Boltz-pose features as a
-  separate "alternative-hypothesis" column. Split **redock-consistency** from **WT-like
-  preservation** in report + gates.
-- **Contract.** `catalytic_geometry_source = anchored` becomes the ranking input;
-  `*_boltz` sources are kept but demoted to hypotheses.
+- **Changes.** In s09, build the WT-anchored mutant (Phase 0 builder) and compute **anchored
+  metrics** there — `anchored_catalytic_geometry` (NAC/dist/angle), `anchored_contact/PLIF_
+  recovery` vs WT, `anchored_redock_score` — with `RBFE/GBSA` as the MD/energetic tier.
+  **Critically: there is NO `d_ligand_iptm`-style "binding delta" on an anchored structure**
+  — it is *built*, not Boltz-predicted, so it has no iPTM (§2a.2). Keep the de-novo-Boltz
+  `d_ligand_iptm` as a **separate alternative-hypothesis column**, never folded into the
+  anchored score. Split **redock-consistency** from **WT-like preservation** in report + gates.
+- **Contract.** Ranking input = `anchored`-source metrics only (per the §2a.2 feature-source
+  matrix); `de_novo_boltz` (`d_ligand_iptm`) stays a hypothesis column, never averaged or
+  compared against anchored metrics.
 - **Deliverables.** anchored feature pass in s09; report/gate separation; provenance source tags.
 - **Acceptance.** For a re-run, `catalytic_geometry_source` is `anchored` (not
   `mutant_boltz`); a candidate can pass redock-consistency yet fail WT-like preservation
@@ -249,13 +311,17 @@ A–E ─> Phase G (generalization) <──────────────�
 - **Critical path:** **A → D → F.** Per the diagnosis, *fix the reference/functional-state
   contract and the feature anchoring first; retrain ML only after.* Retraining ML on the
   current contaminated features would relearn the same bias.
-- **Recommended first slice (smallest valuable PR):**
-  1. **Phase A core** — `RoleSpec` + curated-reference wiring (the contract everything else needs).
-  2. **Phase C switch** — flip `selection_lanes.enabled` on in a production profile (already
-     built; immediate false-negative protection at near-zero risk).
-  - These two are low/medium risk and unblock B/D/E.
-- **Lowest-risk quick win independent of A:** Phase E's "clean-run requires anchored fields"
-  gate (pure provenance/report rule).
+- **Recommended first slice (smallest valuable PRs, in order — NOT bundled with Phase A):**
+  1. **Phase E clean-run gate** — "paper-grade requires `wt_anchored + reference_like +
+     gate_stack`." A pure provenance/report rule, near-zero risk, immediately makes claims
+     honest. (Lowest-risk win, independent of everything.)
+  2. **Phase C lane boundary** — move the lane union to the **s08b fold queue + s08 redocking
+     set** (§2a.1); this is the *minimal* change that makes the low-ML control actually reach
+     MD. **Flipping `selection_lanes.enabled` at s09 alone is inert** (it only re-ranks the
+     ML-top set). Tune the Boltz fold budget for the extra lanes.
+  - **Then Phase A** (reference contract) — it touches s01/s04/s05/s10 (medium) and carries the
+     ReferenceState hard gates (§2a.3), so it follows the two cheap high-value slices rather
+     than being bundled as "the first PR." Phase A then unblocks B/D.
 
 ---
 
