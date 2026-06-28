@@ -128,6 +128,21 @@ class FinalRankingStage(Stage):
                 self.log.info(
                     "evidence-class library: %s; paper-grade=%d; pareto=%d",
                     _lib.counts, len(_lib.paper_grade), len(_lib.pareto))
+                # Phase F: re-evaluate ML on FUNCTIONAL-STATE preservation (not just MD-pass)
+                # + count functional winners the ML cut would have dropped (control lane).
+                from evoliez.ranking.ml_eval import ml_functional_eval
+                _mle = ml_functional_eval(
+                    _recs,
+                    ml_score_by_id={c.candidate_id: c.scores.get("ml_score")
+                                    for c in ranked},
+                    lane_by_id={c.candidate_id: c.details.get("selection_lane")
+                                for c in ranked})
+                ctx.persist_meta("ml_functional_eval", _mle)
+                self.log.info(
+                    "ML functional eval: AUC(ml->functional)=%s vs AUC(ml->MD-pass)=%s;"
+                    " low-ml-control functional winners=%s",
+                    _mle.get("auc_ml_to_functional"), _mle.get("auc_ml_to_mdpass"),
+                    _mle.get("functional_in_control"))
         except Exception as exc:  # noqa: BLE001
             self.log.warning("evidence-class library skipped (%s)", exc)
 
