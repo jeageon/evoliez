@@ -30,6 +30,107 @@ from . import _report_kit as kit
 SCOL = {"ok": "#1D9E75", "unstable": "#BA7517", "failed": "#993C1D"}
 
 
+def _pocket_traj_pdb(dcd_path, top_path, max_frames=20, radius_nm=0.8):
+    """DCD + minimized-PDB topology -> downsampled, pocket-focused, protein-CA-aligned
+    multi-model PDB string for an in-browser trajectory animation. None if mdtraj is
+    missing or the files don't parse / have <2 frames. The ligands are resname UNK (the
+    SMILES-built NADP / formate, which mdtraj otherwise mis-classes as protein); the
+    pocket is protein within radius_nm of any ligand atom; the CA alignment makes the
+    ligand move RELATIVE to a fixed binding site (not drift with global translation)."""
+    try:
+        import mdtraj as md
+    except Exception:
+        return None
+    try:
+        t = md.load(str(dcd_path), top=str(top_path))
+        if t.n_frames < 2:
+            return None
+        lig = t.top.select("resname UNK")
+        if len(lig) == 0:
+            return None
+        prot = t.top.select("not resname UNK")
+        ca = t.top.select("name CA and not resname UNK")
+        if len(ca):
+            t.superpose(t, 0, atom_indices=ca)
+        neigh = md.compute_neighbors(t[:1], radius_nm, lig, haystack_indices=prot)[0]
+        keep = sorted(set(lig.tolist()) | {int(n) for n in neigh})
+        sub = t.atom_slice(keep)
+        stride = max(1, sub.n_frames // max_frames)
+        sub = sub[::stride][:max_frames]
+        import os
+        import tempfile
+        fd, tmp = tempfile.mkstemp(suffix=".pdb")
+        os.close(fd)
+        sub.save_pdb(tmp)
+        pdb = Path(tmp).read_text()
+        os.unlink(tmp)
+        return pdb
+    except Exception:
+        return None
+
+
+def _trajectory_section(run_dir, cands):
+    """Animated MD-trajectory viewers for the lead candidates (gate-stack verdict
+    'candidate_improved') + the WT reference baseline. Reads each candidate's
+    md/<id>/<id>.dcd + <id>_minimized.pdb (the simulation topology, H included).
+    Returns (body_html, js); ('', '') when no trajectory is usable."""
+    RD = Path(run_dir)
+    items = []  # (label, dcd, top)
+    wt_dcd = RD / "md" / "_wt_reference" / "_wt_reference.dcd"
+    wt_top = RD / "md" / "_wt_reference" / "_wt_reference_minimized.pdb"
+    if wt_dcd.exists() and wt_top.exists():
+        items.append(("WT reference (baseline)", wt_dcd, wt_top))
+    for c in cands:
+        if (c.get("gate_stack") or {}).get("verdict") != "candidate_improved":
+            continue
+        cid = str(c.get("candidate_id"))
+        dcd = RD / "md" / cid / f"{cid}.dcd"
+        top = RD / "md" / cid / f"{cid}_minimized.pdb"
+        if dcd.exists() and top.exists():
+            items.append((f'{c.get("mutation_string", cid)} (improved)', dcd, top))
+    blocks, ids = [], []
+    for i, (label, dcd, top) in enumerate(items):
+        pdb = _pocket_traj_pdb(dcd, top)
+        if not pdb:
+            continue
+        nfr = pdb.count("MODEL ")
+        blocks.append(
+            '<div class="trajcard" style="margin:16px 0;padding:10px;border:1px solid '
+            'var(--line);border-radius:10px">'
+            f'<div class="cap"><b>{kit.esc(label)}</b> — catalytic-site dynamics '
+            f'(ligand + 8 Å pocket · {nfr} frames over 2 ns)</div>'
+            f'<div class="vbar"><button class="vb" onclick="tjToggle({i})">⏯ play / pause</button></div>'
+            f'<div id="traj{i}" style="height:360px;position:relative;width:100%"></div>'
+            f'<script id="trajdata{i}" type="text/plain">{pdb}</script></div>')
+        ids.append(i)
+    if not blocks:
+        return "", ""
+    section = (
+        '<h2>MD trajectory — catalytic-site dynamics</h2>'
+        '<div class="note">In-browser animation of the restrained implicit-solvent MD: '
+        'pocket-focused and protein-CA aligned, so the ligand motion is RELATIVE to a '
+        'fixed binding site (~20 downsampled frames over the 2 ns production). Ligand '
+        '(NADP / formate) = cyan sticks; pocket = lines. Shown for the gate-stack leads '
+        '(candidate_improved) + the WT baseline; full trajectories are on disk per '
+        'candidate (md/&lt;id&gt;/&lt;id&gt;.dcd).</div>' + "".join(blocks))
+    js = (
+        "var TJ={};\n"
+        "function tjInit(i){var el=document.getElementById('traj'+i);"
+        "if(!el||!window.$3Dmol)return;"
+        "var v=$3Dmol.createViewer(el,{backgroundColor:cssv('--surf')||'white'});"
+        "v.addModelsAsFrames(document.getElementById('trajdata'+i).textContent,'pdb');"
+        "v.setStyle({},{line:{}});"
+        "v.setStyle({resn:'UNK'},{stick:{radius:0.2,colorscheme:'cyanCarbon'}});"
+        "v.zoomTo({resn:'UNK'});v.animate({loop:'forward',interval:120});v.render();"
+        "TJ[i]={v:v,on:true};}\n"
+        "function tjToggle(i){var o=TJ[i];if(!o)return;"
+        "if(o.on){o.v.stopAnimate();}else{o.v.animate({loop:'forward',interval:120});}"
+        "o.on=!o.on;}\n"
+        "window.addEventListener('load',function(){"
+        + ";".join(f"tjInit({i})" for i in ids) + ";});")
+    return section, js
+
+
 def _scolor(status: str) -> str:
     if not status:
         return "#888"
@@ -58,6 +159,7 @@ def build_md_report_html(run_dir) -> str:
         raise FileNotFoundError(f"{p} missing -- run s10 first")
     data = json.loads(p.read_text())
     cands = data.get("candidates") or []
+    _traj_section, _traj_js = _trajectory_section(RD, cands)
     req = data.get("requested") or {}
     counts = data.get("counts") or {}
     nac_on = bool(data.get("nac_enabled"))
@@ -217,6 +319,8 @@ H-bond + catalytic geometry − ligand/pocket drift). Reactivity is reported sep
 (below), never folded into this number.</div>
 {nac_block}
 
+{_traj_section}
+
 <h2>WT complex — catalytic site &amp; design positions</h2>
 {kit.legend([("catalytic (fixed)", "#d85a30"), ("designable", "#1D9E75"),
              ("NADP / formate (HETATM)", "#22b8cf")])}
@@ -256,6 +360,7 @@ new Chart(sc,{{type:'scatter',data:{{datasets:[{{data:SC,pointBackgroundColor:SC
     scales:{{x:{{title:{{display:true,text:'md_lite_score (binding stability)',color:MUT}},grid:{{color:GRID}},ticks:{{color:MUT}}}},
       y:{{title:{{display:true,text:'ΔNAC vs WT (reactivity)',color:MUT}},grid:{{color:GRID}},ticks:{{color:MUT}}}}}}}}}});}}
 """
+    scripts += _traj_js
     return kit.page(f"{target} — s10 MD validation", body, scripts=scripts)
 
 
