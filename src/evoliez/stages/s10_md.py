@@ -196,6 +196,7 @@ class MDStage(Stage):
                       str(ctx.paths.md_candidate(c.candidate_id)),
                       c.scores.get("instability", 0.3)) for c in candidates]
         _results: dict = {}
+        _fail_loud = bool(getattr(ctx.config.compute, "fail_loud_on_cpu_md", False))
         if len(_gpu_pool) > 1 and backend is Backend.real and not ctx.dry_run:
             from evoliez.adapters.md_batch import run_md_batches
             self.log.info("s10 run_md FAN-OUT across GPUs %s (%d candidate(s))",
@@ -203,14 +204,16 @@ class MDStage(Stage):
             _results = run_md_batches(
                 _md_tasks, _gpu_pool, mdcfg,
                 ligand_cache_dir=str(ligand_cache_dir) if ligand_cache_dir
-                else None, extra_specs=extra_specs, catalytic=catalytic)
+                else None, extra_specs=extra_specs, catalytic=catalytic,
+                fail_loud_on_cpu=_fail_loud)
         else:
             for _cid, _mc, _wd, _inst in _md_tasks:
                 _results[_cid] = run_md(
                     _mc, _cid, mdcfg, ctx.paths.md_candidate(_cid),
                     instability=_inst, catalytic_positions=catalytic,
                     backend=backend, dry_run=ctx.dry_run,
-                    ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_specs)
+                    ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_specs,
+                    fail_loud_on_cpu=_fail_loud)
 
         # Phase 2: analyse + scores + pose gate + record + DB (serial, main process).
         for cand in candidates:

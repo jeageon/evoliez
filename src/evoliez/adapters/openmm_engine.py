@@ -568,6 +568,7 @@ def run_md(
     dry_run: bool = False,
     ligand_cache_dir: "Path | None" = None,
     extra_ligands: "Sequence[tuple] | None" = None,
+    fail_loud_on_cpu: bool = False,
 ) -> MDResult:
     """``ligand_cache_dir``: shared, stable per-run directory for the ligand
     force-field cache. The ligand is identical across all candidates in a run,
@@ -608,6 +609,7 @@ def run_md(
                 cx, candidate_id, cfg, workdir,
                 catalytic_positions=catalytic_positions, dry_run=dry_run,
                 ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_ligands,
+                fail_loud_on_cpu=fail_loud_on_cpu,
             )
         except Exception as exc:  # spec 23 Risk 4: fail gracefully per candidate
             log.warning("MD failed for %s (%s); recording failure", candidate_id, exc)
@@ -693,6 +695,7 @@ def _run_real(
     dry_run: bool,
     ligand_cache_dir: "Path | None" = None,
     extra_ligands: "Sequence[tuple] | None" = None,
+    fail_loud_on_cpu: bool = False,
 ) -> MDResult:
     if dry_run:
         log.info("[dry-run] would run OpenMM L%d (%s) for %s",
@@ -1068,8 +1071,18 @@ def _run_real(
     # initialises: on this box the conda CUDA build is PTX-broken (12.4 driver)
     # so it falls through CUDA -> OpenCL (still GPU) -> CPU. Logging it makes
     # "is the MD on the GPU?" answerable from the run log.
-    log.info("MD %s running on the %s platform", candidate_id,
-             sim.context.getPlatform().getName())
+    _plat_name = sim.context.getPlatform().getName()
+    log.info("MD %s running on the %s platform", candidate_id, _plat_name)
+    if fail_loud_on_cpu and _plat_name == "CPU":
+        # Safety net (ROADMAP_V2 compute.fail_loud_on_cpu_md): a CPU fallback means no usable
+        # GPU CUDA/OpenCL — CPU MD is ~200x slower (weeks for a real shortlist) and would
+        # oversubscribe the shared box. Fail THIS candidate fast (the caller's try/except marks
+        # it failed) instead of silently grinding on CPU. The s10 fan-out uses spawn so workers
+        # re-init OpenCL on their pinned GPU; this catches the case where that still fails.
+        raise RuntimeError(
+            f"MD {candidate_id}: OpenMM selected the CPU platform (no usable GPU "
+            f"CUDA/OpenCL); refusing ~200x-slow CPU MD (compute.fail_loud_on_cpu_md). "
+            f"Fix the GPU env, else set the flag False to allow CPU.")
     sim.context.setPositions(modeller.positions)
     sim.minimizeEnergy(maxIterations=cfg.minimize_steps)
 
