@@ -183,6 +183,25 @@ from that one budget. The current launcher already pins `OMP_NUM_THREADS=4` +
 | s10 MD | **GPU (OpenMM/Amber)** | other primary GPU win — per-candidate MD across the GPU pool |
 | s11 final | CPU (light) | negligible |
 
+**MD-side specifics (s10 — the biggest single GPU win).** s10 is currently the **only heavy
+GPU stage that does NOT fan across the GPU pool**: s08b (`s08b_mutant_boltz.py:244`), s09
+(`s09_nonmd_validation.py:188`), and s06b (`s06b_interaction_model.py:1007`) already split
+work across `CUDA_VISIBLE_DEVICES`, but the s10 MD loop (`s10_md.py:164`, `for cand in
+candidates`) runs **serially on one GPU**. v2 fans **per-candidate (and per-replica — config
+`replicas: 3`) MD across `gpu_pool`** → up to **~4× throughput** on this box at no extra CPU
+cost. Beyond fan-out:
+- **OpenMM platform** (`openmm_engine.py`) falls through **CUDA → OpenCL → CPU**; on the 12.4
+  driver CUDA hits a PTX mismatch so it lands on **OpenCL (still GPU, ~0.7× CUDA — benchmarked
+  547 vs 382 ns/day)**. Building the **CUDA-12.4-matched OpenMM env** (`openmm-cuda124`)
+  restores CUDA (~1.44×) for the screening MD; OpenCL stays the fallback. **CPU MD is ~200×
+  slower — it must never be the screening path** (assert GPU; fail loud if it drops to CPU).
+- **Amber `pmemd.cuda` (CUDA-native)** stays the heavy/confirmatory tier (RBFE softcore TI,
+  explicit-solvent / MM-GBSA) — already GPU and CUDA-12.4-matched.
+- **CPU parts of s10 are small + cacheable**: ligand parameterization (antechamber/parmchk2 —
+  **no `sqm`**, charges pre-computed) and `tleap` (RBFE setup) run **once for the shared WT
+  ligand** and are reused across candidates; the anchored build (PDBFixer) is CPU-light. Bound
+  them to the CPU budget — they are not the bottleneck.
+
 **Synergy with multi-lane (Phase C).** More lanes = more candidates *folded* (s08b Boltz) and
 *validated* (s10 MD) = **more GPU jobs on otherwise-idle GPUs, at ~no extra CPU cost.** The
 GPU-first model is exactly what makes multi-lane affordable here — the only added CPU is the
