@@ -9,8 +9,12 @@
   - **`0.3.x` — functional-state *graph* + *ML retrain*** on de-contaminated features
   - **`1.0` — *non-FDH-validated* platform** (a second target passes end-to-end)
   - Do **not** claim "platform" before `1.0` (second target). `0.2.0` is a contract preview.
-- **Status:** **STRATEGY / DESIGN ONLY.** No code is changed by this document. Each
-  phase is implemented only on explicit, per-phase user request.
+- **Status:** **IMPLEMENTED (2026-06-28).** Phases A, B, C, D, E, G, H1 + the multi-ligand
+  contract + the Phase-F evaluation framework are built, unit-tested (62 tests), end-to-end
+  verified on a non-FDH 2nd target (mock s01→s11), and deployed. **Run/data-gated remainder:**
+  the actual ML RETRAIN (Phase F training) + H2 (XGBoost→GNN-GPU interaction model) + the REAL
+  paper-grade runs — each needs a real anchored run's provenance + the (currently busy) server.
+  See "Implementation status" below.
 - **Date:** 2026-06-28
 - **Relationship to existing docs:**
   - **Supersedes the *internal contract*** described in [docs/ARCHITECTURE.md](ARCHITECTURE.md)
@@ -24,6 +28,28 @@
     [md/gate_stack.py](../src/evoliez/md/gate_stack.py),
     [ranking/multi_lane.py](../src/evoliez/ranking/multi_lane.py) + their `tests/`) — v2 does
     **not** redo it; it promotes it from an s10-only, opt-in capability to the default contract.
+
+---
+
+## Implementation status (2026-06-28)
+
+| Phase | Status | Modules |
+|---|---|---|
+| config foundations | ✅ built + deployed | `roles.py`, `config.ComputeConfig` |
+| A — reference contract + curated-PDB hard gates | ✅ | `reference_state.py`, s04 |
+| B — functional-state mask + **multi-ligand** | ✅ | s06, `geometry.residues_near_positions`, `Complex.extra_ligand_atoms`, boltz parser |
+| C — lane boundary @ s08b fold queue | ✅ | s08b, `ranking.multi_lane` |
+| D — multi-ligand catalytic geometry | ✅ | s09 `_all_ligand_atoms` |
+| E — evidence-class library + paper-grade gate | ✅ | `ranking.evidence`, s11 |
+| G — MSA QC (Neff / balance / real-vs-synthetic) | ✅ | `features.msa_qc`, s03 |
+| H1 — compute budget + s10 multi-GPU fan-out | ✅ | `utils.compute`, `adapters.md_batch`, s10 |
+| F — ML functional-state eval | ✅ framework | `ranking.ml_eval`, s11 |
+| F retrain · H2 GNN-GPU interaction model | ⏳ run/data-gated | needs a real anchored run's features |
+| real paper-grade runs (FDH v2 + 2nd target) | ⏳ server-gated | efficient now (s10 fan-out + lanes + evidence) |
+
+Verified: a non-FDH metalloenzyme (Zn metal + water substrate + design ligand) runs **s01→s11
+in mock with the full v2 stack**; 62 unit + e2e tests pass; all modules deployed + server-
+import-verified. Remaining = the real paper-grade data runs + the ML retrain they feed.
 
 ---
 
