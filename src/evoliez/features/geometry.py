@@ -102,6 +102,31 @@ def ligand_proximal_residues(
     return out
 
 
+def residues_near_positions(
+    structure: ProteinStructure,
+    positions: Sequence[int],
+    radius: float = 8.0,
+) -> List[int]:
+    """Residues whose sidechain centroid/CA lies within ``radius`` of ANY of the given
+    residue positions' centroid/CA — the FUNCTIONAL-STATE neighborhood around the catalytic
+    site (ROADMAP_V2 Phase B). Lets the design mask follow the reaction site (where the
+    cofactor/substrate/metal act) even when those partners are extra ligands the primary-
+    ligand sphere misses. Generic: positions come from config catalytic_residues."""
+    by_idx = {r.index: r for r in structure.residues}
+    refs = [
+        (by_idx[p].sidechain_centroid or by_idx[p].ca)
+        for p in positions if p in by_idx
+    ]
+    if not refs:
+        return []
+    out: List[int] = []
+    for res in structure.residues:
+        ref = res.sidechain_centroid or res.ca
+        if any(dist(ref, rp) <= radius for rp in refs):
+            out.append(res.index)
+    return out
+
+
 def ligand_centroid(ligand_atoms: Sequence[LigandAtom]) -> tuple[float, float, float]:
     arr = np.array([a.coord for a in ligand_atoms], dtype=float)
     c = arr.mean(axis=0)

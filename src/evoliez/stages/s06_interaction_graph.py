@@ -11,6 +11,7 @@ from evoliez.features.evolutionary import assign_residue_classes
 from evoliez.features.geometry import (
     ligand_proximal_residues,
     residue_ligand_contacts,
+    residues_near_positions,
 )
 from evoliez.features.graph import (
     build_interaction_graph,
@@ -35,6 +36,16 @@ class InteractionGraphStage(Stage):
                 cx.structure, cx.ligand.atoms, radius=mgcfg.design_radius_angstrom
             )
         )
+        # v2 Phase B: the design mask follows the FUNCTIONAL STATE, not only the primary
+        # ligand. Add the neighborhood of the catalytic residues (the reaction site where the
+        # cofactor/substrate/metal act), so a generic enzyme's active site is designable even
+        # when its functional partners are extra ligands the primary-ligand sphere misses.
+        # For FDH the catalytic core sits by NADP so this barely changes the mask; for a
+        # metalloenzyme/other reaction it captures the true active site. Catalytic residues
+        # themselves stay protected below; only their NEIGHBORHOOD becomes designable.
+        if catalytic:
+            proximal |= set(residues_near_positions(
+                cx.structure, catalytic, radius=mgcfg.design_radius_angstrom))
         second_shell = set(
             ligand_proximal_residues(
                 cx.structure, cx.ligand.atoms,
