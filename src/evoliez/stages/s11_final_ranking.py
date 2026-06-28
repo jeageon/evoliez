@@ -143,6 +143,11 @@ class FinalRankingStage(Stage):
                     " low-ml-control functional winners=%s",
                     _mle.get("auc_ml_to_functional"), _mle.get("auc_ml_to_mdpass"),
                     _mle.get("functional_in_control"))
+                # v2 evidence-class paper report (Phase E deliverable) — regenerates
+                # from the provenance on disk; non-fatal.
+                from evoliez.io.paper_report_v2 import write_paper_report_v2
+                _rp = write_paper_report_v2(ctx.paths.root)
+                self.log.info("v2 evidence-class report: %s", _rp.name)
         except Exception as exc:  # noqa: BLE001
             self.log.warning("evidence-class library skipped (%s)", exc)
 
