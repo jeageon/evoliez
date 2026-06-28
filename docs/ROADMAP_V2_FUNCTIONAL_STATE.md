@@ -16,9 +16,12 @@
   - **Extends** [docs/IMPROVEMENT_ROADMAP.md](IMPROVEMENT_ROADMAP.md), which remains the
     per-stage SOTA/citation source (the *what model* layer). This file is the
     *what contract* layer.
-  - **Builds on** the landed 6-principle anchored-validation redesign
-    (see §3 / [memory anchored-validation-redesign]) — v2 does **not** redo it; it
-    promotes it from an s10-only, opt-in capability to the pipeline's default contract.
+  - **Builds on** the landed 6-principle anchored-validation redesign (see §3 — code:
+    [md/anchored_build.py](../src/evoliez/md/anchored_build.py),
+    [md/pose_gate.py](../src/evoliez/md/pose_gate.py),
+    [md/gate_stack.py](../src/evoliez/md/gate_stack.py),
+    [ranking/multi_lane.py](../src/evoliez/ranking/multi_lane.py) + their `tests/`) — v2 does
+    **not** redo it; it promotes it from an s10-only, opt-in capability to the default contract.
 
 ---
 
@@ -365,6 +368,25 @@ features* still run on the primary ligand and the de novo Boltz pose.
 - **Acceptance.** A non-FDH target runs end-to-end with **config only, no code changes**.
 - **Depends.** A–E. **Effort/Risk.** M / medium.
 
+### Phase H — Compute / runtime orchestration `[cross-cutting]`  ← owns the §2b execution model
+- **Goal.** Actually implement the §2b GPU-first / CPU-bounded policy (today it is a policy +
+  a done-criterion with **no owning phase**).
+- **Changes.** Add a `compute` config block — `cpu_core_budget` (default ≤16) + `gpu_pool`; a
+  runner that derives `OMP/MKL/OPENBLAS/NUMEXPR_NUM_THREADS` **and** every
+  `ProcessPoolExecutor(max_workers)` from the budget, plus a shared GPU-pool helper. **s10
+  multi-GPU fan-out** (per-candidate + per-replica, mirroring s08b/s09/s06b — `s10_md.py:164`).
+  CUDA-12.4-matched OpenMM env + **fail-loud guard against silent CPU-MD**. **XGBoost
+  interaction model → GNN-GPU** (pairs with Phase F).
+- **Contract.** Every stage declares a resource class; the budget + pool are honored uniformly
+  (the §2b hard rule = the §7 invariant).
+- **Deliverables.** `compute` config + resource-class runner; s10 fan-out; OpenMM-CUDA env note;
+  GNN-GPU interaction model.
+- **Acceptance.** A run never spikes >`cpu_core_budget` for >10 min (watchdog-safe); s10 uses
+  all `gpu_pool` GPUs; no stage silently drops to CPU MD.
+- **Depends.** Cross-cutting. **Sequencing:** the **budget/pool config + s10 fan-out** are cheap
+  + high-value → land EARLY (with the §6 first slice); **XGBoost→GNN** pairs with Phase F.
+  **Effort/Risk.** M / medium.
+
 ---
 
 ## 6. Sequencing, dependencies, and the first slice
@@ -375,6 +397,7 @@ Phase A (reference contract) ──┬─> Phase B (functional-state graph)
 Phase C (multi-lane, mostly built) ─┘                          │
 Phase A,D ─> Phase E (evidence output)                          │
 A–E ─> Phase G (generalization) <──────────────────────────────┘
+Phase H (compute/runtime) ── CROSS-CUTTING: budget/pool + s10 fan-out land EARLY; GNN-GPU pairs with F
 ```
 
 - **Critical path:** **A → D → F.** Per the diagnosis, *fix the reference/functional-state
@@ -388,8 +411,12 @@ A–E ─> Phase G (generalization) <──────────────�
      set** (§2a.1); this is the *minimal* change that makes the low-ML control actually reach
      MD. **Flipping `selection_lanes.enabled` at s09 alone is inert** (it only re-ranks the
      ML-top set). Tune the Boltz fold budget for the extra lanes.
+  3. **Phase H budget/pool + s10 fan-out** (parallel, cheap) — the `compute.cpu_core_budget` /
+     `gpu_pool` config + the s10 multi-GPU fan-out are low-risk, watchdog-safe, and pay off
+     immediately (the in-flight **serial** s10 is the proof). Independent of A — can land
+     alongside the gate + boundary.
   - **Then Phase A** (reference contract) — it touches s01/s04/s05/s10 (medium) and carries the
-     ReferenceState hard gates (§2a.3), so it follows the two cheap high-value slices rather
+     ReferenceState hard gates (§2a.3), so it follows the cheap high-value slices rather
      than being bundled as "the first PR." Phase A then unblocks B/D.
 
 ---
@@ -409,30 +436,40 @@ A–E ─> Phase G (generalization) <──────────────�
 
 ---
 
-## 8. "v2 done" definition (acceptance for the epoch → bump `__version__` 0.2.0)
+## 8. Release acceptance (per-version — NOT one monolithic "v2 done")
 
-1. A target is defined by a **functional reference state** (role-tagged ligands + curated|
-   computed reference), not a single ligand.
-2. The design graph is built from the **functional state** (≥2 functional partners + catalytic
-   residues enter the FDH mask).
-3. The MD shortlist is a **multi-lane union with a low-ML control**, by default in the
-   production profile.
-4. Selection/validation features are computed on **anchored** structures
-   (`catalytic_geometry_source = anchored`); redock-consistency and WT-like preservation are
-   **separate** signals.
-5. Every paper-grade candidate carries `validation_structure=wt_anchored` +
-   `pose_gate=reference_like` + a `gate_stack.verdict`; s11 outputs **evidence classes /
-   Pareto**, not one scalar rank.
-6. ML is retrained on anchored features and **evaluated on functional-state preservation**,
-   with a measured false-negative rate from the control lane — and remains a prior.
-7. A **second, non-FDH target** runs end-to-end with config only.
-8. **GPU-first, CPU-bounded** (§2b): every stage declares a resource class; total CPU stays
-   under `compute.cpu_core_budget` (no >10-min spike near the watchdog line) and GPU-bound
-   stages fan across `compute.gpu_pool`; the XGBoost interaction model is replaced by the
-   GNN-GPU and the CPU MSA tracks are cache/GPU-first.
+Each criterion is bound to the **smallest** release that should carry it, and to its phase.
+"v2" is the epoch name; only **`1.0`** completes it. (Replaces the earlier single
+"bump 0.2.0" list, which over-scoped 0.2.0 with ML retrain + second target.)
+
+### `0.2.0` — functional-state contract preview (the cheap, high-value core)
+- **Clean-run gate (Phase E):** every paper-grade candidate carries
+  `validation_structure=wt_anchored` + `pose_gate=reference_like` + `gate_stack.verdict`;
+  s11 outputs **evidence classes / Pareto**, not one scalar rank.
+- **Lane boundary (Phase C):** the MD set is a lane union at the **s08/s08b boundary** with a
+  low-ML control that actually folds + reaches MD — not the s09-only re-ranker.
+- **Reference contract (Phase A):** a target is a **functional reference state** (role-tagged
+  ligands + curated|computed reference) behind the ReferenceState **hard gates** (§2a.3).
+- **Compute runtime (Phase H, partial):** `compute.cpu_core_budget` + `gpu_pool` honored;
+  **s10 multi-GPU fan-out**; no >10-min CPU spike; no silent CPU-MD.
+
+### `0.3.x` — functional-state graph + de-contaminated ML
+- **Functional-state graph (Phase B):** design graph built from the functional state (≥2
+  functional partners + catalytic residues enter the FDH mask).
+- **Anchored features (Phase D):** selection/validation features computed on **anchored**
+  structures (`catalytic_geometry_source = anchored`); redock-consistency ≠ WT-like preservation.
+- **ML re-aligned (Phase F + Phase H):** XGBoost interaction model → **GNN-GPU**; ML retrained
+  on anchored features and **evaluated on functional-state preservation** with a measured
+  false-negative rate from the control lane — and still only a prior.
+
+### `1.0` — non-FDH-validated platform (= the v2 epoch is done)
+- **Generalization (Phase G):** a **second, non-FDH target** runs end-to-end with **config
+  only, no code changes**; MSA QC (Neff, subfamily balance, motif, real-vs-synthetic) in the report.
+- **Only `1.0` may claim "platform."**
 
 ---
 
 *Implementation is staged and user-gated: this document defines the plan; each phase is
-built only when explicitly requested. The current in-flight clean anchored production run
-(runs/fdh_anchored) is the Phase 0 → Phase E baseline that this v2 plan extends upstream.*
+built only when explicitly requested. The anchored smoke + clean-run artifacts (a run's
+`reports/provenance/md_candidates.json` with `validation_structure=wt_anchored`, when
+available) are the Phase 0 → Phase E baseline that this v2 plan extends upstream.*
