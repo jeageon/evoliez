@@ -17,18 +17,54 @@ class ComplexPredictionStage(Stage):
         extra_ligands = ctx.get("extra_ligands", [])
         msa_path = ctx.paths.msa / "alignment.fasta"
 
-        cx = predict_complex(
-            "wt",
-            seq,
-            ligand,
-            ctx.config.complex_prediction,
-            ctx.paths.complexes / "boltz",
-            backend=self.backend(ctx),
-            dry_run=ctx.dry_run,
-            msa_path=msa_path if msa_path.exists() else None,
-            seed=ctx.config.seed,
-            extra_ligands=extra_ligands,
-        )
+        # ROADMAP_V2 Phase A: a CURATED reference structure (input.target_structure) is the
+        # functional reference state when provided AND it passes the hard gates (residue
+        # numbering / ligand atom map / role-chain map / charge provenance). Otherwise the
+        # computed Boltz complex is the reference (the previous behaviour). A curated reference
+        # that FAILS the gates aborts a real run (a wrong mapping would silently corrupt every
+        # downstream stage) unless allow_mock_fallback is set.
+        cx = None
+        ref_pdb = getattr(ctx.config.input, "target_structure", None)
+        if ref_pdb:
+            from pathlib import Path as _P
+
+            if _P(ref_pdb).exists():
+                from evoliez.reference_state import load_reference_complex
+                _cx, gates = load_reference_complex(
+                    ref_pdb, target_sequence=seq, ligand=ligand,
+                    extra_ligands=extra_ligands,
+                    catalytic_positions=ctx.get("catalytic_positions", []))
+                ctx.persist_meta("reference_gates", gates.to_json())
+                if gates.passed:
+                    cx = _cx
+                    self.log.info(
+                        "s04: CURATED reference %s (hard gates passed)", ref_pdb)
+                else:
+                    msg = (f"curated reference {ref_pdb} FAILED hard gates: "
+                           f"{gates.reasons}")
+                    if (self.backend(ctx).value == "real"
+                            and not ctx.config.allow_mock_fallback):
+                        raise RuntimeError(
+                            msg + " — fix the structure/numbering or set "
+                            "allow_mock_fallback to fall back to Boltz")
+                    self.log.warning("%s; falling back to Boltz", msg)
+            else:
+                self.log.warning(
+                    "s04: target_structure %s not found; using Boltz", ref_pdb)
+
+        if cx is None:
+            cx = predict_complex(
+                "wt",
+                seq,
+                ligand,
+                ctx.config.complex_prediction,
+                ctx.paths.complexes / "boltz",
+                backend=self.backend(ctx),
+                dry_run=ctx.dry_run,
+                msa_path=msa_path if msa_path.exists() else None,
+                seed=ctx.config.seed,
+                extra_ligands=extra_ligands,
+            )
         ctx.put("wt_complex", cx)
         ctx.persist_meta("complex_confidence", cx.confidence)
         ctx.persist_meta("complex_affinity", cx.affinity_score)
