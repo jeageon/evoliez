@@ -93,6 +93,10 @@ class Complex:
     # affinity_pred_value1/2, ensemble_disagreement.
     metrics: Dict[str, float] = field(default_factory=dict)
     samples: List[BoltzSample] = field(default_factory=list)
+    # v2 multi-ligand: poses of the co-modelled EXTRA ligands (cofactor/substrate/metal/...)
+    # keyed by ligand id, so s06/s09/s10 can consider the FULL functional state, not only the
+    # primary design `ligand`. Populated by the predictor/parser; empty = single-ligand input.
+    extra_ligand_atoms: Dict[str, List[LigandAtom]] = field(default_factory=dict)
 
 
 @dataclass

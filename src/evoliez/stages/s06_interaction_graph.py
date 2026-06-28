@@ -36,6 +36,15 @@ class InteractionGraphStage(Stage):
                 cx.structure, cx.ligand.atoms, radius=mgcfg.design_radius_angstrom
             )
         )
+        # v2 MULTI-LIGAND: include residues near EVERY co-modelled ligand (cofactor /
+        # substrate / metal / ...), not only the primary design ligand, so the design mask
+        # covers the full functional state. extra_ligand_atoms is populated by the predictor
+        # (mock) / parser; empty for single-ligand inputs or the real parser fallback (then
+        # the catalytic-neighborhood term below carries the active site).
+        for _atoms in (getattr(cx, "extra_ligand_atoms", {}) or {}).values():
+            if _atoms:
+                proximal |= set(ligand_proximal_residues(
+                    cx.structure, _atoms, radius=mgcfg.design_radius_angstrom))
         # v2 Phase B: the design mask follows the FUNCTIONAL STATE, not only the primary
         # ligand. Add the neighborhood of the catalytic residues (the reaction site where the
         # cofactor/substrate/metal act), so a generic enzyme's active site is designable even

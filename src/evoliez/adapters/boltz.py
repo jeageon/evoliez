@@ -62,7 +62,8 @@ def predict_complex(
             msa_path=msa_path, seed=seed, extra_ligands=extra_ligands,
             gpu_device=gpu_device,
         )
-    return _predict_mock(label, sequence, ligand, cfg, outdir)
+    return _predict_mock(label, sequence, ligand, cfg, outdir,
+                         extra_ligands=extra_ligands)
 
 
 # --------------------------------------------------------------------------- #
@@ -115,7 +116,7 @@ def _finalize(cx: Complex) -> Complex:
 # --------------------------------------------------------------------------- #
 def _predict_mock(
     label: str, sequence: str, ligand: Ligand, cfg: ComplexPredictionConfig,
-    outdir: Path,
+    outdir: Path, extra_ligands: Optional[List[Ligand]] = None,
 ) -> Complex:
     seed = derive_seed(0xB01D, label, sequence[:32])
     struct = synthetic_structure(sequence, seed=seed, method="boltz-mock")
@@ -148,6 +149,16 @@ def _predict_mock(
         smp.idx = j
 
     best = samples[0]
+    # v2 multi-ligand: place each co-modelled EXTRA ligand in the pocket too, so the mock
+    # complex carries the FULL functional state (cofactor/substrate/metal), not just the
+    # primary design ligand — s06/s09 then see every functional partner.
+    extra_poses: Dict[str, List[LigandAtom]] = {}
+    for el in extra_ligands or []:
+        try:
+            extra_poses[el.id] = place_ligand_in_pocket(
+                struct, el, seed=derive_seed(seed, "extra", el.id))
+        except Exception:  # noqa: BLE001 — a placement failure must not break the mock
+            pass
     pdb = outdir / f"{label}_complex.pdb"
     write_min_pdb(pdb, struct, best.ligand_atoms)
     struct.pdb_path = str(pdb)
@@ -162,6 +173,7 @@ def _predict_mock(
         method="boltz-mock",
         path=str(pdb),
         samples=samples,
+        extra_ligand_atoms=extra_poses,
     )
     return _finalize(cx)
 
@@ -354,7 +366,8 @@ def _predict_real(
                  len(done), label)
 
     if dry_run:
-        return _predict_mock(label, sequence, ligand, cfg, outdir)
+        return _predict_mock(label, sequence, ligand, cfg, outdir,
+                         extra_ligands=extra_ligands)
 
     # Boltz writes predictions ONLY under boltz_results_*/ (predictions/...).
     # Scope discovery there and exclude our own mock fallback (*_complex.pdb)
@@ -373,7 +386,8 @@ def _predict_real(
             "Boltz produced no prediction for %s "
             "(no boltz_results_*/.../*.cif|pdb); mock fallback", label,
         )
-        return _predict_mock(label, sequence, ligand, cfg, outdir)
+        return _predict_mock(label, sequence, ligand, cfg, outdir,
+                         extra_ligands=extra_ligands)
 
     return _assemble_real_complex(
         outdir, found, sequence, ligand, cfg.primary_method
