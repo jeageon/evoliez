@@ -193,6 +193,7 @@ def _to_a3m(src: Path, dst: Path) -> Optional[Path]:
             for h, s in recs if s.strip()]
     if not recs:
         return None
+    dst.parent.mkdir(parents=True, exist_ok=True)   # defensive: target dir may not exist
     dst.write_text("".join(f"{h}\n{s}\n" for h, s in recs))
     return dst
 

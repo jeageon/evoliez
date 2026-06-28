@@ -135,6 +135,10 @@ def _shared_msa_a3m(msa_path, outdir, log=None):
     if msa_path is None or Path(msa_path).suffix.lower() in (".a3m", ".csv"):
         return msa_path
     from evoliez.adapters.boltz import _to_a3m
+    # Fresh run: the mutant_boltz outdir (where the shared a3m lives, one level up
+    # from the per-GPU chunk IN_DIRs) does not exist yet -- only created lazily on a
+    # resume cycle. Create it before the first write or _to_a3m FileNotFoundErrors.
+    Path(outdir).mkdir(parents=True, exist_ok=True)
     a3m = _to_a3m(Path(msa_path), Path(outdir) / "_wt_shared_msa.a3m")
     if a3m is None and log is not None:
         log.warning("s08b: WT MSA %s could not be rewritten to a3m; mutant Boltz "
