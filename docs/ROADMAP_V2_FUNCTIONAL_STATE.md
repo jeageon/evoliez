@@ -3,7 +3,9 @@
 
 - **Version progression** (release-honest — "v2" is the internal *epoch* name for this
   whole arc, **not** a single release; current `__version__` `0.1.0`):
-  - **`0.2.0` — functional-state *contract* + purge guard + *lane boundary* fix** (preview)
+  - **`0.2.0` — functional-state *contract* preview**: role-tagged reference + **ReferenceState
+    hard gates** (Phase A) · purge guard · **lane boundary at s08** (Phase C) · clean-run gate
+    (Phase E) · **compute budget/pool + s10 fan-out** (Phase H1). *(matches the §8 0.2.0 list)*
   - **`0.3.x` — functional-state *graph* + *ML retrain*** on de-contaminated features
   - **`1.0` — *non-FDH-validated* platform** (a second target passes end-to-end)
   - Do **not** claim "platform" before `1.0` (second target). `0.2.0` is a contract preview.
@@ -368,24 +370,34 @@ features* still run on the primary ligand and the de novo Boltz pose.
 - **Acceptance.** A non-FDH target runs end-to-end with **config only, no code changes**.
 - **Depends.** A–E. **Effort/Risk.** M / medium.
 
-### Phase H — Compute / runtime orchestration `[cross-cutting]`  ← owns the §2b execution model
-- **Goal.** Actually implement the §2b GPU-first / CPU-bounded policy (today it is a policy +
-  a done-criterion with **no owning phase**).
+### Phase H1 — Compute / runtime orchestration `[cross-cutting, EARLY]`  ← owns the §2b execution model
+- **Goal.** Implement the §2b GPU-first / CPU-bounded policy (today a policy + a done-criterion
+  with **no owning phase**). Pure runtime — no model change.
 - **Changes.** Add a `compute` config block — `cpu_core_budget` (default ≤16) + `gpu_pool`; a
   runner that derives `OMP/MKL/OPENBLAS/NUMEXPR_NUM_THREADS` **and** every
   `ProcessPoolExecutor(max_workers)` from the budget, plus a shared GPU-pool helper. **s10
   multi-GPU fan-out** (per-candidate + per-replica, mirroring s08b/s09/s06b — `s10_md.py:164`).
-  CUDA-12.4-matched OpenMM env + **fail-loud guard against silent CPU-MD**. **XGBoost
-  interaction model → GNN-GPU** (pairs with Phase F).
+  CUDA-12.4-matched OpenMM env + **fail-loud guard against silent CPU-MD**.
 - **Contract.** Every stage declares a resource class; the budget + pool are honored uniformly
   (the §2b hard rule = the §7 invariant).
-- **Deliverables.** `compute` config + resource-class runner; s10 fan-out; OpenMM-CUDA env note;
-  GNN-GPU interaction model.
+- **Deliverables.** `compute` config + resource-class runner; s10 fan-out; OpenMM-CUDA env note.
 - **Acceptance.** A run never spikes >`cpu_core_budget` for >10 min (watchdog-safe); s10 uses
-  all `gpu_pool` GPUs; no stage silently drops to CPU MD.
-- **Depends.** Cross-cutting. **Sequencing:** the **budget/pool config + s10 fan-out** are cheap
-  + high-value → land EARLY (with the §6 first slice); **XGBoost→GNN** pairs with Phase F.
-  **Effort/Risk.** M / medium.
+  the **configured + currently-available** GPUs in `gpu_pool` (a pool of size 1 is valid — the
+  goal is "exactly the configured pool, **no CPU fallback**," not "all 4 GPUs"); no stage
+  silently drops to CPU MD.
+- **Depends.** Cross-cutting — **cheap + high-value → land EARLY** (with the §6 first slice).
+  **Effort/Risk.** S–M / low-medium.
+
+### Phase H2 — GNN-GPU interaction model `[s06b/s08 model]`  ← pairs with Phase F (NOT early)
+- **Goal.** Replace the CPU XGBoost interaction model with a GPU GNN — removes §2b CPU
+  bottleneck #1. (Split out of H1 because it is a model change coupled to ML retrain, not a
+  cheap runtime tweak.)
+- **Changes.** XGBoost interaction model → **GNN-GPU** (`amp`); train/infer on `gpu_pool`.
+- **Deliverables.** GNN-GPU interaction model + a parity check vs XGBoost on a held-out set.
+- **Acceptance.** the interaction model runs on GPU, CPU use drops, and ranking parity (or
+  better) vs XGBoost is shown.
+- **Depends.** **Pairs with Phase F** (ML retrain on de-contaminated/anchored features) — do
+  **not** put in the early slice. **Effort/Risk.** M / medium.
 
 ---
 
@@ -397,7 +409,7 @@ Phase A (reference contract) ──┬─> Phase B (functional-state graph)
 Phase C (multi-lane, mostly built) ─┘                          │
 Phase A,D ─> Phase E (evidence output)                          │
 A–E ─> Phase G (generalization) <──────────────────────────────┘
-Phase H (compute/runtime) ── CROSS-CUTTING: budget/pool + s10 fan-out land EARLY; GNN-GPU pairs with F
+Phase H1 (compute/runtime) ── CROSS-CUTTING, EARLY: budget/pool + s10 fan-out   |   Phase H2 (GNN-GPU) pairs with F
 ```
 
 - **Critical path:** **A → D → F.** Per the diagnosis, *fix the reference/functional-state
@@ -411,10 +423,11 @@ Phase H (compute/runtime) ── CROSS-CUTTING: budget/pool + s10 fan-out land E
      set** (§2a.1); this is the *minimal* change that makes the low-ML control actually reach
      MD. **Flipping `selection_lanes.enabled` at s09 alone is inert** (it only re-ranks the
      ML-top set). Tune the Boltz fold budget for the extra lanes.
-  3. **Phase H budget/pool + s10 fan-out** (parallel, cheap) — the `compute.cpu_core_budget` /
+  3. **Phase H1 budget/pool + s10 fan-out** (parallel, cheap) — the `compute.cpu_core_budget` /
      `gpu_pool` config + the s10 multi-GPU fan-out are low-risk, watchdog-safe, and pay off
-     immediately (the in-flight **serial** s10 is the proof). Independent of A — can land
-     alongside the gate + boundary.
+     immediately (the **existing serial s10 code path** is the proof — s08b/s09/s06b already
+     fan out, s10 does not). Independent of A — can land alongside the gate + boundary.
+     (Phase **H2** GNN-GPU is *not* in the early slice — it pairs with Phase F.)
   - **Then Phase A** (reference contract) — it touches s01/s04/s05/s10 (medium) and carries the
      ReferenceState hard gates (§2a.3), so it follows the cheap high-value slices rather
      than being bundled as "the first PR." Phase A then unblocks B/D.
@@ -450,7 +463,7 @@ Each criterion is bound to the **smallest** release that should carry it, and to
   low-ML control that actually folds + reaches MD — not the s09-only re-ranker.
 - **Reference contract (Phase A):** a target is a **functional reference state** (role-tagged
   ligands + curated|computed reference) behind the ReferenceState **hard gates** (§2a.3).
-- **Compute runtime (Phase H, partial):** `compute.cpu_core_budget` + `gpu_pool` honored;
+- **Compute runtime (Phase H1):** `compute.cpu_core_budget` + `gpu_pool` honored;
   **s10 multi-GPU fan-out**; no >10-min CPU spike; no silent CPU-MD.
 
 ### `0.3.x` — functional-state graph + de-contaminated ML
@@ -458,7 +471,7 @@ Each criterion is bound to the **smallest** release that should carry it, and to
   functional partners + catalytic residues enter the FDH mask).
 - **Anchored features (Phase D):** selection/validation features computed on **anchored**
   structures (`catalytic_geometry_source = anchored`); redock-consistency ≠ WT-like preservation.
-- **ML re-aligned (Phase F + Phase H):** XGBoost interaction model → **GNN-GPU**; ML retrained
+- **ML re-aligned (Phase F + Phase H2):** XGBoost interaction model → **GNN-GPU**; ML retrained
   on anchored features and **evaluated on functional-state preservation** with a measured
   false-negative rate from the control lane — and still only a prior.
 
