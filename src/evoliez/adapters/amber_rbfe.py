@@ -200,12 +200,24 @@ def _tleap_from_pdb(pdb_name: str, tag: str, box: Tuple[float, float, float],
 def _ti_block(m: TIMasks, clambda: float) -> str:
     # one mask per line: pmemd's mdin reader truncates at 80 columns, so packing
     # two long masks on a line silently corrupts the namelist (-> I/O crash).
+    #
+    # GTI smoothed softcore (gti_*) + scalpha/scbeta: the bare ifsc=1 softcore
+    # diverges at endpoint windows for a large perturbation -- e.g. Ser->Gly loses
+    # the WHOLE side chain, so the disappearing-atom dV/dlambda overflows the mdout
+    # field (SC_VDW_DER=********), the window crashes, and (pre-fix) one such window
+    # killed the whole RBFE stage. The GTI softcore (gti_add_sc + a softcore-specific
+    # cutoff) and the standard scalpha=0.5/scbeta=12 keep dV/dlambda finite at lambda
+    # ~0/1. cut_sc_off must be <= the nonbonded cut (10.0).
     return (
         f" icfe=1, ifsc=1, clambda={clambda:.5f},\n"
         f" timask1='{m.timask1}',\n"
         f" timask2='{m.timask2}',\n"
         f" scmask1='{m.scmask1}',\n"
         f" scmask2='{m.scmask2}',\n"
+        " scalpha=0.5, scbeta=12.0,\n"
+        " gti_cut=1, gti_output=1, gti_add_sc=25, gti_scale_beta=1,\n"
+        " gti_cut_sc_on=8.0, gti_cut_sc_off=10.0,\n"
+        " gti_lam_sch=1, gti_ele_sc=1, gti_vdw_sc=1, gti_cut_sc=2,\n"
         f" ntf=1, noshakemask='{m.noshakemask}',\n")
 
 
@@ -223,13 +235,16 @@ def mdin_ti_min(m: TIMasks, clambda: float, maxcyc: int = 5000,
 
 
 def mdin_ti_heat(m: TIMasks, clambda: float, nsteps: int,
-                 restraint_wt: float = 5.0) -> str:
+                 restraint_wt: float = 5.0, dt: float = 0.001,
+                 gamma_ln: float = 5.0) -> str:
     # gentle restrained heat 5->300K: without backbone restraints the freshly
     # built softcore region distorts during heating and the window blows up.
+    # dt/gamma_ln are tunable so a window that blew up can be retried with a
+    # smaller timestep + stronger thermostat (run_leg retry path).
     return ("TI heat 5->300K (softcore, restrained, NVT)\n&cntrl\n"
-            f" imin=0, nstlim={nsteps}, dt=0.001, irest=0, ntx=1,\n"
+            f" imin=0, nstlim={nsteps}, dt={dt}, irest=0, ntx=1,\n"
             " ntb=1, cut=10.0, iwrap=1, ntc=2,\n"
-            " ntt=3, gamma_ln=5.0, tempi=5.0, temp0=300.0, ig=-1,\n"
+            f" ntt=3, gamma_ln={gamma_ln}, tempi=5.0, temp0=300.0, ig=-1,\n"
             f" ntr=1, restraintmask='@CA,C,N,O', restraint_wt={restraint_wt},\n"
             f"{_ti_block(m, clambda)}"
             " nmropt=1, ntpr=500,\n/\n"
@@ -238,12 +253,15 @@ def mdin_ti_heat(m: TIMasks, clambda: float, nsteps: int,
 
 
 def mdin_ti_prod(m: TIMasks, clambda: float, nsteps: int,
-                 ntpr: int = 500) -> str:
-    """TI production: dV/dλ is written to the mdout every ntpr steps."""
+                 ntpr: int = 500, dt: float = 0.001,
+                 gamma_ln: float = 2.0) -> str:
+    """TI production: dV/dλ is written to the mdout every ntpr steps. dt/gamma_ln
+    tunable for the retry path (a charge-clash runaway at an intermediate λ is
+    tamed by a smaller dt + a stronger Langevin thermostat that drains the heat)."""
     return ("TI production (softcore, NVT)\n&cntrl\n"
-            f" imin=0, nstlim={nsteps}, dt=0.001, irest=1, ntx=5,\n"
+            f" imin=0, nstlim={nsteps}, dt={dt}, irest=1, ntx=5,\n"
             " ntb=1, cut=10.0, iwrap=1, ntc=2,\n"
-            " ntt=3, gamma_ln=2.0, temp0=300.0, ig=-1,\n"
+            f" ntt=3, gamma_ln={gamma_ln}, temp0=300.0, ig=-1,\n"
             f"{_ti_block(m, clambda)}"
             f" ntpr={ntpr}, ntwx=0, ntwr={nsteps},\n/\n")
 
@@ -362,10 +380,26 @@ def _trapz(ys: Sequence[float], xs: Sequence[float]) -> float:
                for i in range(len(xs) - 1))
 
 
+def _dvdl_finite(out_path: Path) -> bool:
+    """True iff the prod mdout has dV/dλ samples and NONE overflowed. A charge-clash
+    runaway prints 'SC_VDW_DER=********' (field overflow) -- pmemd may still write a
+    (garbage) restart, so 'prod.rst exists' is NOT sufficient; the mdout must be clean."""
+    if not out_path.exists():
+        return False
+    txt = out_path.read_text()
+    if "********" in txt:          # any overflowed energy/derivative field
+        return False
+    return bool(re.search(r"DV/DL\s*=\s*-?\d+\.\d+", txt))
+
+
 def _run_window(wd: Path, prm: str, start_rst: str, masks: TIMasks, lam: float,
                 pmemd: str, min_cyc: int, heat_steps: int, prod_steps: int,
-                ntpr: int, timeout: int) -> Optional[List[float]]:
-    """One λ window: min -> heat -> production (all at λ) -> dV/dλ samples."""
+                ntpr: int, timeout: int, dt: float = 0.001,
+                prod_gamma_ln: float = 2.0) -> Optional[List[float]]:
+    """One λ window: min -> heat -> production (all at λ) -> dV/dλ samples. dt +
+    prod_gamma_ln are tunable so run_leg can RETRY a blown-up window with a smaller
+    timestep + stronger thermostat. Returns None if any stage fails OR the prod
+    overflowed (so the retry path triggers)."""
     wd.mkdir(parents=True, exist_ok=True)
 
     def stage(tag, mdin, cin, rout, oout=None, ref=None):
@@ -381,12 +415,13 @@ def _run_window(wd: Path, prm: str, start_rst: str, masks: TIMasks, lam: float,
                ref=start_rst)
     if not mn:
         return None
-    ht = stage("heat", mdin_ti_heat(masks, lam, heat_steps), str(mn), "heat.rst",
-               ref=start_rst)
+    ht = stage("heat", mdin_ti_heat(masks, lam, heat_steps, dt=dt), str(mn),
+               "heat.rst", ref=start_rst)
     if not ht:
         return None
-    if not stage("prod", mdin_ti_prod(masks, lam, prod_steps, ntpr),
-                 str(ht), "prod.rst", "prod.out"):
+    stage("prod", mdin_ti_prod(masks, lam, prod_steps, ntpr, dt=dt,
+                               gamma_ln=prod_gamma_ln), str(ht), "prod.rst", "prod.out")
+    if not _dvdl_finite(wd / "prod.out"):    # crashed OR overflowed -> let run_leg retry
         return None
     return _parse_dvdl(wd / "prod.out")
 
@@ -408,16 +443,38 @@ def run_leg(hyb_prm: Path, hyb_rst: Path, masks: TIMasks, workdir: Path,
     start = str(Path(hyb_rst).resolve())
     results: List[Tuple[float, float, float]] = []     # (λ, weight, ⟨dV/dλ⟩)
     n_fail = 0
+    n_retry = 0
     for lam, w in gauss_legendre_01(n_lambda):
-        dvdl = _run_window(workdir / f"lam_{lam:.4f}", prm, start, masks, lam,
-                           pmemd, min_cyc, heat_steps, prod_steps, ntpr, timeout)
+        wdir = workdir / f"lam_{lam:.4f}"
+        dvdl = _run_window(wdir, prm, start, masks, lam, pmemd,
+                           min_cyc, heat_steps, prod_steps, ntpr, timeout)
+        if not dvdl:
+            # Salvage retry: a window that crashed/overflowed at dt=0.001 (a charge-
+            # clash runaway mid-production) is re-run with a smaller timestep + a
+            # stronger thermostat + 2x heat/prod steps (same simulated time at half dt).
+            # Only the FEW hard windows pay this; the easy ones keep the fast path.
+            n_retry += 1
+            dvdl = _run_window(wdir, prm, start, masks, lam, pmemd,
+                               min_cyc, heat_steps * 2, prod_steps * 2, ntpr,
+                               timeout, dt=0.0005, prod_gamma_ln=5.0)
         if not dvdl:
             n_fail += 1
             continue
         eq = dvdl[int(len(dvdl) * equil_frac):] or dvdl   # drop equilibration
         results.append((lam, w, _mean(eq)))
-    if len(results) < 2:
-        raise RuntimeError(f"too few successful λ windows; {n_fail} failed")
+    # Quality gate: a ΔG integrated over <60% of the λ schedule is unreliable (the
+    # original failure produced a spurious ddg=-12 kcal/mol from a handful of noisy
+    # survivors). Below the gate, report failure (dg=None) -- graceful, so run_rbfe
+    # records this candidate's ddg as unavailable and CONTINUES with the rest, rather
+    # than (a) raising and aborting the stage or (b) emitting a garbage number.
+    min_ok = max(2, int(round(n_lambda * 0.6)))
+    if len(results) < min_ok:
+        return {"dg": None, "method": "failed",
+                "lambdas": [r[0] for r in results],
+                "dvdl_means": [r[2] for r in results], "n_fail": n_fail,
+                "n_retry": n_retry,
+                "failed": f"only {len(results)}/{n_lambda} λ windows converged "
+                          f"({n_fail} failed, {n_retry} retried)"}
     lams = [r[0] for r in results]
     means = [r[2] for r in results]
     if n_fail == 0:
@@ -425,7 +482,7 @@ def run_leg(hyb_prm: Path, hyb_rst: Path, masks: TIMasks, workdir: Path,
     else:                                  # quadrature weights invalid -> trapz
         dg, method = _trapz(means, lams), "trapz-fallback"
     return {"dg": dg, "method": method, "lambdas": lams,
-            "dvdl_means": means, "n_fail": n_fail}
+            "dvdl_means": means, "n_fail": n_fail, "n_retry": n_retry}
 
 
 # --------------------------------------------------------------------------- #
@@ -488,16 +545,28 @@ def run_rbfe(wt_pdb_text: str, ligand_mol2, ligand_frcmod, mutations,
                 hyb_prm, hyb_rst, masks, ld / "ti", n_lambda=n_lambda,
                 min_cyc=min_cyc, heat_steps=heat_steps, prod_steps=prod_steps,
                 ntpr=ntpr, pmemd=pmemd, timeout=timeout)
-        ddg = legs["complex"]["dg"] - legs["apo"]["dg"]
+        dgc, dga = legs["complex"]["dg"], legs["apo"]["dg"]
+        nfail = legs["complex"].get("n_fail", 0) + legs["apo"].get("n_fail", 0)
+        if dgc is None or dga is None:     # a leg lost too many windows -> no ΔΔG
+            per.append({
+                "mutation": tag, "ddg_bind": None, "dg_complex": dgc,
+                "dg_apo": dga, "method": "failed", "n_fail": nfail,
+                "failed": legs["complex"].get("failed") or legs["apo"].get("failed")})
+            total = None                    # additive sum is undefined if any leg died
+            continue
+        ddg = dgc - dga
         per.append({
             "mutation": tag, "ddg_bind": round(ddg, 3),
-            "dg_complex": round(legs["complex"]["dg"], 3),
-            "dg_apo": round(legs["apo"]["dg"], 3),
-            "method": legs["complex"]["method"],
-            "n_fail": legs["complex"]["n_fail"] + legs["apo"]["n_fail"]})
-        total += ddg
-    return {"ddg_bind": round(total, 3), "per_mutation": per,
+            "dg_complex": round(dgc, 3), "dg_apo": round(dga, 3),
+            "method": legs["complex"]["method"], "n_fail": nfail})
+        if total is not None:
+            total += ddg
+    n_ok = sum(1 for x in per if x.get("ddg_bind") is not None)
+    return {"ddg_bind": (round(total, 3) if total is not None else None),
+            "per_mutation": per,
             "mode": "single" if len(muts) == 1 else f"additive_x{len(muts)}",
             "n_mut": len(muts),
+            "failed": (None if total is not None else
+                       f"{len(muts) - n_ok}/{len(muts)} residue cycle(s) failed"),
             "note": ("additive multi-residue approximation (no coupling)"
                      if len(muts) > 1 else "")}

@@ -432,12 +432,17 @@ class MDStage(Stage):
                         "RBFE (ΔΔG_bind, softcore TI): %d candidate(s)", len(ranked))
                     rbfe_rec = {r["candidate_id"]: r for r in md_records}
                     for cand in ranked:
-                        res = run_rbfe(
-                            wt_pdb_text, lig_mol2, lig_frcmod, cand.mutations,
-                            rbfe_root / cand.candidate_id,
-                            multipoint=rbcfg.multipoint, n_lambda=rbcfg.n_lambda,
-                            min_cyc=rbcfg.min_cyc, heat_steps=rbcfg.heat_steps,
-                            prod_steps=rbcfg.prod_steps)
+                        try:
+                            res = run_rbfe(
+                                wt_pdb_text, lig_mol2, lig_frcmod, cand.mutations,
+                                rbfe_root / cand.candidate_id,
+                                multipoint=rbcfg.multipoint, n_lambda=rbcfg.n_lambda,
+                                min_cyc=rbcfg.min_cyc, heat_steps=rbcfg.heat_steps,
+                                prod_steps=rbcfg.prod_steps)
+                        except Exception as exc:  # one candidate must not abort the RBFE stage
+                            self.log.warning("  %s: RBFE failed (%s); skipped, others continue",
+                                             cand.candidate_id, exc)
+                            continue
                         cand.details["rbfe"] = res
                         if res.get("ddg_bind") is not None:
                             cand.scores["rbfe_ddg_bind"] = res["ddg_bind"]
