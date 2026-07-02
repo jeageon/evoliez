@@ -25,7 +25,7 @@ the term schema already carries the fields.)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 import numpy as np
 
@@ -33,6 +33,11 @@ from .nac import _angle, _dist
 
 DISTANCE = "distance"
 ANGLE = "angle"
+
+# A protein-atom resolver maps (residue token e.g. "ARG290", atom name e.g. "NH1") to a
+# global trajectory atom index, or None if absent. Built from the MD topology
+# (``make_protein_resolver``); duck-typed so it is unit-testable with synthetic atoms.
+ProteinResolver = Callable[[str, str], Optional[int]]
 
 
 @dataclass
@@ -49,6 +54,15 @@ class GeometryTerm:
     b_idx: int = 0
     c_smarts: str = ""
     c_idx: int = 0
+    # protein selectors (resname/seqid + atom name) — used when the matching SMARTS is
+    # empty. Resolved via a ``protein_resolver`` (ROADMAP_V3 D1: catalytic-residue
+    # contact terms become first-class, e.g. an Arg that stabilizes a formate carboxylate).
+    a_residue: Optional[str] = None
+    a_atom: Optional[str] = None
+    b_residue: Optional[str] = None
+    b_atom: Optional[str] = None
+    c_residue: Optional[str] = None
+    c_atom: Optional[str] = None
     distance_min: float = 0.0
     distance_max: float = 3.5
     angle_min: float = 0.0
@@ -91,19 +105,59 @@ def _resolve_global(mol_blocks, smarts: str, idx: int) -> Optional[int]:
     return None
 
 
+def make_protein_resolver(residues: Sequence[dict]) -> ProteinResolver:
+    """Build a ``ProteinResolver`` from a list of residue records. Each record is a dict
+    ``{"resname": str, "seqid": int, "atoms": {atom_name: global_index}}``. A residue
+    token may be ``RESNAME+SEQID`` ("ARG290"), bare ``SEQID`` ("290"), or bare resname.
+    Pure / duck-typed — buildable from an OpenMM topology or synthetic test data."""
+    by_token = {}
+    for r in residues:
+        rn, sid, atoms = str(r["resname"]).upper(), r.get("seqid"), r.get("atoms", {})
+        keys = {rn}
+        if sid is not None:
+            keys.add(f"{rn}{sid}")
+            keys.add(str(sid))
+        for k in keys:
+            by_token.setdefault(k, atoms)
+
+    def resolve(residue: str, atom: str) -> Optional[int]:
+        atoms = by_token.get(str(residue).upper())
+        if not atoms:
+            return None
+        idx = atoms.get(atom) or atoms.get(str(atom).upper())
+        return int(idx) if idx is not None else None
+
+    return resolve
+
+
+def _resolve_atom(mol_blocks, protein_resolver: Optional[ProteinResolver],
+                  smarts: str, idx: int, residue: Optional[str],
+                  atom: Optional[str]) -> Optional[int]:
+    """Resolve one term endpoint: ligand SMARTS if given, else a protein residue+atom."""
+    if smarts:
+        return _resolve_global(mol_blocks, smarts, idx)
+    if residue and atom and protein_resolver is not None:
+        return protein_resolver(residue, atom)
+    return None
+
+
 def evaluate_geometry_term(
     frames: Sequence[np.ndarray], mol_blocks, term: GeometryTerm,
+    protein_resolver: Optional[ProteinResolver] = None,
 ) -> GeometryTermResult:
-    a = _resolve_global(mol_blocks, term.a_smarts, term.a_idx)
-    b = _resolve_global(mol_blocks, term.b_smarts, term.b_idx)
+    a = _resolve_atom(mol_blocks, protein_resolver, term.a_smarts, term.a_idx,
+                      term.a_residue, term.a_atom)
+    b = _resolve_atom(mol_blocks, protein_resolver, term.b_smarts, term.b_idx,
+                      term.b_residue, term.b_atom)
     atoms = {"a": a, "b": b}
     if a is None or b is None:
         return GeometryTermResult(term.label, term.kind,
                                   status="skipped_missing_atoms", atoms=atoms,
-                                  note="a/b SMARTS not matched")
+                                  note="a/b selector (SMARTS or protein) not matched")
     c = None
     if term.kind == ANGLE:
-        c = _resolve_global(mol_blocks, term.c_smarts, term.c_idx)
+        c = _resolve_atom(mol_blocks, protein_resolver, term.c_smarts, term.c_idx,
+                          term.c_residue, term.c_atom)
         atoms["c"] = c
         if c is None:
             return GeometryTermResult(term.label, term.kind,
@@ -134,8 +188,9 @@ def evaluate_geometry_term(
 
 def evaluate_geometry_spec(
     frames: Sequence[np.ndarray], mol_blocks, terms: Sequence[GeometryTerm],
+    protein_resolver: Optional[ProteinResolver] = None,
 ) -> List[GeometryTermResult]:
-    return [evaluate_geometry_term(frames, mol_blocks, t) for t in terms]
+    return [evaluate_geometry_term(frames, mol_blocks, t, protein_resolver) for t in terms]
 
 
 def spec_satisfaction(results: Sequence[GeometryTermResult], terms: Sequence[GeometryTerm]) -> float:

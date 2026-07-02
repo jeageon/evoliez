@@ -1,0 +1,179 @@
+schema_version: 4.0
+target_id: fdh_nadp
+mechanism: hydride_transfer
+claim_level_default: L0_uncalibrated
+source_runs:
+  v1_fdh_5track:
+    date: "2026-06-23"
+    path: reports/fdh_5track_homolog_report.html
+    reports:
+      - reports/fdh_5track_homolog_report.html
+      - reports/fdh_5track_msa_report.html
+    hash: sha256:37103bdd4097fdf333195fa44cef4467f6914af61a831fc2386eab0cdfe551a9
+  v2_functional_state:
+    date: "2026-06-28"
+    path: runs/fdh_v2_reports/paper_report_v2.html
+    reports:
+      - runs/fdh_v2_reports/paper_report_v2.html
+      - runs/fdh_v2_reports/s10_md_report.html
+    hash: sha256:e194ce3df039eb0538c1489543751fa5e1ee2a3cccb8575b8c4ff8c9bc127270
+  v3_mechanism_triage:
+    date: "2026-07-01"
+    path: reports_v3/triage_v3.json
+    reports:
+      - reports_v3/triage_v3.json
+      - reports_v3/md_candidates.json
+      - reports_v3/fdh_prod_v3_reports/final_candidates.csv
+    hash: sha256:d37e6d9b3212bfc75540c040d59bd78503b55934c6d486fe32ac7242aa22bd5a
+candidates:
+  - candidate_id: mut_00479
+    mutation: I208T;R207K;R228P
+    role: tier_A_catalytic_hypothesis
+    evidence_source:
+      - v2_functional_state
+      - v3_mechanism_triage
+    evidence:
+      v2_delta_nac: 0.040
+      v3_delta_nac: 0.060
+      md_lite: 0.6355
+      reaction_geometry_accommodation: 0.539
+    claim_level: L0_uncalibrated
+    uncertainty_flags:
+      - reaction_geometry_confidence_low
+      - alternative_pose_uncertainty_high
+      - no_wetlab_calibration
+  - candidate_id: mut_00081
+    mutation: Q382R
+    role: scalar_rank_control
+    evidence_source:
+      - v3_mechanism_triage
+    evidence:
+      final_score: 1.4368
+      ml_score: 0.4037
+      md_lite: null
+      reaction_geometry_accommodation: null
+    claim_level: L0_uncalibrated
+    uncertainty_flags:
+      - scalar_rank_catalytic_objective_disagreement
+      - no_wetlab_calibration
+  - candidate_id: v2_probe_q382k_n288q_r228k
+    mutation: Q382K;N288Q;R228K
+    role: v2_positive_probe
+    evidence_source:
+      - v2_functional_state
+    evidence:
+      v2_delta_nac: 0.060
+      v3_confirmed: false
+    claim_level: L0_uncalibrated
+    uncertainty_flags:
+      - v3_not_confirmed
+      - no_wetlab_calibration
+  - candidate_id: v2_probe_g209a
+    mutation: G209A
+    role: v2_positive_probe
+    evidence_source:
+      - v2_functional_state
+    evidence:
+      v2_delta_nac: 0.020
+      v3_confirmed: false
+    claim_level: L0_uncalibrated
+    uncertainty_flags:
+      - v3_not_confirmed
+      - no_wetlab_calibration
+  - candidate_id: v2_probe_e147n
+    mutation: E147N
+    role: v2_positive_probe
+    evidence_source:
+      - v2_functional_state
+    evidence:
+      v2_delta_nac: 0.020
+      v3_confirmed: false
+    claim_level: L0_uncalibrated
+    uncertainty_flags:
+      - v3_not_confirmed
+      - no_wetlab_calibration
+  - candidate_id: v2_probe_g313l
+    mutation: G313L
+    role: v2_positive_probe
+    evidence_source:
+      - v2_functional_state
+    evidence:
+      v2_delta_nac: 0.020
+      v3_confirmed: false
+    claim_level: L0_uncalibrated
+    uncertainty_flags:
+      - v3_not_confirmed
+      - no_wetlab_calibration
+  - candidate_id: mut_00224
+    mutation: S340G
+    role: no_gain_control
+    evidence_source:
+      - v3_mechanism_triage
+    evidence:
+      v3_delta_nac: -0.020
+      md_lite: 0.6950
+    claim_level: L0_uncalibrated
+    uncertainty_flags:
+      - binding_stable_no_catalytic_gain
+      - no_wetlab_calibration
+  - candidate_id: no_gain_g291a
+    mutation: G291A
+    role: no_gain_control
+    evidence_source:
+      - v2_functional_state
+      - v3_mechanism_triage
+    evidence:
+      v3_delta_nac: null
+    claim_level: L0_uncalibrated
+    uncertainty_flags:
+      - no_gain_control_lane
+      - no_wetlab_calibration
+  - candidate_id: mut_00316
+    mutation: P262Q;M261I;R207K
+    role: no_gain_control
+    evidence_source:
+      - v3_mechanism_triage
+    evidence:
+      v3_delta_nac: -0.020
+      md_lite: 0.7028
+    claim_level: L0_uncalibrated
+    uncertainty_flags:
+      - binding_stable_no_catalytic_gain
+      - no_wetlab_calibration
+  - candidate_id: mut_00165
+    mutation: N260H
+    role: uncertainty_probe
+    evidence_source:
+      - v3_mechanism_triage
+    evidence:
+      v3_delta_nac: -0.020
+      md_lite: 0.6542
+    claim_level: L0_uncalibrated
+    uncertainty_flags:
+      - alternative_pose_uncertainty_high
+      - secondary_probe
+controls:
+  scalar_rank_control:
+    - Q382R
+  no_gain_controls:
+    - S340G
+    - G291A
+    - P262Q;M261I;R207K
+  low_ml_uncertainty_controls:
+    - N260C
+    - N260H
+  baseline:
+    - WT
+selection_policy:
+  forbidden:
+    - final_score_only_library
+    - ml_hard_filter
+    - activity_claim_without_wetlab
+  required_lanes:
+    - baseline
+    - tier_A_lead
+    - lead_deconvolution
+    - v2_positive_probe
+    - scalar_rank_control
+    - no_gain_control
+    - uncertainty_probe

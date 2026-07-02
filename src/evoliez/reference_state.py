@@ -120,3 +120,101 @@ def load_reference_complex(pdb_path: str, *, target_sequence: str, ligand,
         extra_ligand_atoms=extra,
     )
     return cx, gates
+
+
+# --------------------------------------------------------------------------------------
+# ROADMAP_V3 D2/D6 — grade a reference (beyond pass/fail) + build the active-state ensemble
+# --------------------------------------------------------------------------------------
+def grade_reference(
+    gates: "ReferenceGates", *, tier: str, source: str = "curated_pdb",
+    substrate_is_real: bool = True, analog_identity: Optional[str] = None,
+    sequence_identity_to_target: Optional[float] = None,
+    resolution_A: Optional[float] = None, ligand_state: Optional[str] = None,
+    known_active_controls_available: bool = False,
+    known_inactive_controls_available: bool = False,
+    active_closed_state_supported: str = "unknown",
+):
+    """Turn a binary ``ReferenceGates`` into a graded ``ReferenceConfidenceCard`` (D2).
+    The hard gates still abort upstream; this only GRADES what survives, deriving a
+    ``claim_strength`` that caps downstream report language (ClaimGuard, D3/V3-4)."""
+    from evoliez.mechanism.cards import ReferenceConfidenceCard
+    checks = gates.checks if gates else {}
+    return ReferenceConfidenceCard(
+        tier=tier, source=source,
+        resolution_A=resolution_A,
+        sequence_identity_to_target=sequence_identity_to_target,
+        ligand_state=ligand_state,
+        substrate_is_real=substrate_is_real,
+        analog_identity=analog_identity,
+        catalytic_residue_alignment_verified=bool(checks.get("catalytic_residues_present", False)),
+        functional_atom_mapping_verified=bool(checks.get("reference_atom_map_verified", False)),
+        protonation_state_assigned=bool(checks.get("charge_protonation_provenance", False)),
+        redox_state_assigned=bool(checks.get("charge_protonation_provenance", False)),
+        active_closed_state_supported=active_closed_state_supported,
+        known_active_controls_available=known_active_controls_available,
+        known_inactive_controls_available=known_inactive_controls_available,
+    )
+
+
+def build_reference_ensemble(
+    ensemble_id: str, members: Sequence, *,
+    mechanism_spec_id: str = "mechanism_v1",
+    distance_measurements: Optional[Dict[str, Dict[str, float]]] = None,
+    angle_measurements: Optional[Dict[str, Dict[str, float]]] = None,
+):
+    """Build an ``ActiveStateReferenceEnsemble`` (D6) from member references + their
+    per-term geometry measurements. ``*_measurements`` = {term_label: {reference_id:
+    value}}. Computes each term's median/IQR distribution and a normalized geometry
+    disagreement (coefficient of dispersion = IQR/|median|, averaged over terms), which
+    the soft kernels (D4) center on and which lowers the geometry-axis confidence."""
+    import statistics as _stats
+    from evoliez.mechanism.cards import (
+        ActiveStateReferenceEnsemble, EnsembleDisagreement, ReferenceMember,
+        TermDistribution,
+    )
+
+    def _dist_for(meas):
+        out, dispersions = {}, []
+        for label, per_ref in (meas or {}).items():
+            vals = [v for v in per_ref.values() if isinstance(v, (int, float))]
+            if not vals:
+                out[label] = TermDistribution(source_references=list(per_ref.keys()))
+                continue
+            med = _stats.median(vals)
+            iqr = _iqr(vals)
+            out[label] = TermDistribution(median=med, iqr=iqr,
+                                          source_references=list(per_ref.keys()))
+            if med not in (0, None) and len(vals) >= 2:
+                dispersions.append(abs(iqr) / abs(med))
+        return out, dispersions
+
+    dist_terms, d1 = _dist_for(distance_measurements)
+    angle_terms, d2 = _dist_for(angle_measurements)
+    disp = (sum(d1 + d2) / len(d1 + d2)) if (d1 + d2) else 0.0
+
+    mem_objs = []
+    for m in members:
+        if isinstance(m, ReferenceMember):
+            mem_objs.append(m)
+        else:  # accept a dict
+            mem_objs.append(ReferenceMember(**m))
+
+    return ActiveStateReferenceEnsemble(
+        ensemble_id=ensemble_id, mechanism_spec_id=mechanism_spec_id,
+        references=mem_objs, distance_terms=dist_terms, angle_terms=angle_terms,
+        disagreement=EnsembleDisagreement(geometry_variance=round(disp, 4)),
+    )
+
+
+def _iqr(vals: Sequence[float]) -> float:
+    s = sorted(vals)
+    n = len(s)
+    if n < 2:
+        return 0.0
+
+    def _pct(p):
+        k = (n - 1) * p
+        lo, hi = int(k), min(int(k) + 1, n - 1)
+        return s[lo] + (s[hi] - s[lo]) * (k - lo)
+
+    return _pct(0.75) - _pct(0.25)

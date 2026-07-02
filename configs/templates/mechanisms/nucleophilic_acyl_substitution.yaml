@@ -1,0 +1,34 @@
+# Mechanism template surface: nucleophilic_acyl_substitution (ROADMAP_V4 §7.11)
+#
+# Serine-hydrolase acyl-enzyme chemistry (e.g. TEM-1 beta-lactamase). The protein
+# nucleophile is selected by RESIDUE NAME + ATOM NAME (SER/OG) resolved from topology,
+# and the substrate carbonyl by SMARTS — both generic, no target-specific hardcoding.
+key: nucleophilic_acyl_substitution
+required_reaction_state:
+  - protonation_model          # catalytic dyad/triad protonation is state-defining
+  - conformational_state
+default_geometry_terms:
+  - kind: distance
+    label: nucleophile_carbonyl
+    # protein nucleophile (catalytic Ser Ogamma) -> substrate carbonyl C
+    a_residue: SER
+    a_atom: OG
+    b_smarts: "[CX3]=[OX1]"
+    b_idx: 0
+    distance_min: 0.0
+    distance_max: 3.5
+    weight: 1.0
+  - kind: angle
+    label: burgi_dunitz
+    a_residue: SER
+    a_atom: OG
+    b_smarts: "[CX3]=[OX1]"
+    b_idx: 0
+    c_smarts: "[CX3]=[OX1]"
+    c_idx: 1
+    angle_min: 95.0
+    angle_max: 115.0
+    weight: 1.0
+notes: >
+  Serine-hydrolase acyl-enzyme; needs acyl-enzyme proxy handling. Protein nucleophile is
+  resolved from topology by residue+atom name, not a fixed sequence position.
