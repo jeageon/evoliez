@@ -151,6 +151,28 @@ class FinalRankingStage(Stage):
         except Exception as exc:  # noqa: BLE001
             self.log.warning("evidence-class library skipped (%s)", exc)
 
+        # ROADMAP_V3 B8 — EvidenceCard (D4) as a CANONICAL s11 output. Build a per-candidate
+        # EvidenceCard (score/confidence split per axis) for every ranked candidate and write
+        # evidence_cards.json + the claim-clean triage_v3.{json,md}, so the card and its
+        # triage recommendation are first-class run artifacts instead of an offline CLI only.
+        try:
+            import json as _json
+
+            from evoliez.ranking.triage_report import write_triage_artifacts
+            _prov = ctx.paths.reports / "provenance"
+            if (_prov / "md_candidates.json").exists() or (
+                    _prov / "validated_candidates.json").exists():
+                write_triage_artifacts(str(_prov))          # triage_v3.{json,md} in reports/
+                _tri = _json.loads((ctx.paths.reports / "triage_v3.json").read_text())
+                _cards = _tri.get("evidence_cards", [])
+                (_prov / "evidence_cards.json").write_text(
+                    _json.dumps(_cards, indent=2, default=str))
+                ctx.persist_meta("n_evidence_cards", len(_cards))
+                self.log.info("evidence cards: %d written (evidence_cards.json + triage_v3)",
+                              len(_cards))
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("evidence-card triage skipped (%s)", exc)
+
         # model-used transparency (expert review #5): make the fallback
         # explicit in the human report so results are never over-trusted.
         md_report = ctx.paths.reports / "final_report.md"

@@ -42,6 +42,12 @@ _PATTERNS = {
         r"catalytically superior",
         r"(variant|mutant)s? (is|are|will be) (more )?(catalytically )?(active|superior)",
         r"improves? (the )?activity",
+        # catalytic-comparison synonyms that dodge the word "activity" (reviewer-found
+        # false negatives): "more productive/reaction-competent/reactive than WT",
+        # "beats WT reactivity", "geometrically more productive active site than WT".
+        r"more (catalytically )?(productive|reaction[- ]competent|reactive)\b",
+        r"beats? (the )?(wt|wild[- ]?type)",
+        r"(productive|reactive)\b.{0,40}\b(than|over|vs\.?)\s+(the\s+)?(wt|wild[- ]?type)",
         r"활성\s*(이|을|의)?\s*(증가|향상|개선)",
         r"촉매\s*(효율|능력|활성)\s*(이|을)?\s*(증가|향상|개선)",
     ],

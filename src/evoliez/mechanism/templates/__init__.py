@@ -71,9 +71,34 @@ def _stub(key: str, required, notes: str) -> Dict:
             "default_geometry_terms": [], "notes": notes}
 
 
-GLYCOSIDIC_BOND_CLEAVAGE = _stub(
-    "glycosidic_bond_cleavage", ["protonation_model", "conformational_state"],
-    "Koshland double-displacement; catalytic acid/base + nucleophile geometry per target.")
+# --- glycosidic bond cleavage (retaining glycosidase; Koshland double-displacement) ---
+# ROADMAP_V3 B7: the 3rd benchmark mechanism (FDH + TEM-1 + glycosidase) now carries real
+# default geometry, so a non-FDH smoke contributes geometry evidence, not just a load test.
+# Catalytic nucleophile carboxylate (Asp/Glu Oδ) attacks the anomeric carbon (C1, the ring
+# carbon bearing the ring O and the exocyclic glycosidic O) in-line, anti to the leaving
+# group. Per-target config overrides the residue numbers + substrate anomeric SMARTS.
+GLYCOSIDIC_BOND_CLEAVAGE = {
+    "key": "glycosidic_bond_cleavage",
+    "required_reaction_state": ["protonation_model", "conformational_state"],
+    "default_geometry_terms": [
+        {
+            "kind": "distance", "label": "nucleophile_anomeric_C",
+            "a_residue": "ASP", "a_atom": "OD2",             # catalytic nucleophile carboxylate
+            "b_smarts": "[CX4]([OX2])[OX2]", "b_idx": 0,     # anomeric C1 (ring-O + glycosidic-O)
+            "distance_min": 0.0, "distance_max": 3.3, "weight": 1.0,
+        },
+        {
+            "kind": "angle", "label": "anomeric_inline_attack",
+            "a_residue": "ASP", "a_atom": "OD2",             # nucleophile
+            "b_smarts": "[CX4]([OX2])[OX2]", "b_idx": 0,     # anomeric C1 (vertex)
+            "c_smarts": "[CX4]([OX2])[OX2]", "c_idx": 1,     # a bonded O (ring/leaving) — anti axis
+            "angle_min": 150.0, "angle_max": 180.0, "weight": 1.0,
+        },
+    ],
+    "notes": ("Koshland double-displacement (retaining) default; nucleophile Asp/Glu Oδ "
+              "-> anomeric C1, in-line attack anti to the leaving group. Per-target: set "
+              "the real catalytic residue numbers + substrate anomeric SMARTS."),
+}
 PHOSPHORYL_TRANSFER = _stub(
     "phosphoryl_transfer", ["metal_state", "conformational_state"],
     "in-line attack on Pγ; Mg2+ coordination state-defining.")

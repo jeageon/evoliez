@@ -360,7 +360,7 @@ geometry) and <b>ΔNAC vs WT</b>; then Amber <b>MM-GBSA</b> and softcore-TI
 drag to rotate, scroll to zoom. Rendering is client-side 3Dmol.js on the embedded PDB.</div>
 
 <h3>Trajectory — active-site dynamics over the MD (time evolution)</h3>
-<div class="grid2">{_gif_panel(RD, '_wt_reference', 'WT — cofactor in the pocket across the trajectory (25 frames, ~50 ps apart). No productive hydride-transfer geometry forms (NAC 0).')}{_gif_panel(RD, lead_id or '', kit.esc(lead_mut) + ' — the co-substrate stays poised toward NADP⁺ C4; the active site is more reaction-competent than WT (NAC ' + _f((lead or {}).get('nac_occupancy'), 2) + ').')}</div>
+<div class="grid2">{_gif_panel(RD, '_wt_reference', 'WT — cofactor in the pocket across the trajectory (25 frames, ~50 ps apart). No productive hydride-transfer geometry forms (NAC 0).')}{_gif_panel(RD, lead_id or '', kit.esc(lead_mut) + ' — the co-substrate stays poised toward NADP⁺ C4; higher near-attack (NAC) occupancy than WT (NAC ' + _f((lead or {}).get('nac_occupancy'), 2) + ') — a screening proxy, not a rate claim.')}</div>
 <div class="cap">Element-coloured cofactor + co-substrate, faint pocket dots, slow spin
 (matplotlib render of the OpenMM DCD). For an <b>interactive play / pause / speed /
 rotate</b> animation of all candidates, open the companion
@@ -368,7 +368,8 @@ rotate</b> animation of all candidates, open the companion
 
 <h2>3 · Per-candidate metrics (Table 1)</h2>
 <div class="note">Sorted by md_lite (primary binding-stability). <b>ΔNAC&gt;0</b> =
-more productive than WT. GBSA is shown for transparency but <b>excluded from
+higher near-attack occupancy than WT (screening proxy, not a rate claim). GBSA is
+shown for transparency but <b>excluded from
 ranking</b> (per-mutant Boltz starting structures confound the absolute value —
 see §5). RBFE is reported only where the TI windows converged.</div>
 <div class="scroll"><table><thead><tr>

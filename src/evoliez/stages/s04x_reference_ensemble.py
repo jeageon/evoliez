@@ -37,7 +37,13 @@ class ReferenceEnsembleStage(Stage):
         return Path(root) / "reports" / "provenance" / "v4_reference_ensemble.json"
 
     def _payload(self, ctx: RunContext) -> Dict[str, Any]:
-        manifest = load_seed_manifest()
+        # ROADMAP_V3 B5/B6 — honour a config-supplied seed-manifest path (else the
+        # FDH default / EVOLIEZ_SEED_MANIFEST env). Defensive: ctx may lack a config
+        # (unit tests drive the stage with a minimal fake context).
+        _cfg = getattr(ctx, "config", None)
+        _recfg = getattr(_cfg, "reference_ensemble", None) if _cfg is not None else None
+        _seed = getattr(_recfg, "seed_manifest", None) if _recfg else None
+        manifest = load_seed_manifest(Path(_seed)) if _seed else load_seed_manifest()
         ensemble = build_reference_ensemble_v0(manifest)
         conformers = [c.model_dump() for c in ensemble.conformers]
         distributions = {k: v.model_dump() for k, v in ensemble.distributions.items()}
@@ -75,7 +81,19 @@ class ReferenceEnsembleStage(Stage):
         payload = self._payload(ctx)
         path = self._artifact_path(ctx)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        # ROADMAP_V3 review — this v0 ensemble is built from the FROZEN seed manifest
+        # (build_reference_ensemble_v0), NOT computed from THIS run's structures. Stamp the
+        # on-disk artifact so a reader of a real run's provenance can't mistake it for a
+        # run-derived (docking/MD) reference. (Extra key; _put_payload only reads CTX_KEYS.)
+        on_disk = dict(payload)
+        on_disk["_data_provenance"] = {
+            "data_provenance": "seed_fixture_v0",
+            "computed_from_this_run": False,
+            "warning": ("ReferenceEnsemble v0 from the frozen seed manifest — hydride-"
+                        "specific distributions are seed/fixture-derived, not computed "
+                        "from this run's structures. Not paper experimental data."),
+        }
+        path.write_text(json.dumps(on_disk, indent=2, sort_keys=True))
         self._put_payload(ctx, payload)
 
     def load(self, ctx: RunContext) -> bool:

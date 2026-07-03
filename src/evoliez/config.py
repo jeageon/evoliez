@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from evoliez.mechanism.spec import MechanismSpec
+
 
 class Backend(str, Enum):
     """Adapter backend. ``mock`` runs everywhere; ``real`` shells out to the
@@ -566,6 +568,15 @@ class SelectionLanesConfig(_Base):
     low_ml_controls: int = 8
 
 
+class ReferenceEnsembleConfig(_Base):
+    """ROADMAP_V3 B5 / V4 — optional active-state reference-ensemble stage (s04x),
+    inserted after s04 complex prediction when ``enabled``. Default off keeps the
+    s01-s11 pipeline unchanged. ``seed_manifest`` overrides the frozen v4 seed path
+    (else the FDH default / the ``EVOLIEZ_SEED_MANIFEST`` env)."""
+    enabled: bool = False
+    seed_manifest: Optional[str] = None
+
+
 class ComputeConfig(_Base):
     """GPU-first, CPU-bounded execution (ROADMAP_V2 §2b / Phase H1). `cpu_core_budget` caps
     OMP/MKL/OpenBLAS/NumExpr + every process pool so no stage trips the shared-server
@@ -597,7 +608,17 @@ class Config(_Base):
     scoring: ScoreWeights = Field(default_factory=ScoreWeights)
     selection_lanes: SelectionLanesConfig = Field(
         default_factory=SelectionLanesConfig)
+    reference_ensemble: ReferenceEnsembleConfig = Field(
+        default_factory=ReferenceEnsembleConfig)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
+
+    # ROADMAP_V3 B4 — the mechanism envelope (reaction.class template + required
+    # reaction_state + geometry terms). Optional and opt-in: when set, it is
+    # hard-gate validated at config-load (a missing required reaction_state field
+    # ABORTS) and the pipeline (s06) puts it + its runtime geometry terms into ctx
+    # so NAC / s09 / s10 use mechanism-configured geometry instead of the legacy
+    # features.mechanism heuristic. Absent = existing behaviour (legacy annotator).
+    mechanism: Optional[MechanismSpec] = None
 
     # Global default backend and optional per-stage overrides
     # (keys = stage name, e.g. {"s04_complex": "real"}).

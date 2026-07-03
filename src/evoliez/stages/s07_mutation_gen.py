@@ -620,10 +620,12 @@ class MutationGenStage(Stage):
         The strongest positions are also combined into one bounded multi-point
         "consensus active-site" candidate (<= ligandmpnn_max_mut_per_design).
         Per-generator quotas then trim to budget."""
+        from evoliez.utils.seeds import derive_seed
         designs = design_sequences(
             cx, designable, mgcfg, ctx.paths.mutations / "ligandmpnn",
             backend=ctx.config.backend_for("s07_mutation_gen"),
-            dry_run=ctx.dry_run)
+            dry_run=ctx.dry_run,
+            seed=derive_seed(ctx.config.seed, "ligandmpnn"))
         dset = set(designable)
         n = len(designs) or 1
         tally: Dict[int, Counter] = {}

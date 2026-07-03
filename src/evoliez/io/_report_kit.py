@@ -97,7 +97,57 @@ def histogram(values, bins: int = 20, lo=None, hi=None) -> dict:
     return {"labels": labels, "counts": counts}
 
 
-def page(title: str, body: str, *, scripts: str = "") -> str:
+def _strip_tags(html_str: str) -> str:
+    """Lightweight HTML -> text for ClaimGuard linting (drops <script>/<style> and tags)."""
+    import re as _re
+    text = _re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", html_str)
+    text = _re.sub(r"(?s)<[^>]+>", " ", text)
+    return _html.unescape(text)
+
+
+def _claimguard_gate(body: str, provenance, strict, allow, title: str) -> str:
+    """ROADMAP_V3 B3 — enforce ClaimGuard on EVERY report that goes through ``page()``.
+
+    Lints the rendered body against its claim provenance (``None`` -> the conservative
+    floor verdict: no activity/kcat/stability claim is permitted without wet-lab
+    evidence). On a violation:
+      * strict (param ``strict=True`` or env ``EVOLIEZ_STRICT_CLAIMS``): raise — a hard
+        gate for tests/CI, so an injected over-claim fails the build.
+      * default: log a warning AND prepend a visible banner listing the flagged claims —
+        structural + non-silent, but never breaks report generation.
+
+    Returns a banner HTML fragment to prepend to the body ("" when clean).
+    """
+    import logging
+    import os
+
+    from evoliez.ranking.claim_guard import evaluate, lint_text
+
+    verdict_allow = set(evaluate(provenance).allow())
+    verdict_allow |= set(allow or ())
+    viols = lint_text(_strip_tags(body), allow=sorted(verdict_allow))
+    if not viols:
+        return ""
+    if strict is None:
+        strict = os.environ.get("EVOLIEZ_STRICT_CLAIMS", "").lower() in (
+            "1", "true", "yes", "on")
+    detail = "\n  ".join(str(v) for v in viols)
+    if strict:
+        raise AssertionError(
+            f"ClaimGuard: prohibited claim(s) in report {title!r}:\n  {detail}")
+    logging.getLogger("evoliez.claim_guard").warning(
+        "report %r has %d unguarded claim(s): %s", title, len(viols),
+        "; ".join(str(v) for v in viols))
+    items = "".join(f"<li>{esc(str(v))}</li>" for v in viols)
+    return ('<div class="note" style="border-left-color:#c0392b">'
+            f'<b>⚠ ClaimGuard: {len(viols)} unguarded claim(s)</b> — this report '
+            'contains phrasing that exceeds its evidence provenance. Tighten the copy or '
+            f'supply matching provenance.<ul>{items}</ul></div>')
+
+
+def page(title: str, body: str, *, scripts: str = "", claim_provenance=None,
+         strict: Optional[bool] = None, claim_allow: Optional[Sequence[str]] = None) -> str:
+    body = _claimguard_gate(body, claim_provenance, strict, claim_allow, title) + body
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'

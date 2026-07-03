@@ -114,8 +114,33 @@ def _write_markdown(
         "Computational predictions are testable hypotheses, not guarantees of "
         "activity."
     )
-    p.write_text("\n".join(L) + "\n")
+    # ROADMAP_V3 B3 — final_report.md is the CLI-advertised PRIMARY deliverable but it
+    # bypasses the HTML page() ClaimGuard gate, so lint it here too: warn+banner by
+    # default, hard-raise under EVOLIEZ_STRICT_CLAIMS. Keeps the top deliverable honest.
+    p.write_text(_claimguard_markdown("\n".join(L) + "\n", "final_report.md"))
     return p
+
+
+def _claimguard_markdown(text: str, title: str) -> str:
+    """ClaimGuard for a markdown deliverable (no HTML stripping). Conservative floor
+    verdict (no wet-lab provenance -> no activity/kcat/stability claim permitted)."""
+    import logging
+    import os
+
+    from evoliez.ranking.claim_guard import evaluate, lint_text
+    viols = lint_text(text, allow=sorted(evaluate(None).allow()))
+    if not viols:
+        return text
+    if os.environ.get("EVOLIEZ_STRICT_CLAIMS", "").lower() in ("1", "true", "yes", "on"):
+        raise AssertionError(
+            f"ClaimGuard: prohibited claim(s) in {title}:\n  "
+            + "\n  ".join(str(v) for v in viols))
+    logging.getLogger("evoliez.claim_guard").warning(
+        "%s has %d unguarded claim(s): %s", title, len(viols),
+        "; ".join(str(v) for v in viols))
+    banner = (f"> ⚠ ClaimGuard: {len(viols)} unguarded claim(s) — tighten the copy or "
+              "supply wet-lab provenance: " + "; ".join(str(v) for v in viols) + "\n\n")
+    return banner + text
 
 
 def _write_pymol(paths: ProjectPaths, ranked: Sequence[Candidate]) -> Path:

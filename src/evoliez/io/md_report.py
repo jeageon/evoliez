@@ -209,8 +209,8 @@ def build_md_report_html(run_dir) -> str:
                               _f(wt_nac, 3) if isinstance(wt_nac, (int, float))
                               and wt_nac >= 0 else "—",
                               "reaction-competent fraction"))
-        cards.append(kit.card("beat WT (ΔNAC>0)", f"{n_better}/{len(nac_cands)}",
-                              "more productive geometry",
+        cards.append(kit.card("higher NAC than WT (ΔNAC>0)", f"{n_better}/{len(nac_cands)}",
+                              "higher near-attack occupancy (screening proxy)",
                               SCOL["ok"] if n_better else "#888"))
     cards_html = "".join(cards)
 
@@ -278,9 +278,10 @@ def build_md_report_html(run_dir) -> str:
 <div class="note">md_lite_score above measures BINDING stability only. NAC measures
 REACTIVITY: the fraction of frames where the reacting atoms sit in a productive
 geometry (transferring atom within the cutoff of the acceptor AND a near-linear
-donor–transfer–acceptor angle). A mutant with <b>ΔNAC &gt; 0</b> has a geometrically
-more productive active site than WT — the screenable proxy for catalytic-power short
-of a QM/MM barrier. WT baseline occupancy = <b>{_f(wt_nac, 3) if isinstance(wt_nac,(int,float)) and wt_nac>=0 else "—"}</b>.</div>
+donor–transfer–acceptor angle). A mutant with <b>ΔNAC &gt; 0</b> holds this near-attack
+geometry more often than WT — a screening proxy for reactive-geometry occupancy, NOT a
+catalytic-rate claim (a rate needs a QM/MM barrier + wet-lab kinetics). WT baseline
+occupancy = <b>{_f(wt_nac, 3) if isinstance(wt_nac,(int,float)) and wt_nac>=0 else "—"}</b>.</div>
 <div class="grid2">
   <div><h3>NAC occupancy distribution</h3>
     <div class="chart-box"><canvas id="nac"></canvas></div>
@@ -288,8 +289,8 @@ of a QM/MM barrier. WT baseline occupancy = <b>{_f(wt_nac, 3) if isinstance(wt_n
     ({len(nac_cands)} scored). WT line marks the baseline to beat.</div></div>
   <div><h3>ΔNAC vs WT against binding stability</h3>
     <div class="chart-box"><canvas id="sc"></canvas></div>
-    <div class="cap">Each point a candidate; green = beats WT reactivity (ΔNAC&gt;0).
-    The desirable quadrant is upper-right: stable binding AND more productive geometry.</div></div>
+    <div class="cap">Each point a candidate; green = higher near-attack occupancy than WT (ΔNAC&gt;0).
+    The desirable quadrant is upper-right: stable binding AND higher NAC occupancy (screening proxy).</div></div>
 </div>"""
 
     target = RD.name
