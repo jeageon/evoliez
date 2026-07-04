@@ -121,6 +121,57 @@ _Pool = List[Tuple[List[Mutation], dict]]
 class MutationGenStage(Stage):
     name = "s07_mutation_gen"
 
+    def load(self, ctx: RunContext) -> bool:
+        """Resume WITHOUT re-generating candidates. s07 is stochastic (ligandmpnn
+        sampling), so a plain re-run produces a DIFFERENT candidate set and s08b then
+        re-folds ~40 mutants (~2 h) even though the folds already exist. Reload the EXACT
+        persisted set from generated_candidates.json (its candidate_ids match the s08b
+        Boltz outputs on disk, so those fold subprocesses skip). run() puts exactly one
+        artifact — ``candidates`` — and s08 re-scores, so id + mutations + generator
+        suffice. Return False (real re-run) if the provenance JSON is missing/empty."""
+        import json as _json
+
+        from evoliez.types import Candidate, Mutation
+        f = ctx.paths.reports / "provenance" / "generated_candidates.json"
+        if not f.exists():
+            return False
+        try:
+            rows = _json.loads(f.read_text())
+        except (OSError, ValueError):
+            return False
+        cands: List[Candidate] = []
+        for r in rows:
+            muts: List[Mutation] = []
+            for tok in str(r.get("mutation_string", "")).split(";"):
+                tok = tok.strip()
+                if len(tok) >= 3 and tok[1:-1].lstrip("-").isdigit():
+                    muts.append(Mutation(wt=tok[0], position=int(tok[1:-1]), mut=tok[-1]))
+            if muts and r.get("candidate_id"):
+                cands.append(Candidate(candidate_id=r["candidate_id"], mutations=muts,
+                                       generator=r.get("generator", "")))
+        if not cands:
+            return False
+        # RESUME-LOAD PARITY (resume-load-parity trap): run() also populates
+        # cand.details["msa_permissiveness"], which s08 reads as a scoring feature
+        # (s08 does NOT recompute it). Reconstructing candidates from the provenance
+        # JSON drops details, so s08 would read the 0.0 default on resume -> ml_score /
+        # final_score / the whole ranked set silently diverge from the fresh run.
+        # Recompute it here IDENTICALLY to run() from position_features (restored by
+        # s03.load() before this stage), so a resumed run is bit-for-bit the same.
+        feats = ctx.get("position_features") or []
+        pf = {f.target_position: f for f in feats
+              if getattr(f, "target_position", None) is not None}
+        if pf:
+            for cand in cands:
+                perms = [permissiveness(pf.get(m.position), m.mut)
+                         for m in cand.mutations if pf.get(m.position)]
+                cand.details["msa_permissiveness"] = round(
+                    sum(perms) / max(1, len(perms)), 4)
+        ctx.put("candidates", cands)
+        self.log.info("[resume] reloaded %d candidates from provenance "
+                      "(no re-generation, folds reused)", len(cands))
+        return True
+
     def run(self, ctx: RunContext) -> None:
         cx = ctx.require("wt_complex")
         feats = ctx.require("position_features")
@@ -620,10 +671,12 @@ class MutationGenStage(Stage):
         The strongest positions are also combined into one bounded multi-point
         "consensus active-site" candidate (<= ligandmpnn_max_mut_per_design).
         Per-generator quotas then trim to budget."""
+        from evoliez.utils.seeds import derive_seed
         designs = design_sequences(
             cx, designable, mgcfg, ctx.paths.mutations / "ligandmpnn",
             backend=ctx.config.backend_for("s07_mutation_gen"),
-            dry_run=ctx.dry_run)
+            dry_run=ctx.dry_run,
+            seed=derive_seed(ctx.config.seed, "ligandmpnn"))
         dset = set(designable)
         n = len(designs) or 1
         tally: Dict[int, Counter] = {}

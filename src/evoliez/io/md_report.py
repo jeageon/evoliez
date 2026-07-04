@@ -2,7 +2,7 @@
 
 Reads a finished run's on-disk MD provenance (reports/provenance/md_candidates.json
 written by the s10 stage + _state.json meta + the WT Boltz complex) and renders one
-standalone paper-grade HTML report:
+standalone HTML report:
 
 - an HONEST "what actually ran" panel (actual solvent mode + actual simulated ns vs
   what was requested -- so a ~50 ps implicit SCREEN is never read as a 2 ns explicit
@@ -30,7 +30,7 @@ from . import _report_kit as kit
 SCOL = {"ok": "#1D9E75", "unstable": "#BA7517", "failed": "#993C1D"}
 
 
-def _pocket_traj_pdb(dcd_path, top_path, max_frames=20, radius_nm=0.8):
+def _pocket_traj_pdb(dcd_path, top_path, max_frames=10, radius_nm=0.8):
     """DCD + minimized-PDB topology -> downsampled, pocket-focused, protein-CA-aligned
     multi-model PDB string for an in-browser trajectory animation. None if mdtraj is
     missing or the files don't parse / have <2 frames. The ligands are resname UNK (the
@@ -45,6 +45,10 @@ def _pocket_traj_pdb(dcd_path, top_path, max_frames=20, radius_nm=0.8):
         t = md.load(str(dcd_path), top=str(top_path))
         if t.n_frames < 2:
             return None
+        # ALL ligands (3-HP + ATP + NADPH) + everything within radius_nm of ANY of
+        # them -> the full multi-ligand binding environment is visible (not just the
+        # design-ligand pocket). File size is controlled by max_frames, not by cropping
+        # the view.
         lig = t.top.select("resname UNK")
         if len(lig) == 0:
             return None
@@ -80,14 +84,16 @@ def _trajectory_section(run_dir, cands):
     wt_top = RD / "md" / "_wt_reference" / "_wt_reference_minimized.pdb"
     if wt_dcd.exists() and wt_top.exists():
         items.append(("WT reference (baseline)", wt_dcd, wt_top))
+    # ALL candidates with a usable trajectory (not only the gate-stack leads), so
+    # EVERY variant's active-site dynamics can be reviewed alongside the WT baseline.
     for c in cands:
-        if (c.get("gate_stack") or {}).get("verdict") != "candidate_improved":
-            continue
         cid = str(c.get("candidate_id"))
         dcd = RD / "md" / cid / f"{cid}.dcd"
         top = RD / "md" / cid / f"{cid}_minimized.pdb"
         if dcd.exists() and top.exists():
-            items.append((f'{c.get("mutation_string", cid)} (improved)', dcd, top))
+            verdict = (c.get("gate_stack") or {}).get("verdict", "")
+            tag = " (improved)" if verdict == "candidate_improved" else ""
+            items.append((f'{c.get("mutation_string", cid)}{tag}', dcd, top))
     blocks, ids = [], []
     for i, (label, dcd, top) in enumerate(items):
         pdb = _pocket_traj_pdb(dcd, top)
@@ -110,24 +116,26 @@ def _trajectory_section(run_dir, cands):
         '<div class="note">In-browser animation of the restrained implicit-solvent MD: '
         'pocket-focused and protein-CA aligned, so the ligand motion is RELATIVE to a '
         'fixed binding site (~20 downsampled frames over the 2 ns production). Ligand '
-        '(NADP / formate) = cyan sticks; pocket = lines. Shown for the gate-stack leads '
-        '(candidate_improved) + the WT baseline; full trajectories are on disk per '
+        '(design substrate + cofactors) = cyan sticks; pocket = lines. Shown for '
+        '<b>every candidate</b> + the WT baseline; full trajectories are on disk per '
         'candidate (md/&lt;id&gt;/&lt;id&gt;.dcd).</div>' + "".join(blocks))
+    # LAZY init: a viewer is created only on first click (17 simultaneous WebGL
+    # contexts would exceed the browser cap and freeze the page). First click loads +
+    # plays; later clicks toggle play/pause.
     js = (
         "var TJ={};\n"
-        "function tjInit(i){var el=document.getElementById('traj'+i);"
-        "if(!el||!window.$3Dmol)return;"
-        "var v=$3Dmol.createViewer(el,{backgroundColor:cssv('--surf')||'white'});"
-        "v.addModelsAsFrames(document.getElementById('trajdata'+i).textContent,'pdb');"
-        "v.setStyle({},{line:{}});"
-        "v.setStyle({resn:'UNK'},{stick:{radius:0.2,colorscheme:'cyanCarbon'}});"
-        "v.zoomTo({resn:'UNK'});v.animate({loop:'forward',interval:120});v.render();"
-        "TJ[i]={v:v,on:true};}\n"
-        "function tjToggle(i){var o=TJ[i];if(!o)return;"
-        "if(o.on){o.v.stopAnimate();}else{o.v.animate({loop:'forward',interval:120});}"
-        "o.on=!o.on;}\n"
-        "window.addEventListener('load',function(){"
-        + ";".join(f"tjInit({i})" for i in ids) + ";});")
+        "function tjToggle(i){var o=TJ[i];\n"
+        " if(!o){var el=document.getElementById('traj'+i);\n"
+        "  if(!el||!window.$3Dmol){if(el)el.innerHTML="
+        "'<p style=\\'padding:1rem;color:#BA7517\\'>3Dmol.js unavailable (open over HTTP)</p>';return;}\n"
+        "  var v=$3Dmol.createViewer(el,{backgroundColor:cssv('--surf')||'white'});\n"
+        "  v.addModelsAsFrames(document.getElementById('trajdata'+i).textContent,'pdb');\n"
+        "  v.setStyle({},{line:{}});\n"
+        "  v.setStyle({resn:'UNK'},{stick:{radius:0.2,colorscheme:'cyanCarbon'}});\n"
+        "  v.zoomTo({resn:'UNK'});v.animate({loop:'forward',interval:120});v.render();\n"
+        "  TJ[i]={v:v,on:true};return;}\n"
+        " if(o.on){o.v.stopAnimate();}else{o.v.animate({loop:'forward',interval:120});}\n"
+        " o.on=!o.on;}\n")
     return section, js
 
 
@@ -209,8 +217,8 @@ def build_md_report_html(run_dir) -> str:
                               _f(wt_nac, 3) if isinstance(wt_nac, (int, float))
                               and wt_nac >= 0 else "—",
                               "reaction-competent fraction"))
-        cards.append(kit.card("beat WT (ΔNAC>0)", f"{n_better}/{len(nac_cands)}",
-                              "more productive geometry",
+        cards.append(kit.card("higher NAC than WT (ΔNAC>0)", f"{n_better}/{len(nac_cands)}",
+                              "higher near-attack occupancy (screening proxy)",
                               SCOL["ok"] if n_better else "#888"))
     cards_html = "".join(cards)
 
@@ -278,9 +286,10 @@ def build_md_report_html(run_dir) -> str:
 <div class="note">md_lite_score above measures BINDING stability only. NAC measures
 REACTIVITY: the fraction of frames where the reacting atoms sit in a productive
 geometry (transferring atom within the cutoff of the acceptor AND a near-linear
-donor–transfer–acceptor angle). A mutant with <b>ΔNAC &gt; 0</b> has a geometrically
-more productive active site than WT — the screenable proxy for catalytic-power short
-of a QM/MM barrier. WT baseline occupancy = <b>{_f(wt_nac, 3) if isinstance(wt_nac,(int,float)) and wt_nac>=0 else "—"}</b>.</div>
+donor–transfer–acceptor angle). A mutant with <b>ΔNAC &gt; 0</b> holds this near-attack
+geometry more often than WT — a screening proxy for reactive-geometry occupancy, NOT a
+catalytic-rate claim (a rate needs a QM/MM barrier + wet-lab kinetics). WT baseline
+occupancy = <b>{_f(wt_nac, 3) if isinstance(wt_nac,(int,float)) and wt_nac>=0 else "—"}</b>.</div>
 <div class="grid2">
   <div><h3>NAC occupancy distribution</h3>
     <div class="chart-box"><canvas id="nac"></canvas></div>
@@ -288,8 +297,8 @@ of a QM/MM barrier. WT baseline occupancy = <b>{_f(wt_nac, 3) if isinstance(wt_n
     ({len(nac_cands)} scored). WT line marks the baseline to beat.</div></div>
   <div><h3>ΔNAC vs WT against binding stability</h3>
     <div class="chart-box"><canvas id="sc"></canvas></div>
-    <div class="cap">Each point a candidate; green = beats WT reactivity (ΔNAC&gt;0).
-    The desirable quadrant is upper-right: stable binding AND more productive geometry.</div></div>
+    <div class="cap">Each point a candidate; green = higher near-attack occupancy than WT (ΔNAC&gt;0).
+    The desirable quadrant is upper-right: stable binding AND higher NAC occupancy (screening proxy).</div></div>
 </div>"""
 
     target = RD.name

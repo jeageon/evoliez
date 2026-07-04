@@ -710,7 +710,9 @@ def write_mutation_report(path, **kwargs) -> None:
     from pathlib import Path
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(build_mutation_report_html(**kwargs), encoding="utf-8")
+    from evoliez.io._report_kit import assert_html_clean
+    p.write_text(assert_html_clean(build_mutation_report_html(**kwargs), title="mutation"),
+                 encoding="utf-8")
 
 
 _S07_TEMPLATE = r"""<!DOCTYPE html>

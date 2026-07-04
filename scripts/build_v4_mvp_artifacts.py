@@ -32,6 +32,44 @@ from evoliez.reports.v4_geometry_report import render_geometry_report
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# The V4 MVP scores are hardcoded design fixtures, not computed data.
+_SYNTHETIC = {
+    "data_provenance": "synthetic_fixture",
+    "computed": False,
+    "warning": ("V4 MVP artifact — per-mutation geometry/accommodation scores are "
+                "HARDCODED fixtures (ensemble_readout._PROFILES), NOT computed from "
+                "docking/MD/Boltz/wet-lab. Do NOT present as computed experimental data."),
+}
+_SYNTHETIC_MD = (
+    "> ⚠ **SYNTHETIC — NOT COMPUTED DATA.** The scores in this V4 MVP artifact are "
+    "hardcoded design fixtures (`ensemble_readout._PROFILES`), not derived from "
+    "docking/MD/Boltz or wet-lab. Do **not** present these numbers as computed "
+    "experimental evidence in a paper.\n\n"
+)
+
+
+def _mark_synthetic(paths) -> None:
+    """Stamp each generated V4 artifact with an explicit data-provenance marker."""
+    for p in paths:
+        if not p.exists():
+            continue
+        try:
+            if p.suffix == ".json":
+                obj = json.loads(p.read_text())
+                wrapped = ({**obj, "_data_provenance": _SYNTHETIC}
+                           if isinstance(obj, dict)
+                           else {"_data_provenance": _SYNTHETIC, "items": obj})
+                p.write_text(json.dumps(wrapped, indent=2, sort_keys=True))
+            elif p.suffix == ".md":
+                p.write_text(_SYNTHETIC_MD + p.read_text())
+            elif p.suffix == ".csv":
+                # a leading comment line keeps the marker with the data; readers that
+                # feed this to a plate should pass comment='#'. Honest by construction.
+                p.write_text("# data_provenance=synthetic_fixture — hardcoded V4 MVP "
+                             "fixtures, NOT computed data\n" + p.read_text())
+        except Exception:  # noqa: BLE001 — marking must never abort artifact generation
+            pass
+
 
 def main() -> None:
     write_preflight_report(ROOT)
@@ -81,6 +119,22 @@ def main() -> None:
         render_feasibility_report(run_feasibility_gate())
     )
     write_benchmark_smoke_report(ROOT)
+
+    # ROADMAP_V3 review — the per-mutation geometry/accommodation scores below are
+    # HARDCODED fixtures (ensemble_readout._PROFILES), NOT computed from docking/MD/Boltz.
+    # Mark every reader-facing V4 artifact with an explicit data-provenance so it can never
+    # be mistaken for computed experimental data in a paper.
+    _mark_synthetic([
+        provenance / "v4_reference_ensemble.json",
+        provenance / "v4_accommodation_scores.json",
+        reports / "v4_geometry_report.md",
+        reports / "v4_candidate_cards.md",
+        reports / "v4_candidate_cards.json",
+        reports / "v4_first_round_library.csv",
+        reports / "v4_first_round_library_20.csv",
+        reports / "v4_first_round_library_32.csv",
+        reports / "v4_first_round_library.md",
+    ])
 
 
 if __name__ == "__main__":

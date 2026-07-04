@@ -8,6 +8,7 @@ flags, not only scalar ranks.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -78,15 +79,20 @@ class SeedManifest(BaseModel):
         if self.claim_level_default != "L0_uncalibrated":
             raise ValueError("default v4 seed claim must be L0_uncalibrated")
         by_id = {c.candidate_id: c for c in self.candidates}
-        if "mut_00479" not in by_id:
-            raise ValueError("mut_00479 lead seed is required")
-        if by_id["mut_00479"].mutation != "I208T;R207K;R228P":
-            raise ValueError("mut_00479 mutation string drifted")
-        if by_id["mut_00479"].role != "tier_A_catalytic_hypothesis":
-            raise ValueError("mut_00479 must stay the Tier A catalytic hypothesis")
-        scalar = self.find_by_mutation("Q382R")
-        if scalar is None or scalar.role != "scalar_rank_control":
-            raise ValueError("Q382R must stay a scalar-rank control")
+        # ROADMAP_V3 B6 — the FDH-specific lead/control invariants are gated on the FDH
+        # target so the GENERIC SeedManifest schema accepts other enzymes' manifests
+        # (previously these hard-coded asserts rejected any non-FDH manifest). The FDH
+        # seed still freezes its known lead (mut_00479) + scalar control (Q382R).
+        if self.target_id == "fdh_nadp":
+            if "mut_00479" not in by_id:
+                raise ValueError("mut_00479 lead seed is required")
+            if by_id["mut_00479"].mutation != "I208T;R207K;R228P":
+                raise ValueError("mut_00479 mutation string drifted")
+            if by_id["mut_00479"].role != "tier_A_catalytic_hypothesis":
+                raise ValueError("mut_00479 must stay the Tier A catalytic hypothesis")
+            scalar = self.find_by_mutation("Q382R")
+            if scalar is None or scalar.role != "scalar_rank_control":
+                raise ValueError("Q382R must stay a scalar-rank control")
         for c in self.candidates:
             if c.role == "v2_positive_probe" and c.role == "confirmed_lead":
                 raise ValueError("v2 probes must not be promoted to confirmed leads")
@@ -99,7 +105,13 @@ class SeedManifest(BaseModel):
         return None
 
 
-def load_seed_manifest(path: Path = DEFAULT_SEED_MANIFEST) -> SeedManifest:
+def load_seed_manifest(path: Optional[Path] = None) -> SeedManifest:
+    """Load the v4 seed manifest. ROADMAP_V3 B6 — the path is configurable (arg or the
+    ``EVOLIEZ_SEED_MANIFEST`` env) instead of a fixed FDH default, so a non-FDH target
+    can freeze its own seed evidence."""
+    if path is None:
+        env = os.environ.get("EVOLIEZ_SEED_MANIFEST")
+        path = Path(env) if env else DEFAULT_SEED_MANIFEST
     data = yaml.safe_load(Path(path).read_text())
     return SeedManifest(**data)
 

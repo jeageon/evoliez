@@ -52,8 +52,61 @@ class RunContext:
         self.store = Store(self.paths.db_path)
         self._load_state()
         self._ensure_project_row()
+        self._write_run_manifest()
         log.info("project root: %s", self.root)
         return self
+
+    def _write_run_manifest(self) -> None:
+        """Reproducibility snapshot (ROADMAP_V3): the fully-resolved config + the exact
+        code state (git SHA + dirty flag) + backend + seed, so the paper data can be tied
+        to a recoverable code+config. A -dirty tree is recorded loudly, not silently."""
+        import json
+        import subprocess
+        from pathlib import Path as _Path
+
+        # git state of the SOURCE CODE (the evoliez package), NOT the run output dir —
+        # the output dir may live off-repo (e.g. /mnt/data) and is not the code.
+        _src = str(_Path(__file__).resolve().parent)
+
+        def _git(*args: str) -> Optional[str]:
+            try:
+                return subprocess.run(
+                    ["git", *args], cwd=_src, capture_output=True,
+                    text=True, timeout=5).stdout.strip() or None
+            except Exception:  # noqa: BLE001 — git absent / not a repo
+                return None
+
+        dirty_out = _git("status", "--porcelain")
+        manifest = {
+            "schema": "evoliez_run_manifest_v1",
+            "backend": self.config.backend.value,
+            "per_stage_backends": {k: v.value for k, v in self.config.backends.items()},
+            "seed": self.config.seed,
+            "git": {
+                "commit": _git("rev-parse", "HEAD"),
+                "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+                # CRITICAL for paper provenance: True => uncommitted changes, the exact
+                # code cannot be recovered by `git checkout <commit>`.
+                "dirty": bool(dirty_out),
+                "dirty_files": (dirty_out.splitlines()[:50] if dirty_out else []),
+            },
+            "resolved_config": self.config.model_dump(mode="json"),
+        }
+        try:
+            (self.paths.reports / "run_manifest.json").write_text(
+                json.dumps(manifest, indent=2, sort_keys=True, default=str))
+        except Exception as exc:  # noqa: BLE001 — never let provenance abort a run
+            log.warning("could not write run_manifest.json: %s", exc)
+        if manifest["git"]["dirty"]:
+            log.warning(
+                "RUN BUILT FROM A -DIRTY GIT TREE — the exact code that produced this "
+                "run is NOT recoverable by commit alone (see reports/run_manifest.json). "
+                "Commit before a paper-grade run.")
+        if self.config.backend.value != "real":
+            log.warning(
+                "backend=%s (not 'real') — outputs include mock/proxy quantities in the "
+                "final score; NOT valid as paper experimental-evidence data.",
+                self.config.backend.value)
 
     def _check_disk(self) -> None:
         target = self.root

@@ -152,6 +152,22 @@ def identify_acceptor(mol, spec: ReactiveSpec) -> Optional[int]:
     return _first_match_atom(mol, spec.acceptor_smarts, spec.acceptor_idx)
 
 
+def identify_leaving(mol, acceptor_idx: int) -> Optional[int]:
+    """For a NON-hydride O->P attack, the leaving group is the BRIDGING oxygen on the acceptor
+    P that ALSO bonds a SECOND P (e.g. the ATP alpha-beta bridging O — the bond that breaks in
+    adenylation). Purely TOPOLOGICAL (coordinate-free), matching
+    ``cosubstrate_placement.place_donor_at_acceptor``; used only to define the read-only
+    O_nuc--Palpha--O_leaving angle. None if the acceptor is not a phosphorus with such a
+    bridging O (e.g. the FDH hydride/aromatic-C acceptor), so the hydride path is untouched."""
+    a = mol.GetAtomWithIdx(acceptor_idx)
+    for nb in a.GetNeighbors():
+        if nb.GetSymbol() == "O" and any(
+                nn.GetSymbol() == "P" and nn.GetIdx() != acceptor_idx
+                for nn in nb.GetNeighbors()):
+            return nb.GetIdx()
+    return None
+
+
 def resolve_reactive_indices(
     mol_blocks: "Sequence[tuple]", spec: ReactiveSpec
 ) -> Optional[Dict[str, int]]:
@@ -170,7 +186,7 @@ def resolve_reactive_indices(
     honest "reaction partners not both present" -> NAC is skipped, never faked).
     """
     donor = donor_blk = None
-    acceptor = acceptor_blk = None
+    acceptor = acceptor_blk = acceptor_rd = None
     for rd, gidx in mol_blocks:
         if donor is None:
             d = identify_donor(rd, spec)
@@ -179,14 +195,22 @@ def resolve_reactive_indices(
         if acceptor is None:
             a = identify_acceptor(rd, spec)
             if a is not None and a < len(gidx):
-                acceptor, acceptor_blk = a, gidx
+                acceptor, acceptor_blk, acceptor_rd = a, gidx, rd
     if donor is None or acceptor is None:
         return None
-    return {
+    out = {
         "donor_heavy": int(donor_blk[donor["heavy"]]),
         "transfer": int(donor_blk[donor["transfer"]]),
         "acceptor": int(acceptor_blk[acceptor]),
     }
+    # O->P attack: also resolve the leaving-group O on the acceptor P (same mol block) so the
+    # near-attack ANGLE is the real O_nuc-Palpha-O_leaving (V5-1) instead of the degenerate
+    # donor==transfer NaN. Absent for the hydride case -> the 3-atom path is unchanged.
+    if not spec.transfer_is_h:
+        lv = identify_leaving(acceptor_rd, acceptor)
+        if lv is not None and lv < len(acceptor_blk):
+            out["leaving"] = int(acceptor_blk[lv])
+    return out
 
 
 def nac_from_subframes(
@@ -201,9 +225,12 @@ def nac_from_subframes(
     provenance. ``restrained`` flags a retention-restrained run (the valid status
     becomes ``valid_restrained_retention_screen``). ``initial_subframe`` may be
     supplied for the placement gate only; it is not counted in occupancy."""
+    # A 4-row subframe carries the O->P leaving atom at row 3 (the engine appends it when
+    # resolve_reactive_indices returns a "leaving" index); a 3-row subframe is the hydride case.
+    _lv = 3 if (len(subframes) and len(subframes[0]) > 3) else None
     res = nac_from_frames(
         subframes, 0, 1, 2, spec, restrained=restrained,
-        initial_frame=initial_subframe,
+        initial_frame=initial_subframe, leaving=_lv,
     )
     if atoms:
         res.atoms = dict(atoms)
@@ -230,14 +257,28 @@ def _angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
 def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
                     transfer: int, acceptor: int, spec: ReactiveSpec,
                     restrained: bool = False,
-                    initial_frame: "Optional[np.ndarray]" = None) -> NACResult:
-    """Per-frame transfer distance (transferring atom -> acceptor) and
-    donor_heavy--transfer--acceptor angle; a frame is reaction-competent when
-    distance <= spec.distance_max AND angle >= spec.angle_min. ``frames`` are
-    (N,3) coordinate arrays in Angstrom; the three indices are into that frame.
-    ``initial_frame`` overrides the placement gate frame but is not counted in
-    occupancy or retention.
+                    initial_frame: "Optional[np.ndarray]" = None,
+                    leaving: "Optional[int]" = None) -> NACResult:
+    """Per-frame transfer distance (transferring atom -> acceptor) and near-attack angle;
+    a frame is reaction-competent when distance <= spec.distance_max AND angle >= spec.angle_min.
+    ``frames`` are (N,3) coordinate arrays in Angstrom; the indices are into that frame.
+    ``initial_frame`` overrides the placement gate frame but is not counted in occupancy.
+
+    ANGLE (ROADMAP_V5 V5-1): for a hydride transfer the angle is donor_heavy--transfer(H)--
+    acceptor. For a NON-hydride O->P attack (``spec.transfer_is_h`` False) the transferring
+    atom IS the donor heavy atom, so that 3-point angle is degenerate (vertex == first point ->
+    NaN, forcing occupancy 0 for EVERY frame). When a ``leaving`` atom is supplied the angle is
+    instead the real in-line nucleophilic O_nuc--acceptor(Palpha)--O_leaving (vertex at the
+    acceptor). Distance is always the transferring-atom -> acceptor separation (O_nuc -> Palpha
+    for the O-attack), which is well-defined either way.
     """
+    _oatk = leaving is not None and not spec.transfer_is_h
+
+    def _ang(fr: np.ndarray) -> float:
+        if _oatk:
+            return _angle(fr[donor_heavy], fr[acceptor], fr[leaving])
+        return _angle(fr[donor_heavy], fr[transfer], fr[acceptor])
+
     dists: List[float] = []
     angles: List[float] = []
     hits = 0
@@ -245,7 +286,7 @@ def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
     n_retained = 0
     for fr in frames:
         d = _dist(fr[transfer], fr[acceptor])
-        ang = _angle(fr[donor_heavy], fr[transfer], fr[acceptor])
+        ang = _ang(fr)
         dists.append(round(d, 3))
         angles.append(round(ang, 1))
         reactive = d <= spec.distance_max and ang >= spec.angle_min
@@ -259,9 +300,7 @@ def nac_from_frames(frames: Sequence[np.ndarray], donor_heavy: int,
     if initial_frame is not None:
         initial_distance = round(_dist(initial_frame[transfer],
                                        initial_frame[acceptor]), 3)
-        initial_angle = round(_angle(initial_frame[donor_heavy],
-                                     initial_frame[transfer],
-                                     initial_frame[acceptor]), 1)
+        initial_angle = round(_ang(initial_frame), 1)
     else:
         initial_distance = dists[0] if dists else float("nan")
         initial_angle = angles[0] if angles else float("nan")

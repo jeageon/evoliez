@@ -226,9 +226,73 @@ class RerankerStage(Stage):
             self._score_heuristic(candidates)
 
         candidates.sort(key=lambda c: -c.scores.get("ml_score", 0.0))
-        top = candidates[: rcfg.top_for_redocking]
+        # ROADMAP_V3 B1 — ML is a PRIOR, not a hard filter. The scalar ml_score top-N cut
+        # below is the true bottleneck: anything dropped HERE never gets a real structure
+        # (s08b) or MD (s09), so the downstream multi-lane (s08b fold queue / s09 MD
+        # shortlist) can only re-select from candidates that ALREADY survived this cut —
+        # an ML false negative is unrecoverable. When selection_lanes is enabled, widen
+        # the redock set to a UNION of lanes over the FULL candidate set so a low-ML /
+        # diverse / mechanism-seed candidate reaches s08b. Only ml/diversity/low-ML-control
+        # are feasible here (stability/geometry are s09 products, not yet computed) — same
+        # feasible lanes as s08b's fold queue. Default off = the existing scalar cut.
+        _sl = getattr(ctx.config, "selection_lanes", None)
+        if _sl is not None and getattr(_sl, "enabled", False) and candidates:
+            from evoliez.ranking.multi_lane import (
+                LaneConfig, lane_counts, select_multi_lane)
+            # The lanes must AUGMENT the scalar redock set, never SHRINK it: the ml_high
+            # lane is the FULL top_for_redocking (the pre-lane baseline), and diversity +
+            # low_ml_control ADD false-negative probes on top. (A small from_ml_high here
+            # would collapse the whole downstream funnel — s08b/s09/final library all read
+            # this set — to a few dozen candidates, starving the wet-lab plate.) The small
+            # per-lane budgets in selection_lanes apply at the EXPENSIVE s08b/s09 stages,
+            # not this cheap redock gate.
+            _redock = LaneConfig(
+                enabled=True,
+                from_ml_high=max(rcfg.top_for_redocking, _sl.from_ml_high),
+                from_stability_high=0, from_geometry_high=0,
+                # stability/geometry are s09 products (inert here) -> repurpose their config
+                # slots to size the s08-COMPUTABLE evolutionary (MSA permissiveness) + ligand
+                # competence (interaction_gain) lanes, so a low-ML but evolutionarily-tolerated /
+                # ligand-competent candidate reaches s08b. No new Config field (purge-safe).
+                from_evolutionary_high=_sl.from_stability_high,
+                from_ligand_high=_sl.from_geometry_high,
+                from_diversity=_sl.from_diversity,
+                low_ml_controls=_sl.low_ml_controls)
+            top = select_multi_lane(candidates, _redock)
+            self.log.info(
+                "s08 redock queue via MULTI-LANE: %d candidate(s) %s "
+                "(baseline top_for_redocking=%d + probes)",
+                len(top), lane_counts(top), rcfg.top_for_redocking)
+            # The low_ml_control lane is the explicit ML-false-negative safety net. If it was
+            # requested but produced NONE while low-ML candidates were available (the union did
+            # not consume the whole pool), the safety net silently vanished -> fail loud.
+            if (_sl.low_ml_controls > 0
+                    and lane_counts(top).get("low_ml_control", 0) == 0
+                    and len(candidates) > _redock.from_ml_high):
+                raise RuntimeError(
+                    "s08 selection_lanes: low_ml_control lane is EMPTY despite available "
+                    "low-ML candidates -- the ML false-negative safety net vanished. Check "
+                    "lane sizing (low_ml_controls / from_ml_high).")
+            # Record the ACTUAL s08 lane->quota mapping (ROADMAP_V5 step 5): at s08 the
+            # stability/geometry config slots are REPURPOSED to size the s08-computable
+            # evolutionary / ligand-competence lanes (stability/geometry are s09 products). Made
+            # explicit here so provenance is unambiguous about which config field sized which lane.
+            ctx.persist_meta("s08_lane_quota_mapping", {
+                "note": ("s08 repurposes from_stability_high -> evolutionary_high and "
+                         "from_geometry_high -> ligand_competence_high because stability/geometry "
+                         "are not yet computable at s08; a future PR splits these into dedicated "
+                         "config fields."),
+                "ml_high": _redock.from_ml_high,
+                "evolutionary_high__from_stability_high": _redock.from_evolutionary_high,
+                "ligand_competence_high__from_geometry_high": _redock.from_ligand_high,
+                "diversity": _redock.from_diversity,
+                "low_ml_control": _redock.low_ml_controls,
+                "selected_by_lane": lane_counts(top),
+            })
+        else:
+            top = candidates[: rcfg.top_for_redocking]
         # Persist per-candidate reranker scores + features (the s08 report reads this;
-        # previously ctx.put in-memory only). The top `top_for_redocking` advance to
+        # previously ctx.put in-memory only). The top candidates advance to
         # the s08b real-Boltz fold + s09 validation.
         import json as _json
         _prov = ctx.paths.reports / "provenance"
@@ -248,6 +312,7 @@ class RerankerStage(Stage):
             "msa_permissiveness": c.scores.get("msa_permissiveness"),
             "conservation_penalty": c.scores.get("conservation_penalty"),
             "advanced_to_fold": c.candidate_id in _top_ids,
+            "selection_lane": c.details.get("selection_lane"),
         } for i, c in enumerate(candidates)], indent=2, default=str))
         ctx.put("candidates", candidates)
         ctx.put("redock_candidates", top)
@@ -335,28 +400,69 @@ class RerankerStage(Stage):
         for c, p in zip(candidates, preds):
             c.scores["ml_score"] = round(float(p), 4)
 
+    # supervised-target preference when the assay schema carries several label types
+    _LABEL_TYPE_PREFERENCE = (
+        "activity", "kinetics", "substrate_conversion", "product_formation",
+        "stability", "specificity",
+    )
+
     def _load_labels(self, ctx: RunContext) -> Dict[str, float] | None:
         path = ctx.config.input.experimental_dataset
         if not path:
             return None
+        from pathlib import Path as _Path
         labels: Dict[str, float] = {}
         try:
             with open(path, newline="") as fh:
-                reader = csv.DictReader(fh)
-                label_col = next(
-                    (c for c in (reader.fieldnames or [])
-                     if c.lower() in ("activity", "relative_activity",
-                                      "kcat", "km", "kcat_km",
-                                      "thermostability")),
-                    "activity",
-                )
-                # policy: a Boltz-derived column can never be the label
-                assert_supervised_label_allowed(label_col)
-                for row in reader:
-                    mut = row.get("mutation") or row.get("mutations")
-                    val = row.get(label_col)
-                    if mut and val:
-                        labels[mut.strip()] = float(val)
+                cols = set(csv.DictReader(fh).fieldnames or [])
+
+            # ROADMAP_V3 ML2 — PROVENANCE-based guard. A column NAME ("activity") is not
+            # proof of an experimental measurement: a computed/predicted value dropped into
+            # an `activity` column would pass the name-only guard and silently train an
+            # "activity predictor". When the dataset is the long-format assay schema
+            # (mutation,label_type,value,source), require source in {wetlab,literature}
+            # via assay_label.supervised_targets — a computed_weak label can NEVER be a
+            # supervised target — and never mix label types into one target.
+            if {"label_type", "value", "source"} <= cols:
+                from evoliez.ml.assay_label import (
+                    load_assay_labels, supervised_targets)
+                all_labels = load_assay_labels(_Path(path))
+                chosen = next(
+                    (lt for lt in self._LABEL_TYPE_PREFERENCE
+                     if any(l.label_type == lt and l.is_supervised_source
+                            for l in all_labels)), None)
+                labels = supervised_targets(all_labels, label_type=chosen)
+                dropped = sum(1 for l in all_labels if not l.is_supervised_source)
+                if dropped:
+                    self.log.warning(
+                        "ML2: excluded %d computed_weak label(s) from supervised "
+                        "training (a computed label is a feature/prior, never a target)",
+                        dropped)
+                if chosen:
+                    self.log.info("supervised label_type=%r (provenance-gated)", chosen)
+            else:
+                # legacy wide format (one row per variant, a named readout column). Keep
+                # the name-based Boltz-derived guard; when a `source` column is present,
+                # honour it so a computed_weak row can't sneak in as a target.
+                with open(path, newline="") as fh:
+                    reader = csv.DictReader(fh)
+                    has_source = "source" in (reader.fieldnames or [])
+                    label_col = next(
+                        (c for c in (reader.fieldnames or [])
+                         if c.lower() in ("activity", "relative_activity",
+                                          "kcat", "km", "kcat_km",
+                                          "thermostability")),
+                        "activity",
+                    )
+                    assert_supervised_label_allowed(label_col)
+                    for row in reader:
+                        if has_source and (row.get("source") or "").strip().lower() \
+                                not in ("wetlab", "literature"):
+                            continue  # provenance says not a supervised source
+                        mut = row.get("mutation") or row.get("mutations")
+                        val = row.get(label_col)
+                        if mut and val:
+                            labels[mut.strip()] = float(val)
         except Exception as exc:
             self.log.warning("could not read experimental dataset: %s", exc)
             return None

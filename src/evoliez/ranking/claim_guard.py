@@ -24,10 +24,11 @@ KINETIC_PARAMETER_PREDICTION = "kinetic_parameter_prediction"
 SHORT_MD_OVERCLAIM = "short_md_interpretation"
 INACTIVE_CLASSIFICATION = "inactive_classification"
 LONG_TERM_STABILITY = "long_term_stability"
+UNQUALIFIED_STRENGTH = "unqualified_strength"   # V5-5: catalysis-implying label words
 
 ALL_CATEGORIES = (
     ACTIVITY_IMPROVEMENT, KINETIC_PARAMETER_PREDICTION, SHORT_MD_OVERCLAIM,
-    INACTIVE_CLASSIFICATION, LONG_TERM_STABILITY,
+    INACTIVE_CLASSIFICATION, LONG_TERM_STABILITY, UNQUALIFIED_STRENGTH,
 )
 
 # category -> prohibited-claim regexes (lowercased English; Korean kept literal).
@@ -42,6 +43,12 @@ _PATTERNS = {
         r"catalytically superior",
         r"(variant|mutant)s? (is|are|will be) (more )?(catalytically )?(active|superior)",
         r"improves? (the )?activity",
+        # catalytic-comparison synonyms that dodge the word "activity" (reviewer-found
+        # false negatives): "more productive/reaction-competent/reactive than WT",
+        # "beats WT reactivity", "geometrically more productive active site than WT".
+        r"more (catalytically )?(productive|reaction[- ]competent|reactive)\b",
+        r"beats? (the )?(wt|wild[- ]?type)",
+        r"(productive|reactive)\b.{0,40}\b(than|over|vs\.?)\s+(the\s+)?(wt|wild[- ]?type)",
         r"활성\s*(이|을|의)?\s*(증가|향상|개선)",
         r"촉매\s*(효율|능력|활성)\s*(이|을)?\s*(증가|향상|개선)",
     ],
@@ -68,6 +75,19 @@ _PATTERNS = {
         r"inactive (mutant|variant)",
         r"(mutant|variant) (is|are) inactive",
         r"비활성\s*(변이|돌연변이)",
+    ],
+    # V5-5: catalysis-implying / unqualified-strength LABEL words the pipeline must never
+    # print without wet-lab activity. Bare "strong candidate" is forbidden but "strong
+    # STRUCTURAL/BINDING candidate" passes (the qualifier sits BETWEEN the words, so the
+    # \bstrong\s+candidate\b anchor never matches the qualified form — no lookbehind needed).
+    # "catalytic lead" -> "top-ranked lead"; "paper-grade" -> "anchored-evaluated". This
+    # category is NEVER unlocked in `evaluate` (it is phrasing, not an activity claim), so it
+    # is always forbidden — the fix is to use the qualified alternative, not earn evidence.
+    UNQUALIFIED_STRENGTH: [
+        r"\bstrong\s+candidate\b",
+        r"\bcatalytic\s+lead\b",
+        r"paper[-\s]grade",
+        r"\bconfirmed\s+productive\b",
     ],
 }
 

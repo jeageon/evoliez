@@ -68,8 +68,22 @@ def compute_msa_stats(ids: Sequence[str], seqs: Sequence[str],
     `marked` = {role: [1-based target positions]} (catalytic/binding/design) to
     overlay; `occ_mask` = occupancy below which conservation is hidden as
     unreliable (gaps-excluded conservation over-estimates at low occupancy)."""
+    target = seqs[0] if seqs else ""
+    # The report is presented in QUERY coordinates. A target-anchored MSA is
+    # meant to be query-gap-free (alignment column == target position), but
+    # mafft can still insert gaps INTO the query row to host divergent-homolog
+    # insertions (e.g. an 1188-aa query spread over 18012 columns). Left as-is,
+    # coverage/occupancy/info are computed over the alignment columns while the
+    # query-indexed conservation.json lands on positions 1..len(query) -> the
+    # two tracks live on different axes and the overlay is unreadable. Project
+    # every row onto the query's non-gap columns so all tracks share one axis.
+    if target and "-" in target:
+        q_cols = [j for j, c in enumerate(target) if c != "-"]
+        if q_cols:
+            seqs = ["".join(s[j] if j < len(s) else "-" for j in q_cols)
+                    for s in seqs]
+            target = seqs[0]
     n, L = len(seqs), len(seqs[0]) if seqs else 0
-    target = seqs[0]
 
     # ---- per-column residue counts (gaps excluded) -> info content + logo ----
     col_counts: List[Counter] = [Counter() for _ in range(L)]
@@ -311,7 +325,9 @@ def write_msa_report(path, **kwargs) -> None:
     from pathlib import Path
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(build_msa_report_html(**kwargs), encoding="utf-8")
+    from evoliez.io._report_kit import assert_html_clean
+    p.write_text(assert_html_clean(build_msa_report_html(**kwargs), title="msa"),
+                 encoding="utf-8")
 
 
 _MSA_TEMPLATE = r"""<!DOCTYPE html>

@@ -60,6 +60,15 @@ def test_full_mock_pipeline(tmp_path):
     assert (paths.reports / "focused_library.csv").exists()
     assert (paths.reports / "session.pml").exists()
 
+    # ROADMAP_V3 B8: EvidenceCard (D4) is now a CANONICAL s11 output, not an offline CLI
+    import json as _jb8
+    assert (paths.reports / "triage_v3.json").exists()
+    assert (paths.reports / "provenance" / "evidence_cards.json").exists()
+    _cards = _jb8.loads(
+        (paths.reports / "provenance" / "evidence_cards.json").read_text())
+    assert isinstance(_cards, list) and len(_cards) >= 1
+    assert "axes" in _cards[0] or "variant_id" in _cards[0]  # a real EvidenceCard dump
+
     # s06b family interaction-geometry model trained + persisted
     assert (paths.interaction_graphs / "interaction_model.json").exists()
     imeta = ctx.meta("interaction_model")

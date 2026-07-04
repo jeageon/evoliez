@@ -141,8 +141,44 @@ def build_anchored_mutant_pdb(
     fixer.findMissingResidues()
     fixer.missingResidues = {}              # do NOT fill chain gaps (anchored = as-is)
     fixer.findMissingAtoms()
-    fixer.addMissingAtoms()                 # rebuild the mutated side chain heavy atoms
-    fixer.addMissingHydrogens(ph)
+    # addMissingAtoms() builds a raw mm.Context (no platform) to minimise the rebuilt
+    # atoms -> picks the torch-poisoned CUDA build in the main process and throws
+    # CUDA_ERROR_UNSUPPORTED_PTX_VERSION (no fallback). Force it onto the platform
+    # that actually initialises here (OpenCL), same as the MD engine's structure prep;
+    # otherwise the whole anchored build fails and the mutant regresses to the noisy
+    # per-mutant Boltz pose the anchored path exists to avoid.
+    from evoliez.adapters.openmm_engine import _working_openmm_platform
+    import openmm as _mm
+    import openmm.app.modeller as _modmod
+    _plat = _working_openmm_platform()
+    if _plat is not None:
+        _orig_ctx = _mm.Context
+        # addMissingAtoms goes through pdbfixer's `mm.Context` (== openmm.Context),
+        # but addMissingHydrogens -> Modeller.addHydrogens uses the `Context` NAME
+        # BOUND in the modeller module, which the openmm.Context patch does not
+        # reach. Patch BOTH bound names so every platformless Context in this block
+        # lands on the working platform (else the whole anchored build fails PTX and
+        # the mutant regresses to the noisy per-mutant Boltz pose).
+        _orig_modctx = getattr(_modmod, "Context", None)
+
+        def _forced_ctx(*a, **k):
+            if len(a) == 2 and "platform" not in k:
+                return _orig_ctx(a[0], a[1], _plat)
+            return _orig_ctx(*a, **k)
+
+        _mm.Context = _forced_ctx
+        if _orig_modctx is not None:
+            _modmod.Context = _forced_ctx
+        try:
+            fixer.addMissingAtoms()         # rebuild the mutated side chain heavy atoms
+            fixer.addMissingHydrogens(ph)   # Modeller.addHydrogens -> patched Context
+        finally:
+            _mm.Context = _orig_ctx
+            if _orig_modctx is not None:
+                _modmod.Context = _orig_modctx
+    else:
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(ph)
 
     buf = io.StringIO()
     PDBFile.writeFile(fixer.topology, fixer.positions, buf, keepIds=True)

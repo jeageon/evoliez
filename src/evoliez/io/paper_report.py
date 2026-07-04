@@ -4,7 +4,7 @@ A paper-narrative synthesis on top of the clean s10 provenance, reusing the shar
 report kit (_report_kit: CSS theming, Chart.js, 3Dmol viewer). Unlike md_report.py
 (the per-run s10 diagnostic) this report is written for the manuscript: target +
 goal framing, a WT-vs-lead 3D active-site comparison, the per-candidate metric
-table with the binding free energies, the catalytic lead's multi-metric case, the
+table with the binding free energies, the top-ranked lead's multi-metric case, the
 ML-vs-MD enrichment, and the literature context for FDH cofactor-specificity
 engineering.
 
@@ -212,7 +212,7 @@ def build_paper_report_html(run_dir) -> str:
         kit.card("MD candidates", f"{n_total}", "real restrained MD"),
         kit.card("NAC-valid", f"{len(nac_valid)}/{len(cands)}",
                  "co-substrate retained", OK),
-        kit.card("catalytic lead", lead["mutation_string"] if lead else "—",
+        kit.card("top-ranked lead", lead["mutation_string"] if lead else "—",
                  f"ΔNAC {_f((lead or {}).get('nac_delta_vs_wt'), 2, plus=True)}"
                  if lead else "none beat WT", OK if lead else "#888"),
         kit.card("RBFE converged", f"{len(rbfe_ok)}/{req.get('rbfe_top_n', 3)}",
@@ -341,7 +341,7 @@ co-substrate restraint (never an angle restraint — that would manufacture reac
 geometry) and <b>ΔNAC vs WT</b>; then Amber <b>MM-GBSA</b> and softcore-TI
 <b>ΔΔG_bind</b> on the top md_lite candidates.</div>
 
-<h2>2 · Active site — WT vs the catalytic lead (post-MD)</h2>
+<h2>2 · Active site — WT vs the top-ranked lead (post-MD)</h2>
 {kit.legend([("catalytic residues (fixed)", "#d85a30"), ("lead mutation site", OK),
              ("NADP⁺ + formate (HETATM)", "#22b8cf")])}
 <div class="grid2">
@@ -360,7 +360,7 @@ geometry) and <b>ΔNAC vs WT</b>; then Amber <b>MM-GBSA</b> and softcore-TI
 drag to rotate, scroll to zoom. Rendering is client-side 3Dmol.js on the embedded PDB.</div>
 
 <h3>Trajectory — active-site dynamics over the MD (time evolution)</h3>
-<div class="grid2">{_gif_panel(RD, '_wt_reference', 'WT — cofactor in the pocket across the trajectory (25 frames, ~50 ps apart). No productive hydride-transfer geometry forms (NAC 0).')}{_gif_panel(RD, lead_id or '', kit.esc(lead_mut) + ' — the co-substrate stays poised toward NADP⁺ C4; the active site is more reaction-competent than WT (NAC ' + _f((lead or {}).get('nac_occupancy'), 2) + ').')}</div>
+<div class="grid2">{_gif_panel(RD, '_wt_reference', 'WT — cofactor in the pocket across the trajectory (25 frames, ~50 ps apart). No productive hydride-transfer geometry forms (NAC 0).')}{_gif_panel(RD, lead_id or '', kit.esc(lead_mut) + ' — the co-substrate stays poised toward NADP⁺ C4; higher near-attack (NAC) occupancy than WT (NAC ' + _f((lead or {}).get('nac_occupancy'), 2) + ') — a screening proxy, not a rate claim.')}</div>
 <div class="cap">Element-coloured cofactor + co-substrate, faint pocket dots, slow spin
 (matplotlib render of the OpenMM DCD). For an <b>interactive play / pause / speed /
 rotate</b> animation of all candidates, open the companion
@@ -368,7 +368,8 @@ rotate</b> animation of all candidates, open the companion
 
 <h2>3 · Per-candidate metrics (Table 1)</h2>
 <div class="note">Sorted by md_lite (primary binding-stability). <b>ΔNAC&gt;0</b> =
-more productive than WT. GBSA is shown for transparency but <b>excluded from
+higher near-attack occupancy than WT (screening proxy, not a rate claim). GBSA is
+shown for transparency but <b>excluded from
 ranking</b> (per-mutant Boltz starting structures confound the absolute value —
 see §5). RBFE is reported only where the TI windows converged.</div>
 <div class="scroll"><table><thead><tr>
@@ -426,7 +427,7 @@ not the top ML pick. ML is therefore a <b>cost-saving prior, not a hard filter</
 a stratified MD audit (high / mid / low ML + a catalytic-proxy lane) is required to
 bound false negatives before trusting ML to discard candidates.</div>
 
-<h2>6 · The catalytic lead — {kit.esc(lead_mut)}</h2>
+<h2>6 · The top-ranked lead — {kit.esc(lead_mut)}</h2>
 <div class="note">{kit.esc(lead_mut)} is the only variant combining stable binding
 (md_lite {_f((lead or {}).get('md_lite_score'),3)}), a <b>productive active site</b>
 (ΔNAC {_f((lead or {}).get('nac_delta_vs_wt'),2,plus=True)} over WT;
@@ -481,7 +482,7 @@ the mutation: the mutant Boltz complexes do <b>not</b> preserve it
 ({n_nonwt}/{len(pose_gate)} place NADP &gt;5 Å off WT after active-site alignment), so
 every current catalytic result is provisional. Add a <b>NADP-pose gate</b>
 (pocket-aligned RMSD &lt; ~3–5 Å, internal &lt; ~2 Å, C4 position) as a hard filter.</li>
-<li><b>{kit.esc(lead_mut)} RBFE rescue</b> — the catalytic lead has no converged
+<li><b>{kit.esc(lead_mut)} RBFE rescue</b> — the top-ranked lead has no converged
 ΔΔG_bind (softcore singularity → NaN); re-run with softcore-α tuning / replicates.</li>
 <li><b>Expand s10 to 24–40 candidates</b>, stratified top / mid / low, so the
 ML-vs-MD enrichment (currently n={len(cands)}) becomes statistically defensible
@@ -503,7 +504,7 @@ the NAC-occupancy correlation is one-point-dominated and not interpretable on it
 RBFE is reported only for converged TI windows.</li>
 <li>The co-substrate restraint is <b>distance-only</b>; angle is always free, so a
 productive angle is an emergent result, never imposed.</li>
-<li><b>No single variant wins every metric</b>: the catalytic lead lacks a converged
+<li><b>No single variant wins every metric</b>: the top-ranked lead lacks a converged
 RBFE, and the RBFE-favourable variants show no NAC gain — these are distinct
 candidate strengths, not one finished winner.</li>
 <li>MD is <b>screening-grade</b> (2 ns implicit + top-3 × 3-replica 2 ns explicit) —

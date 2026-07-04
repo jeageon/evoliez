@@ -72,6 +72,51 @@ class HomologStage(Stage):
 
         self._write_report(ctx, seq, homologs)
 
+    def load(self, ctx: RunContext) -> bool:
+        """Resume without re-running the (expensive, ~20 min) mmseqs homolog
+        search. run() puts exactly ONE artifact on the bus — ``homologs`` — and
+        persists every per-homolog field to the DB (Sequence rows,
+        source='homolog'). Rebuild the Homolog list from those rows so a staged
+        --resume (e.g. re-running s04 after a fix) skips the search.
+
+        Fields NOT stored in the DB: ``aligned`` (the target-column alignment
+        row) and the retriever track (``Homolog.source``). Both are consumed
+        ONLY by s03's MSA construction; on resume s03 reloads its finished
+        alignment from disk (s03.load) and never re-aligns from these objects,
+        and no stage that runs after a resume reads either field — so
+        aligned=None / source='sequence' here is safe. The one downstream
+        consumer of ctx['homologs'], s06b, uses sequence/identity/cluster_id,
+        all of which are restored. Return False (force a real re-run) if the DB
+        has no homolog rows."""
+        from evoliez.adapters.msa_tools import Homolog
+        if ctx.store is None:
+            return False
+        homologs = []
+        with ctx.store.session() as s:
+            rows = (
+                s.query(Sequence)
+                .filter_by(project_id=ctx.project_id, source="homolog")
+                .all()
+            )
+            for r in rows:
+                lines = (r.fasta or "").splitlines()
+                hid = (lines[0][1:].strip()
+                       if lines and lines[0].startswith(">") else str(r.sequence_id))
+                hseq = "".join(lines[1:]) if len(lines) > 1 else ""
+                homologs.append(Homolog(
+                    id=hid, sequence=hseq,
+                    identity=r.identity_to_target or 0.0,
+                    coverage=r.coverage or 0.0,
+                    annotation=r.annotation or "",
+                    cluster_id=r.cluster_id or 0,
+                ))
+        if not homologs:
+            return False
+        ctx.put("homologs", homologs)
+        self.log.info("[resume] restored %d homologs from DB (search skipped)",
+                      len(homologs))
+        return True
+
     def _write_report(self, ctx, seq, homologs) -> None:
         """Auto-generate the self-contained HTML homolog-analysis report (the
         s02 preview; s03 refreshes it with the final integrated MSA depth)."""

@@ -90,6 +90,35 @@ class MDStage(Stage):
         # is unchanged. type != smiles entries (path-based) are skipped.
         nac_cfg = getattr(mdcfg, "reactive_geometry", None)
         nac_enabled = bool(nac_cfg and getattr(nac_cfg, "enabled", False))
+        # ROADMAP_V5 step 4 — reaction-geometry source of truth (mechanism.geometry_terms >
+        # legacy reactive_geometry > none). Recorded in provenance so a reader knows WHICH
+        # geometry drove the NAC. A declared mechanism reports 'mechanism_spec_pending' until
+        # the adenylation template + ReactiveSpec/GeometryTerm bridge land (V5-3/V5-6); the
+        # trajectory engine currently consumes the legacy ReactiveSpec.
+        from evoliez.mechanism.mode import resolve_geometry_source
+        geometry_source = resolve_geometry_source(
+            ctx.config, ctx.get("geometry_terms"), nac_enabled)
+        # ROADMAP_V5 V5-2 — metal-setup CONTRACT (reviewer requirement B). Mg2+ is requested
+        # when the mechanism declares a Mg metal_state; the actual structure-level MG HETATM
+        # insertion (md.metal_placement.prepare_metal_setup) + Amber-ion verification happen in
+        # the OpenMM build (server-verified-pending). Recorded here so provenance shows Mg was
+        # requested and HOW it is handled (never via OpenFF; a missing/failed metal is a
+        # classified setup state, not a low-NAC biological result).
+        _mech = getattr(ctx.config, "mechanism", None)
+        _metal_state = (getattr(getattr(_mech, "reaction_state", None), "metal_state", None)
+                        if _mech is not None else None)
+        _metal_requested = bool(_metal_state and "mg" in _metal_state.lower())
+        metal_setup = {
+            "requested": _metal_requested,
+            "metal_state": _metal_state,
+            "ion": "MG" if _metal_requested else None,
+            "placement": "deterministic_bridge" if _metal_requested else None,
+            "openff_parameterized": False,
+            "amber_standard_ion": ("server_verified_pending" if _metal_requested else None),
+            "note": ("Mg2+ requested by mechanism.metal_state; structure-level MG HETATM via "
+                     "metal_placement.prepare_metal_setup in the OpenMM build "
+                     "(server-verified-pending)" if _metal_requested else "no metal requested"),
+        }
         # Prefer the resumed ctx artifact, fall back to the CONFIG: a stage's load()
         # can drop the ctx "extra_ligands" copy on --resume (s01 load-parity), which
         # silently strips NAC's co-substrate (formate). The design ligand would then
@@ -110,9 +139,23 @@ class MDStage(Stage):
                 return None                        # path-based extra (sdf/mol2) -> skip
             return getattr(e, "value", None) or getattr(e, "smiles", None)
 
-        extra_specs = [(getattr(e, "id", f"extra{i}"), _extra_smiles(e))
+        def _charge_meta(e):
+            # Pre-derived fixed-charge template + net charge + heavy-atom count, so the
+            # MULTI-ligand NAC build in run_md can inject a high-charge cofactor's
+            # charges (ATP/NADPH, -4) instead of running AM1-BCC/sqm on it (never
+            # converges, cofactor drops from the FF set, MD fails). Accept EITHER a
+            # config LigandInput (.charges_mol2, .net_charge) or a resumed types.Ligand
+            # (.charges_mol2, .formal_charge, .n_heavy).
+            cm = getattr(e, "charges_mol2", None)
+            fc = getattr(e, "formal_charge", None)
+            if fc is None:
+                fc = getattr(e, "net_charge", 0)
+            return cm, int(fc or 0), getattr(e, "n_heavy", None)
+
+        extra_specs = [(getattr(e, "id", f"extra{i}"), _extra_smiles(e),
+                        *_charge_meta(e))
                        for i, e in enumerate(_extra_ligs)]
-        extra_specs = [(eid, smi) for eid, smi in extra_specs if smi]
+        extra_specs = [t for t in extra_specs if t[1]]   # keep those with a SMILES
         # WT reference NAC baseline: run the reaction-geometry screen ONCE on the
         # WT complex so each mutant's reactivity is reported as ΔNAC = mutant - WT
         # (mutant > WT == a geometrically MORE productive active site). Only when
@@ -488,6 +531,8 @@ class MDStage(Stage):
         ctx.persist_meta("n_md_real_ran", n_ran)
         ctx.persist_meta("n_md_skipped", n_skipped)
         ctx.persist_meta("n_md_failed", n_failed)
+        ctx.persist_meta("geometry_source", geometry_source)
+        ctx.persist_meta("metal_setup", metal_setup)
         if nac_enabled:
             n_nac = sum(1 for c in candidates if "nac_occupancy" in c.scores)
             n_better = sum(1 for c in candidates
@@ -524,6 +569,8 @@ class MDStage(Stage):
         (_prov / "md_candidates.json").write_text(_json.dumps({
             "wt_reference": wt_record,
             "nac_enabled": nac_enabled,
+            "geometry_source": geometry_source,
+            "metal_setup": metal_setup,
             "wt_nac_occupancy": wt_nac,
             "requested": {"protocol_level": mdcfg.protocol_level,
                           "solvent": mdcfg.solvent,

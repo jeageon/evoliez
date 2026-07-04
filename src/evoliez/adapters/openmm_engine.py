@@ -369,8 +369,9 @@ def _apply_nac4_placement(matched, nac_cfg) -> bool:
     repositioned."""
     from rdkit.Geometry import Point3D
 
-    from evoliez.md.cosubstrate_placement import place_formate_for_nac
-    from evoliez.md.nac import ReactiveSpec
+    from evoliez.md.cosubstrate_placement import (place_donor_at_acceptor,
+                                                  place_formate_for_nac)
+    from evoliez.md.nac import ReactiveSpec, identify_acceptor, identify_donor
 
     if len(matched) < 2:
         return False
@@ -378,22 +379,99 @@ def _apply_nac4_placement(matched, nac_cfg) -> bool:
         donor_smarts=nac_cfg.donor_smarts, acceptor_smarts=nac_cfg.acceptor_smarts,
         donor_idx=nac_cfg.donor_idx, acceptor_idx=nac_cfg.acceptor_idx,
         transfer_is_h=nac_cfg.transfer_is_h)
-    nadp = matched[0][1]                         # design ligand carries the acceptor
-    done = False
-    for _id, mol in matched[1:]:                 # co-substrate(s); only the donor matches
-        try:
-            new = place_formate_for_nac(nadp, mol, spec, spec)
-        except Exception as exc:                 # placement must never break MD
-            log.warning("MD NAC-4 placement failed for %s (%s); keeping pose", _id, exc)
-            continue
-        if new is None:
-            continue
-        conf = mol.GetConformer()
-        for i, (x, y, z) in enumerate(new):
-            conf.SetAtomPosition(i, Point3D(float(x), float(y), float(z)))
-        log.info("MD NAC-4: repositioned co-substrate '%s' into the near-attack geometry", _id)
-        done = True
-    return done
+    # Which molecule carries the acceptor, which the donor — DON'T assume the design
+    # ligand is the acceptor (that's only the FDH layout). For CAR the design ligand
+    # 3-HP is the DONOR and the acceptor (ATP alpha-P) is on a cofactor.
+    acc_hit = next(((i, m) for i, (_id, m) in enumerate(matched)
+                    if identify_acceptor(m, spec) is not None), None)
+    don_hit = next(((i, m) for i, (_id, m) in enumerate(matched)
+                    if identify_donor(m, spec) is not None), None)
+    if acc_hit is None or don_hit is None or acc_hit[0] == don_hit[0]:
+        return False
+    _, amol = acc_hit
+    di, dmol = don_hit
+    ring_acceptor = amol.GetAtomWithIdx(identify_acceptor(amol, spec)).IsInRingSize(6)
+    try:
+        if ring_acceptor:                        # FDH: donor co-substrate off the ring face
+            new = place_formate_for_nac(amol, dmol, spec, spec)
+        else:                                    # CAR: design-ligand donor in-line to the phosphate
+            new = place_donor_at_acceptor(
+                amol, dmol, spec, spec,
+                nac_distance=min(3.2, getattr(nac_cfg, "distance_max", 3.6) - 0.2))
+    except Exception as exc:                     # placement must never break MD
+        log.warning("MD NAC-4 placement failed (%s); keeping pose", exc)
+        return False
+    if new is None:
+        return False
+    conf = dmol.GetConformer()
+    for i, (x, y, z) in enumerate(new):
+        conf.SetAtomPosition(i, Point3D(float(x), float(y), float(z)))
+    log.info("MD NAC-4: placed donor '%s' near-attack (%s acceptor)",
+             matched[di][0], "ring" if ring_acceptor else "phosphate")
+    return True
+
+
+_WORKING_PLATFORM = None
+_WORKING_PLATFORM_PROBED = False
+
+
+def _working_openmm_platform():
+    """Fastest OpenMM platform whose Context ACTUALLY initialises on this box
+    (cached). The conda CUDA build is PTX-broken vs the 12.4 driver, so a raw
+    ``mm.Context(system, integrator)`` with no explicit platform picks CUDA by
+    speed and throws CUDA_ERROR_UNSUPPORTED_PTX_VERSION with NO fallback (unlike
+    ``app.Simulation``, which try-catches each platform in turn). Probe
+    fastest->slowest with a 1-particle system and return the first that loads
+    (OpenCL on this box); None if even that failed (leave callers on the default)."""
+    global _WORKING_PLATFORM, _WORKING_PLATFORM_PROBED
+    if _WORKING_PLATFORM_PROBED:
+        return _WORKING_PLATFORM
+    _WORKING_PLATFORM_PROBED = True
+    # If torch is IMPORTED in this process, OpenMM's separately-built CUDA fails to
+    # load its force-kernel PTX against torch's CUDA runtime libs (torch-poisoned
+    # main process). Verified: merely `import torch` (no .cuda(), is_initialized()
+    # still False) is enough to poison it -- torch's libcudart/libnvrtc get loaded
+    # and shadow OpenMM's. So `"torch" in sys.modules` is the reliable signal, NOT
+    # torch.cuda.is_initialized(). Do NOT trust a CUDA probe here either: a small
+    # NonbondedForce probe can FALSELY pass on the poisoned CUDA (simple kernels
+    # load) while the real protein system's kernels (GBSA/constraints) then fail.
+    # Skip CUDA outright. Spawn fan-out workers don't import torch -> CUDA stays
+    # available (faster) there; if a worker ever does, it safely uses OpenCL.
+    import sys
+    skip_cuda = "torch" in sys.modules
+    try:
+        import openmm as mm
+        from openmm import unit
+        # Still probe the remaining platforms with a real force + energy eval so a
+        # genuinely-broken platform is skipped, not just assumed to work.
+        probe = mm.System()
+        for _ in range(4):
+            probe.addParticle(12.0)
+        nbf = mm.NonbondedForce()
+        nbf.setNonbondedMethod(mm.NonbondedForce.NoCutoff)
+        for _ in range(4):
+            nbf.addParticle(0.0, 0.2, 0.1)
+        probe.addForce(nbf)
+        pos = [(i * 0.25, 0.0, 0.0) for i in range(4)] * unit.nanometer
+        plats = sorted((mm.Platform.getPlatform(i)
+                        for i in range(mm.Platform.getNumPlatforms())),
+                       key=lambda p: -p.getSpeed())
+        for plat in plats:
+            if skip_cuda and plat.getName() == "CUDA":
+                continue
+            try:
+                ctx = mm.Context(probe, mm.VerletIntegrator(0.001), plat)
+                ctx.setPositions(pos)
+                ctx.getState(getEnergy=True).getPotentialEnergy()   # forces kernel load
+                _WORKING_PLATFORM = plat
+                log.info("OpenMM working platform: %s%s", plat.getName(),
+                         " (CUDA skipped: torch owns the CUDA runtime)" if skip_cuda else "")
+                break
+            except Exception:
+                continue
+    except Exception:
+        _WORKING_PLATFORM = None
+    return _WORKING_PLATFORM
 
 
 def _protein_only_pdbfixed(pdb_path: Path):
@@ -415,7 +493,29 @@ def _protein_only_pdbfixed(pdb_path: Path):
     fx.missingResidues = {}                   # don't model unseen loops
     fx.removeHeterogens(False)                # ligand/ions/water OUT
     fx.findMissingAtoms()                     # incl. terminal OXT
-    fx.addMissingAtoms()
+    # addMissingAtoms() builds a raw mm.Context to minimise the added atoms with
+    # NO explicit platform -> OpenMM picks the PTX-broken CUDA build (fastest) and
+    # throws CUDA_ERROR_UNSUPPORTED_PTX_VERSION with no fallback. Force PDBFixer's
+    # Context onto the first platform that actually initialises (OpenCL here). The
+    # monkeypatch is process-local and undone in finally; the s10 fan-out uses
+    # spawn so workers never share it.
+    import openmm as _mm
+    _plat = _working_openmm_platform()
+    if _plat is not None:
+        _orig_ctx = _mm.Context
+
+        def _forced_ctx(*a, **k):
+            if len(a) == 2 and "platform" not in k:      # PDBFixer's (system, integrator)
+                return _orig_ctx(a[0], a[1], _plat)
+            return _orig_ctx(*a, **k)
+
+        _mm.Context = _forced_ctx
+        try:
+            fx.addMissingAtoms()
+        finally:
+            _mm.Context = _orig_ctx
+    else:
+        fx.addMissingAtoms()
     return fx.topology, fx.positions
 
 
@@ -817,7 +917,7 @@ def _run_real(
     try:
         if multi:
             specs = [(cx.ligand.id or "design", cx.ligand.smiles)] + [
-                (str(eid), str(esmi)) for eid, esmi in _extras
+                (str(t[0]), str(t[1])) for t in _extras
             ]
             matched = _ligands_at_pose(pdb_path, specs)
             if not matched or matched[0][0] != specs[0][0]:
@@ -831,14 +931,48 @@ def _run_real(
             # whether the active site MAINTAINS the reactive arrangement.
             if getattr(nac_cfg, "template_cosubstrate_placement", False):
                 _apply_nac4_placement(matched, nac_cfg)
+            # ── ROADMAP_V5 V5-2 metal-setup GATE (server-verified-pending) ──────────────
+            # When the mechanism requests Mg2+ (metal_setup.requested, threaded from s10), the
+            # bridging ion is inserted HERE — after the co-substrate near-attack placement, so
+            # the nucleophile-O (3-HP carboxylate) and phosphate-O (ATP alpha-P) coords are
+            # available, and BEFORE the protein PDB is handed to SystemGenerator/PDBFixer so the
+            # Amber ion parameters pick MG up as a standard ion. Integration (server):
+            #     from evoliez.md.metal_placement import prepare_metal_setup
+            #     nuc = <coords of nac_map['donor_heavy']>; pha = <coords of nac_map['acceptor']>
+            #     pdb_text, metal_prov = prepare_metal_setup(pdb_text, nuc, pha, reference=pocket_centroid,
+            #                                                enabled=metal_setup['requested'])
+            #     # rebuild the protein Topology from pdb_text so the MG residue enters the system
+            # INVARIANTS (enforced by prepare_metal_setup): Mg is a structure-level MG HETATM,
+            # NEVER an OpenFF molecule; WT and every mutant get the SAME deterministic placement;
+            # a failure is a classified metal_setup status, never a low-NAC result. Left as a gate
+            # (not executed) until verified against the real OpenMM/PDBFixer round-trip on GPU.
             off_ligs = [_offmol_from_rdkit(rd) for _id, rd in matched]
+            # Fixed-charge templates BY LIGAND ID: design ligand from cx.ligand, each
+            # cofactor from its (id, smiles, charges_mol2, formal_charge, n_heavy) spec.
+            # EVERY ligand must get its pre-derived charges injected here, not just the
+            # design one -- else the SystemGenerator runs on-the-fly AM1-BCC/sqm on a
+            # high-charge cofactor (ATP/NADPH, -4), which never converges, so the
+            # cofactor silently drops from the FF set (len 1 not 3) and the WHOLE MD
+            # fails. (Bug: the multi-ligand NAC path only charged off_ligs[0].)
+            from types import SimpleNamespace
+            tpl_by_id = {(cx.ligand.id or "design"): cx.ligand}
+            for t in _extras:
+                tpl_by_id[str(t[0])] = SimpleNamespace(
+                    id=str(t[0]),
+                    charges_mol2=(t[2] if len(t) > 2 else None),
+                    formal_charge=(t[3] if len(t) > 3 else 0),
+                    n_heavy=(t[4] if len(t) > 4 else None),
+                )
+            for (_mid, _rd), off in zip(matched, off_ligs):
+                tpl = tpl_by_id.get(_mid)
+                if tpl is not None:
+                    _apply_fixed_charges(off, tpl)
         else:
             off_ligs = [_ligand_offmol_at_pose(pdb_path, cx.ligand.smiles)]
-        # Fixed-charge cofactor template (design ligand is always off_ligs[0]): inject
-        # pre-derived charges for a ligand AM1-BCC/sqm can't converge (the -3 NADP), or
-        # RAISE loudly for a high-risk cofactor with no template. Extra co-substrates
-        # (small, e.g. formate) keep the on-the-fly AM1-BCC path.
-        _apply_fixed_charges(off_ligs[0], cx.ligand)
+            # Fixed-charge cofactor template (design ligand is off_ligs[0]): inject
+            # pre-derived charges a ligand AM1-BCC/sqm can't converge (the -3 NADP), or
+            # RAISE loudly for a high-risk cofactor with no template.
+            _apply_fixed_charges(off_ligs[0], cx.ligand)
     except Exception as exc:
         # Ligand chemistry could not be built from PDB+CONECT+SMILES
         # (rare; verified-correct for NADP locally) - a real structure
@@ -909,7 +1043,11 @@ def _run_real(
                 "(removeHeterogens unavailable / ineffective); the OpenFF "
                 "ligand is added separately so these must not be present"
             )
-        modeller.addHydrogens(system_generator.forcefield)
+        # addHydrogens() also builds a raw Context (to optimise H positions) that
+        # otherwise picks the PTX-broken CUDA in the torch-poisoned main process;
+        # pass the probed working platform (OpenCL here) explicitly.
+        modeller.addHydrogens(system_generator.forcefield,
+                              platform=_working_openmm_platform())
         # Add each ligand SOLELY from its OpenFF molecule at its Boltz-pose
         # conformer; the only ligands in the system are these, which
         # create_system matches via GAFF. Record each one's topology block.
@@ -926,9 +1064,11 @@ def _run_real(
             modeller.topology, molecules=off_ligs
         )
     except Exception as exc:
+        import traceback as _tb
         log.warning(
             "MD protein+ligand assembly / system creation failed for "
-            "%s (%s)", candidate_id, exc,
+            "%s (%s: %s)\nTRACEBACK:\n%s", candidate_id,
+            type(exc).__name__, exc, _tb.format_exc(),
         )
         return MDResult(
             candidate_id=candidate_id, status="failed",
@@ -975,8 +1115,16 @@ def _run_real(
                 if nac_map:
                     nac_idx = (nac_map["donor_heavy"], nac_map["transfer"],
                                nac_map["acceptor"])
+                    # V5-1: for an O->P attack resolve_reactive_indices also returns a
+                    # "leaving" atom; append it so the collected subframe is 4 rows and
+                    # nac_from_subframes computes the real O_nuc-Palpha-O_leaving angle
+                    # (the 3-atom hydride case is unchanged).
+                    if "leaving" in nac_map:
+                        nac_idx = nac_idx + (nac_map["leaving"],)
                     log.info("MD NAC for %s: donor_heavy=%d transfer=%d "
-                             "acceptor=%d", candidate_id, *nac_idx)
+                             "acceptor=%d%s", candidate_id, nac_map["donor_heavy"],
+                             nac_map["transfer"], nac_map["acceptor"],
+                             f" leaving={nac_map['leaving']}" if "leaving" in nac_map else "")
                 else:
                     log.warning("MD NAC for %s: donor+acceptor not both "
                                 "resolved in the system (reaction partners "
@@ -1066,11 +1214,17 @@ def _run_real(
         1.0 / unit.picosecond,
         cfg.timestep_fs * unit.femtoseconds,
     )
-    sim = app.Simulation(modeller.topology, system, integrator)
-    # Record the platform actually selected. OpenMM auto-picks the fastest that
-    # initialises: on this box the conda CUDA build is PTX-broken (12.4 driver)
-    # so it falls through CUDA -> OpenCL (still GPU) -> CPU. Logging it makes
-    # "is the MD on the GPU?" answerable from the run log.
+    # Pass the platform that actually initialises IN THIS PROCESS. The main
+    # process pre-loads torch, which initialises a mismatched CUDA runtime, so
+    # OpenMM's CUDA build throws CUDA_ERROR_UNSUPPORTED_PTX_VERSION and -- contrary
+    # to the old assumption -- app.Simulation with no platform does NOT fall
+    # through to OpenCL (a raw Context picks the fastest and throws). Probe for the
+    # first platform whose FORCE kernels load (OpenCL here) and pass it explicitly.
+    # Spawn fan-out workers carry no torch, so the probe returns CUDA there (faster).
+    _mplat = _working_openmm_platform()
+    sim = (app.Simulation(modeller.topology, system, integrator, _mplat)
+           if _mplat is not None
+           else app.Simulation(modeller.topology, system, integrator))
     _plat_name = sim.context.getPlatform().getName()
     log.info("MD %s running on the %s platform", candidate_id, _plat_name)
     if fail_loud_on_cpu and _plat_name == "CPU":

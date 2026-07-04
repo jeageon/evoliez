@@ -41,10 +41,11 @@ class InteractionGraphStage(Stage):
         # covers the full functional state. extra_ligand_atoms is populated by the predictor
         # (mock) / parser; empty for single-ligand inputs or the real parser fallback (then
         # the catalytic-neighborhood term below carries the active site).
-        for _atoms in (getattr(cx, "extra_ligand_atoms", {}) or {}).values():
-            if _atoms:
-                proximal |= set(ligand_proximal_residues(
-                    cx.structure, _atoms, radius=mgcfg.design_radius_angstrom))
+        if getattr(mgcfg, "design_around_extra_ligands", True):
+            for _atoms in (getattr(cx, "extra_ligand_atoms", {}) or {}).values():
+                if _atoms:
+                    proximal |= set(ligand_proximal_residues(
+                        cx.structure, _atoms, radius=mgcfg.design_radius_angstrom))
         # v2 Phase B: the design mask follows the FUNCTIONAL STATE, not only the primary
         # ligand. Add the neighborhood of the catalytic residues (the reaction site where the
         # cofactor/substrate/metal act), so a generic enzyme's active site is designable even
@@ -129,6 +130,21 @@ class InteractionGraphStage(Stage):
             )
         else:
             mech = None
+
+        # ROADMAP_V3 B4 — mechanism-envelope wiring. When config.mechanism is set
+        # (opt-in; hard-gate validated at config-load), publish the MechanismSpec and
+        # its runtime geometry terms into ctx so the downstream NAC / s09 / s10 layers
+        # use mechanism-configured geometry instead of only the legacy heuristic above.
+        mspec = ctx.config.mechanism
+        if mspec is not None:
+            ctx.put("mechanism_spec", mspec)
+            ctx.put("geometry_terms", mspec.to_geometry_terms())
+            ctx.persist_meta("mechanism_spec", {
+                "mechanism_spec_id": mspec.mechanism_spec_id,
+                "reaction_class": mspec.reaction.cls,
+                "n_geometry_terms": len(mspec.geometry_terms),
+                "claim_ceiling": mspec.claim_ceiling,
+            })
 
         if adv.ligand_importance:
             from evoliez.features.ligand_importance import ligand_atom_importance

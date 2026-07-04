@@ -1,8 +1,9 @@
 # Non-FDH benchmark smoke config: glycosidase (ROADMAP_V4 §7.11)
 #
-# Second non-dehydrogenase mechanism class. The glycosidic_bond_cleavage template ships
-# with no default geometry terms (per-target curation), so this smoke config only proves
-# the template loads and the reaction-state hard gate is enforced config-only.
+# Second non-dehydrogenase mechanism class. The glycosidic_bond_cleavage template now
+# ships with default Koshland double-displacement geometry (nucleophile Asp Oδ -> anomeric
+# C1, in-line attack), so this smoke exercises the template load, the reaction-state hard
+# gate, AND real (per-target-overridable) geometry terms.
 benchmark:
   target_id: glycosidase
   mechanism_template: glycosidic_bond_cleavage

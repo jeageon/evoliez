@@ -184,6 +184,18 @@ scoring:
   gnn: 1.5                                # EvoLigand-GNN as a primary term
   family_interaction: 1.0
 
+# ROADMAP_V3 B1/B2 — ML is a PRIOR, not a hard filter. ON for production so the s08
+# redock queue + s08b fold queue + s09 MD shortlist are UNIONS of lanes (incl. a
+# low_ml_control false-negative probe), not a single ml_score top-N cut. Sizes are
+# generous for a real run; scale with the plate budget below.
+selection_lanes:
+  enabled: true
+  from_ml_high: 25
+  from_stability_high: 12
+  from_geometry_high: 12
+  from_diversity: 8
+  low_ml_controls: 8
+
 output:
   final_library_size: 192                # production plate (2x96); raise as needed
   top_single_mutants: 80

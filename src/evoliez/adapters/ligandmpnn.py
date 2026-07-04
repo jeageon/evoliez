@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from evoliez.adapters.base import (
     full_atom_receptor_pdb,
@@ -43,9 +43,10 @@ def design_sequences(
     *,
     backend: Backend,
     dry_run: bool = False,
+    seed: Optional[int] = None,
 ) -> List[Tuple[List[Mutation], float]]:
     if backend is Backend.real:
-        return _design_real(cx, designable, cfg, workdir, dry_run=dry_run)
+        return _design_real(cx, designable, cfg, workdir, dry_run=dry_run, seed=seed)
     return _design_mock(cx, designable, cfg)
 
 
@@ -56,6 +57,7 @@ def _design_real(
     workdir: Path,
     *,
     dry_run: bool,
+    seed: Optional[int] = None,
 ) -> List[Tuple[List[Mutation], float]]:
     # Explicit interpreter for LigandMPNN's own conda env (EVOLIEZ_LIGANDMPNN_PYTHON)
     # so a --resume that also runs a different bare-`python` tool (e.g. s09's
@@ -85,6 +87,11 @@ def _design_real(
         "--batch_size", "8",
         "--temperature", str(cfg.ligandmpnn_temperature),
     ]
+    # Reproducibility: LigandMPNN's run.py self-randomizes on --seed 0 (its default), so a
+    # temperature>0 design is non-deterministic unless we pass an explicit non-zero seed.
+    # Derived from the run seed so the ligandmpnn candidate fraction is reproducible.
+    if seed is not None:
+        cmd += ["--seed", str(int(seed) or 1)]
     if fixed_str:
         cmd += ["--fixed_residues", fixed_str]
     # LigandMPNN's run.py + its default ./model_params checkpoint paths are

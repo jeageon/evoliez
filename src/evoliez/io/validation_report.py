@@ -2,7 +2,7 @@
 
 Reads a finished run's on-disk provenance (reports/provenance/validated_candidates.json
 + reranked_candidates.json + generated_candidates.json + _state.json meta + the WT
-Boltz complex) and renders a single standalone paper-grade HTML report: the multi-signal
+Boltz complex) and renders a single standalone HTML report: the multi-signal
 failure-detection grade, ThermoMPNN ΔΔG stability, the GNINA(local)-vs-DiffDock(global)
 redocking scatter, a per-mutant signal table, an interactive 3Dmol viewer, and method
 citations.

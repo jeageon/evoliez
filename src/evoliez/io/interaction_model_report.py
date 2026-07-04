@@ -1147,7 +1147,9 @@ def write_interaction_report(path, **kwargs) -> None:
     from pathlib import Path
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(build_interaction_report_html(**kwargs), encoding="utf-8")
+    from evoliez.io._report_kit import assert_html_clean
+    p.write_text(assert_html_clean(build_interaction_report_html(**kwargs), title="interaction"),
+                 encoding="utf-8")
 
 
 _INTERACTION_TEMPLATE = r"""<!DOCTYPE html>

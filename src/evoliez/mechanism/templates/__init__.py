@@ -71,12 +71,72 @@ def _stub(key: str, required, notes: str) -> Dict:
             "default_geometry_terms": [], "notes": notes}
 
 
-GLYCOSIDIC_BOND_CLEAVAGE = _stub(
-    "glycosidic_bond_cleavage", ["protonation_model", "conformational_state"],
-    "Koshland double-displacement; catalytic acid/base + nucleophile geometry per target.")
+# --- glycosidic bond cleavage (retaining glycosidase; Koshland double-displacement) ---
+# ROADMAP_V3 B7: the 3rd benchmark mechanism (FDH + TEM-1 + glycosidase) now carries real
+# default geometry, so a non-FDH smoke contributes geometry evidence, not just a load test.
+# Catalytic nucleophile carboxylate (Asp/Glu Oδ) attacks the anomeric carbon (C1, the ring
+# carbon bearing the ring O and the exocyclic glycosidic O) in-line, anti to the leaving
+# group. Per-target config overrides the residue numbers + substrate anomeric SMARTS.
+GLYCOSIDIC_BOND_CLEAVAGE = {
+    "key": "glycosidic_bond_cleavage",
+    "required_reaction_state": ["protonation_model", "conformational_state"],
+    "default_geometry_terms": [
+        {
+            "kind": "distance", "label": "nucleophile_anomeric_C",
+            "a_residue": "ASP", "a_atom": "OD2",             # catalytic nucleophile carboxylate
+            "b_smarts": "[CX4]([OX2])[OX2]", "b_idx": 0,     # anomeric C1 (ring-O + glycosidic-O)
+            "distance_min": 0.0, "distance_max": 3.3, "weight": 1.0,
+        },
+        {
+            "kind": "angle", "label": "anomeric_inline_attack",
+            "a_residue": "ASP", "a_atom": "OD2",             # nucleophile
+            "b_smarts": "[CX4]([OX2])[OX2]", "b_idx": 0,     # anomeric C1 (vertex)
+            "c_smarts": "[CX4]([OX2])[OX2]", "c_idx": 1,     # a bonded O (ring/leaving) — anti axis
+            "angle_min": 150.0, "angle_max": 180.0, "weight": 1.0,
+        },
+    ],
+    "notes": ("Koshland double-displacement (retaining) default; nucleophile Asp/Glu Oδ "
+              "-> anomeric C1, in-line attack anti to the leaving group. Per-target: set "
+              "the real catalytic residue numbers + substrate anomeric SMARTS."),
+}
 PHOSPHORYL_TRANSFER = _stub(
     "phosphoryl_transfer", ["metal_state", "conformational_state"],
     "in-line attack on Pγ; Mg2+ coordination state-defining.")
+
+# --- adenylation phosphoryl transfer (CAR / NRPS A-domain / acyl-CoA synthetase) -------
+# ROADMAP_V5 V5-3: the ANL-superfamily adenylation half-reaction — a carboxylate O⁻ attacks
+# the ATP ALPHA-phosphorus in-line (forming an acyl-adenylate + PPi), NOT the gamma-P of a
+# kinase (that is the generic `phosphoryl_transfer` stub above; do NOT conflate them). The
+# in-line attack angle is the read-only O_nuc--Palpha--O_leaving (leaving = the alpha-beta
+# bridging O). Mg2+ bridges the substrate carboxylate and the phosphates but is added as a
+# per-target/config geometry term when it is actually modelled (keeping it OUT of the default
+# avoids an uncomputable-atom abort on a no-Mg run); metal_state is still a REQUIRED declared
+# reaction-state field (declaring the state != modelling the ion).
+ADENYLATION_PHOSPHORYL_TRANSFER = {
+    "key": "adenylation_phosphoryl_transfer",
+    "required_reaction_state": ["metal_state", "conformational_state", "substrate_state"],
+    "default_geometry_terms": [
+        {
+            "kind": "distance", "label": "nuc_O_to_alphaP",
+            # nucleophile = substrate carboxylate O⁻ ; acceptor = ATP alpha-P (ester O to a
+            # ribose C distinguishes it from beta/gamma-P)
+            "a_smarts": "[OX1-]", "a_idx": 0,
+            "b_smarts": "[PX4]([OX2][CX4])", "b_idx": 0,
+            "distance_min": 0.0, "distance_max": 3.6, "weight": 1.0,
+        },
+        {
+            "kind": "angle", "label": "inline_attack_Onuc_Pa_Oleaving",
+            "a_smarts": "[OX1-]", "a_idx": 0,                 # O_nuc
+            "b_smarts": "[PX4]([OX2][CX4])", "b_idx": 0,      # alpha-P (vertex)
+            "c_smarts": "[OX2]([PX4])[PX4]", "c_idx": 0,      # alpha-beta bridging O (leaving)
+            "angle_min": 150.0, "angle_max": 180.0, "weight": 1.0,
+        },
+    ],
+    "notes": ("CAR/ANL-superfamily adenylation (acyl-adenylate formation): carboxylate O⁻ -> "
+              "ATP ALPHA-P in-line, anti to the alpha-beta bridging O. Pα NOT Pγ. Per-target: "
+              "add the Mg2+-bridge + A3-loop (e.g. K/S/T) phosphate-contact terms when Mg is "
+              "modelled; angle stays a read-only occupancy metric (no angle restraint)."),
+}
 METAL_COFACTOR_REDOX = _stub(
     "metal_cofactor_redox", ["metal_state", "cofactor_redox_state"],
     "metal/heme-assisted redox (P450 etc.); redox/intermediate state hard — stress test only.")
@@ -90,6 +150,7 @@ TEMPLATES: Dict[str, Dict] = {
         HYDRIDE_TRANSFER,
         NUCLEOPHILIC_ACYL_SUBSTITUTION,
         GLYCOSIDIC_BOND_CLEAVAGE,
+        ADENYLATION_PHOSPHORYL_TRANSFER,
         PHOSPHORYL_TRANSFER,
         METAL_COFACTOR_REDOX,
         PROTON_TRANSFER_ISOMERIZATION,

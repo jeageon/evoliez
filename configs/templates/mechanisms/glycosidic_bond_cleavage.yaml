@@ -1,0 +1,36 @@
+# Mechanism template surface: glycosidic_bond_cleavage (ROADMAP_V3 B7)
+#
+# Retaining glycosidase, Koshland double-displacement: the catalytic nucleophile carboxylate
+# (Asp/Glu Odelta) attacks the anomeric carbon C1 (the ring carbon bearing the ring O + the
+# exocyclic glycosidic O) in-line, anti to the leaving group. Nucleophile by residue+atom name
+# (topology-resolved), substrate anomeric centre by SMARTS — both generic. Per-target overrides
+# the real catalytic residue numbers + the substrate anomeric SMARTS.
+key: glycosidic_bond_cleavage
+required_reaction_state:
+  - protonation_model            # acid/base catalytic pair protonation is state-defining
+  - conformational_state
+default_geometry_terms:
+  - kind: distance
+    label: nucleophile_anomeric_C
+    a_residue: ASP                # catalytic nucleophile carboxylate
+    a_atom: OD2
+    b_smarts: "[CX4]([OX2])[OX2]" # anomeric C1 (ring-O + glycosidic-O)
+    b_idx: 0
+    distance_min: 0.0
+    distance_max: 3.3
+    weight: 1.0
+  - kind: angle
+    label: anomeric_inline_attack
+    a_residue: ASP                # nucleophile
+    a_atom: OD2
+    b_smarts: "[CX4]([OX2])[OX2]" # anomeric C1 (vertex)
+    b_idx: 0
+    c_smarts: "[CX4]([OX2])[OX2]" # a bonded O (ring/leaving) — anti axis
+    c_idx: 1
+    angle_min: 150.0
+    angle_max: 180.0
+    weight: 1.0
+notes: >
+  Koshland double-displacement (retaining) default; nucleophile Asp/Glu Odelta -> anomeric C1,
+  in-line attack anti to the leaving group. Per-target: set the real catalytic residue numbers
+  + substrate anomeric SMARTS.

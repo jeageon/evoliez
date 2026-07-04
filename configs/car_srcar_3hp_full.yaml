@@ -1,0 +1,188 @@
+# =====================================================================
+# SrCAR FULL-LENGTH (1188 aa, UniProt E5XP76) — all 3 ligands.
+# 3-HP (substrate) + ATP (adenylation cofactor) + NADPH (reduction cofactor),
+# modelling the complete 3-domain enzyme so every binding site is present:
+#   A-domain (adenylation, ~1-660): 3-HP + ATP   [S268/T269/K273 A3 loop]
+#   PCP (Ppant Ser702)
+#   R-domain (reductase/SDR, ~798-1188): NADPH    [Rossmann T798; cat. Y970/K974]
+# Design still targets the 3-HP A-pocket (specificity determinant); NADPH/ATP are
+# co-modelled context so the full functional state is captured (user request).
+# See car/NOTES.md. Corrected 3-HP (CSV gave 2C glycolate) used throughout.
+
+project:
+  name: srcar_3hp_full
+  objective: activity_improvement
+  output_dir: /mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_full
+
+input:
+  target_id: srcar_full
+  target_fasta: car/targets/srcar.fasta          # full 1188 aa
+  ligand:
+    id: 3HP
+    type: smiles
+    value: "OCCC(=O)[O-]"                         # 3-hydroxypropanoate (corrected)
+    role: design_ligand
+    net_charge: -1
+    allow_am1bcc: true
+  extra_ligands:
+    - id: ATP
+      type: smiles
+      value: "Nc1ncnc2n(cnc12)[C@@H]1O[C@H](COP(=O)([O-])OP(=O)([O-])OP(=O)([O-])[O-])[C@@H](O)[C@H]1O"
+      role: cofactor                              # adenylation co-substrate (A-domain)
+      net_charge: -4
+      allow_am1bcc: false
+      charges_mol2: params/atp_4minus/ATP.fixed.mol2      # pre-derived AM1-BCC (43 atoms, -4)
+    - id: NADPH
+      type: smiles
+      value: "NC(=O)C1=CN(C=CC1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c(N)ncnc43)[C@H](OP([O-])([O-])=O)[C@@H]2O)[C@@H](O)[C@H]1O"
+      role: cofactor                              # hydride donor (R-domain reduction)
+      net_charge: -4
+      allow_am1bcc: false
+      charges_mol2: params/nadph_4minus/NADPH.fixed.mol2  # pre-derived AM1-BCC (74 atoms, -4)
+  # Active-site machinery, confirmed by the 5MST/5MSW crystals (AMP+fumarate contacts):
+  #  A-domain adenylation — A3 loop S268/T269/K273, invariant Lys K629, adenine D507/Y519.
+  #  R-domain reduction — SDR dyad Y970/K974. Substrate-pocket residues (W290/F294/H315/
+  #  R522/loop 429-438) are LEFT designable so specificity toward 3-HP can be reshaped.
+  # catalytic_residues = A-domain adenylation ONLY: its neighborhood (the 3-HP
+  # substrate pocket) is what s06 opens for design, so the design stays on-target.
+  catalytic_residues: ["S268", "T269", "K273", "D507", "Y519", "K629"]
+  # fixed_residues additionally protects the R-domain SDR dyad (Y970/K974) from
+  # mutation WITHOUT adding the R-domain/NADPH pocket to the design space.
+  fixed_residues: ["S268", "T269", "K273", "D507", "Y519", "K629", "Y970", "K974"]
+  cofactor: NADPH
+  ec_number: "1.2.1.30"
+
+homologs:
+  method: mmseqs2
+  database: /mnt/data/jglee/evoliez_db/uniref30_2302_seqdb
+  max_sequences: 20000
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 80
+  diffusion_samples: 12             # full-length is memory-heavy; run samples serially (below)
+  predict_affinity: false           # Boltz-2 affinity head is single-binder; it fails to
+                                    # preprocess this 3-ligand complex (missing pre_affinity.npz).
+                                    # Structure is what we need; binding via gnina/diffdock + s09.
+
+interaction_model:
+  enabled: true
+  representative_homologs: auto
+  representative_coverage: 0.90
+  representative_min: 32
+  representative_max: 40            # full-length folds are ~2x heavier; keep s06b tractable
+  poses_per_homolog: 12
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: false
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, ligandmpnn]
+  max_candidates: 8000
+  design_radius_angstrom: 8.0
+  design_around_extra_ligands: false   # design the A-domain 3-HP pocket only; keep the
+                                       # R-domain NADPH pocket + ATP site intact (on-target)
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 400
+  top_for_md: 14
+  mutant_boltz_enabled: true
+  mutant_boltz_top_n: 16
+  mutant_boltz_diffusion_samples: 5
+
+validation:
+  redocking:
+    methods: [gnina]                 # gnina-only: diffdock on 416 candidates is the s09
+                                     # bottleneck and adds little for tiny 3-HP (DD conf -0.40);
+                                     # gnina CNN + reference-consistent pose is the reliable signal
+  stability:
+    method: thermompnn
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    engine: openmm
+    protocol_level: 2
+    solvent: implicit
+    production_ns: 2.0
+    replicas: 3
+    top_candidates: 14
+    require_real_structure: true
+    rbfe:
+      enabled: false                 # alchemical ΔΔG is prohibitive on 1188-aa explicit solvent
+      top_n: 3                        #   (~hours/candidate); run as a targeted follow-up on the
+      n_lambda: 9                     #   winner. Ranking uses MD-lite stability + NAC + MM-GBSA.
+      prod_steps: 50000
+      multipoint: additive
+    binding_dg:
+      enabled: true
+      top_n: 3
+    reactive_geometry:                # adenylation near-attack screen (SMARTS validated)
+      enabled: true
+      donor_smarts: "[OX1-]"                  # 3-HP carboxylate O (nucleophile)
+      acceptor_smarts: "[PX4]([OX2][CX4])"    # ATP alpha-P only (beta/gamma excluded)
+      donor_idx: 0
+      acceptor_idx: 0
+      transfer_is_h: false                    # O attacks P (no H transfer)
+      distance_max: 3.6                       # near-attack O...P (WT rests ~9.5 A = the gap to close)
+      angle_min: 150.0
+      label: 3HP_carboxylate_to_ATP_alphaP
+      # RIGOROUS catalytic pass: START 3-HP in the near-attack pose (in-line to the alpha-P)
+      # then RESTRAIN the distance only (never the angle) so MD measures whether the mutant
+      # HOLDS the reactive arrangement. Without this, WT/most mutants skip on the 9.5 A gate.
+      template_cosubstrate_placement: true
+      restrain_cosubstrate: true
+      restraint_radius_A: 3.6
+      restraint_k: 2.0
+
+# ROADMAP_V5 V5-3 — declare the reaction mechanism envelope. Selects the adenylation
+# template (Pα, NOT the generic Pγ phosphoryl_transfer), hard-gates the reaction_state, and
+# flips the run from legacy mode to mechanism mode (geometry_source recorded in provenance).
+# ligand roles live in input.ligand.role / input.extra_ligands[*].role (NOT here). Mg2+ is
+# declared as the metal_state; the Mg geometry term + the dynamic bridge are added when Mg is
+# actually modelled in the MD (V5-2, server).
+mechanism:
+  reaction:
+    class: adenylation_phosphoryl_transfer
+  reaction_state:
+    substrate_state: 3HP_carboxylate
+    cofactor_state: ATP              # non-redox cofactor (distinct from cofactor_redox_state)
+    metal_state: Mg2+_bridged        # declared state; ion modelled in the Mg2+ NAC re-run (V5-2)
+    conformational_state: A_domain_closed
+    protonation_model: pH7_4_manual
+
+scoring:
+  family_interaction: 1.0
+
+selection_lanes:                    # trimmed for the focused catalytic (NAC) re-run
+  enabled: true
+  from_ml_high: 12
+  from_stability_high: 4
+  from_geometry_high: 4
+  from_diversity: 2
+  low_ml_controls: 2
+
+compute:
+  cpu_core_budget: 16
+  gpu_pool: []                       # inherit CUDA_VISIBLE_DEVICES (free GPUs per-launch)
+  fail_loud_on_cpu_md: true
+
+output:
+  final_library_size: 96
+  top_single_mutants: 50
+  report_format: [markdown, csv, pymol_session]
+
+backend: real
+backends: {}
+allow_mock_fallback: false
+seed: 1234
