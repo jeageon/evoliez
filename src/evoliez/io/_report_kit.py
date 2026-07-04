@@ -162,6 +162,24 @@ def page(title: str, body: str, *, scripts: str = "", claim_provenance=None,
         f"{scripts}</script></body></html>")
 
 
+def assert_html_clean(html: str, title: str = "report", *, claim_provenance=None,
+                      strict: Optional[bool] = None,
+                      claim_allow: Optional[Sequence[str]] = None) -> str:
+    """ROADMAP_V5 (reviewer 1.4) — route a report that renders its OWN <!doctype> (i.e. does NOT
+    go through ``page()``) through the SAME ClaimGuard gate, so no report bypasses the guard.
+    Returns the html unchanged when clean; in the default mode prepends the warn banner (inside
+    <body> if present); under strict/``EVOLIEZ_STRICT_CLAIMS`` a violation raises. Structural
+    reports rarely trip it — the point is that an injected over-claim now fails CI everywhere."""
+    banner = _claimguard_gate(html, claim_provenance, strict, claim_allow, title)
+    if not banner:
+        return html
+    b = html.find("<body")
+    if b != -1:
+        idx = html.find(">", b) + 1
+        return html[:idx] + banner + html[idx:]
+    return banner + html
+
+
 def viewer_block(pdb_text: Optional[str], caption: str = "") -> str:
     if not pdb_text:
         return ('<div class="note">WT complex structure not available for this run '

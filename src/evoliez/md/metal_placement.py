@@ -93,3 +93,54 @@ def insert_mg_into_pdb(pdb_text: str, position: Sequence[float], **kw) -> str:
             return "\n".join(lines) + "\n"
     lines.append(line)
     return "\n".join(lines) + "\n"
+
+
+# metal-setup status vocabulary (recorded in md provenance)
+METAL_VALID = "valid_metal_setup"
+METAL_SKIP_INVALID = "skipped_invalid_metal_setup"          # not requested / reactive atoms absent
+METAL_GEOM_FAIL = "geometry_implementation_failure"         # placement/insertion raised
+
+
+def prepare_metal_setup(
+    pdb_text: str,
+    nucleophile_o: "Optional[Sequence[float]]",
+    phosphate_o: "Optional[Sequence[float]]",
+    reference: "Optional[Sequence[float]]" = None,
+    enabled: bool = True,
+    ion: str = "MG",
+    coord_dist: float = MG_COORD_DIST,
+):
+    """Guarded, fail-safe Mg2+ setup (ROADMAP_V5 V5-2, reviewer requirement B). Returns
+    ``(pdb_text_out, provenance)``. The metal is placed at STRUCTURE level (an ``MG`` HETATM the
+    Amber ion parameters handle) — NEVER through OpenFF. On ANY problem the ORIGINAL ``pdb_text``
+    is returned unchanged (never a partial/corrupt structure) and ``provenance['status']`` carries
+    the reason, so a missing/failed metal is a classified setup state, NOT a low-NAC biological
+    result. The ``amber_standard_ion`` field stays ``server_verified_pending`` until the OpenMM
+    build confirms the ion parameterised (this module is pure geometry; it does not run OpenMM)."""
+    prov = {
+        "enabled": bool(enabled),
+        "ion": ion,
+        "placement": "deterministic_bridge",
+        "reference_frame": "WT_active_state" if reference is not None else "global_axis",
+        "inserted_in_pdb": False,
+        "amber_standard_ion": "server_verified_pending",
+        "openff_parameterized": False,          # invariant: Mg is NEVER an OpenFF molecule
+        "status": METAL_SKIP_INVALID,
+    }
+    if not enabled:
+        prov["note"] = "metal setup not requested by the mechanism"
+        return pdb_text, prov
+    if nucleophile_o is None or phosphate_o is None:
+        prov["note"] = "reactive atoms (nucleophile O / phosphate O) not resolved; cannot bridge"
+        return pdb_text, prov
+    try:
+        pos = bridging_metal_position(nucleophile_o, phosphate_o, coord_dist, reference)
+        out = insert_mg_into_pdb(pdb_text, pos, element=ion)
+        prov["position"] = [round(float(v), 3) for v in pos]
+        prov["inserted_in_pdb"] = True
+        prov["status"] = METAL_VALID
+        return out, prov
+    except Exception as exc:  # noqa: BLE001
+        prov["status"] = METAL_GEOM_FAIL
+        prov["note"] = str(exc)[:160]
+        return pdb_text, prov                    # original structure unchanged

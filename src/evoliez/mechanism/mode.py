@@ -21,8 +21,9 @@ LEGACY_BANNER = (
 STRICT_ENV = "EVOLIEZ_STRICT_MECHANISM"
 
 # geometry-source labels (single source of truth for reports/provenance)
-SRC_MECHANISM_PENDING = "mechanism_spec_pending"
-SRC_LEGACY = "legacy_reactive_geometry"
+SRC_MECHANISM_PENDING = "mechanism_spec_pending"                       # declared, nothing runs yet
+SRC_LEGACY_FROM_MECHANISM = "legacy_reactive_geometry_from_mechanism_spec"  # legacy runs, mechanism-declared
+SRC_LEGACY = "legacy_reactive_geometry"                                # legacy runs, no mechanism
 SRC_NONE = "none"
 
 
@@ -53,11 +54,16 @@ def resolve_geometry_source(config, geometry_terms, nac_enabled: bool) -> str:
     """Which reaction-geometry source s10 uses, in priority order (ROADMAP_V5 §0.5.3 #5):
     ``mechanism.geometry_terms`` > legacy ``reactive_geometry`` > none.
 
-    The mechanism branch is a consumer HOOK: the trajectory NAC engine still consumes the
-    legacy ``ReactiveSpec``, so until the adenylation template + ReactiveSpec/GeometryTerm
-    bridge land (V5-3/V5-6) a declared mechanism is reported as ``mechanism_spec_pending`` —
-    honest about intent vs. what actually ran (never claims a consumer that is not wired)."""
-    if getattr(config, "mechanism", None) is not None and geometry_terms:
+    Because the trajectory NAC engine still consumes the legacy ``ReactiveSpec`` (the mechanism
+    ``geometry_terms`` consumer lands with V5-6), a run that declares a mechanism AND enables the
+    legacy ``reactive_geometry`` path is honestly labelled ``legacy_reactive_geometry_from_
+    mechanism_spec`` — the geometry that RAN is the (V5-1-fixed) legacy O->P, consistent with the
+    declared mechanism. A mechanism declared with NO legacy path enabled has no consumer yet
+    (``mechanism_spec_pending``). This never claims a consumer that is not wired."""
+    has_mech = getattr(config, "mechanism", None) is not None and bool(geometry_terms)
+    if has_mech and nac_enabled:
+        return SRC_LEGACY_FROM_MECHANISM
+    if has_mech:
         return SRC_MECHANISM_PENDING
     if nac_enabled:
         return SRC_LEGACY

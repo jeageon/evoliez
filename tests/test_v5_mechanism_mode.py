@@ -4,8 +4,9 @@ from types import SimpleNamespace
 import pytest
 
 from evoliez.mechanism.mode import (
-    LEGACY_BANNER, SRC_LEGACY, SRC_MECHANISM_PENDING, SRC_NONE, STRICT_ENV,
-    enforce_mechanism_policy, mechanism_mode, resolve_geometry_source,
+    LEGACY_BANNER, SRC_LEGACY, SRC_LEGACY_FROM_MECHANISM, SRC_MECHANISM_PENDING,
+    SRC_NONE, STRICT_ENV, enforce_mechanism_policy, mechanism_mode,
+    resolve_geometry_source,
 )
 
 
@@ -39,12 +40,14 @@ def test_strict_env_requires_mechanism(monkeypatch):
 # --- geometry source of truth ---------------------------------------------------------
 
 def test_geometry_source_priority():
-    # mechanism.geometry_terms present -> pending consumer hook (not yet consumed by NAC engine)
-    assert resolve_geometry_source(_cfg(object()), ["term"], True) == SRC_MECHANISM_PENDING
-    # no mechanism, legacy reactive_geometry enabled -> legacy
+    # mechanism + terms + legacy path running -> the legacy O->P ran, mechanism-declared
+    assert resolve_geometry_source(_cfg(object()), ["term"], True) == SRC_LEGACY_FROM_MECHANISM
+    # mechanism + terms but legacy NOT enabled -> declared, no consumer running yet
+    assert resolve_geometry_source(_cfg(object()), ["term"], False) == SRC_MECHANISM_PENDING
+    # no mechanism, legacy reactive_geometry enabled -> plain legacy
     assert resolve_geometry_source(_cfg(None), None, True) == SRC_LEGACY
     # nothing -> none
     assert resolve_geometry_source(_cfg(None), None, False) == SRC_NONE
-    # mechanism declared but NO geometry_terms in ctx yet -> falls through to legacy/none
+    # mechanism declared but NO geometry_terms yet -> not counted as mechanism -> legacy/none
     assert resolve_geometry_source(_cfg(object()), None, True) == SRC_LEGACY
     assert resolve_geometry_source(_cfg(object()), [], False) == SRC_NONE

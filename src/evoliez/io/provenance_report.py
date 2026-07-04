@@ -281,7 +281,9 @@ def write_funnel_report(out_dir: Path, report: Dict[str, Any],
 
     if write_html:
         ph = out_dir / "funnel_provenance.html"
-        ph.write_text(_render_html(report), encoding="utf-8")
+        from evoliez.io._report_kit import assert_html_clean
+        ph.write_text(assert_html_clean(_render_html(report), title="funnel_provenance"),
+                      encoding="utf-8")
         written.append(ph)
     return written
 

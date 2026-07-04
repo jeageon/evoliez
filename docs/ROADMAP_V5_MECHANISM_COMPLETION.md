@@ -45,6 +45,9 @@
     stability/geometry config slot로 크기 지정(purge-safe, 신규 Config field 없음); s08 low_ml_control 비면
     fail-loud; `lane_allocator.allocate()`를 s11에 ADDITIVE 96-well plate artifact로 배선
     (`plate_allocation.json`, uncalibrated flag) — ranking driver 아님(#6/#7로 flip 연기). `test_v5_s08_lanes.py`.
+    slot 재사용은 s08 provenance(`s08_lane_quota_mapping`)에 명시 기록 + config 주석. **Migration plan**:
+    후속 PR에서 `from_evolutionary_high`/`from_ligand_high`를 별도 Config field로 분리(현재는 purge-safe
+    위해 stability/geometry slot 재사용).
   - **✅ STEP 6 core (CAR science, 로컬)**: **V5-1** O→P angle — `nac.py`가 leaving-O를 topologically
     (`identify_leaving`: acceptor-P의 bridging O→2nd P) 해석해 `transfer_is_h:false`에서 진짜
     O_nuc–Pα–O_leaving 각 계산(전엔 degenerate NaN→전 프레임 occupancy 0); engine이 leaving atom을 `nac_idx`에

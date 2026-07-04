@@ -3,7 +3,10 @@ System build consumes the resulting PDB on the server)."""
 import numpy as np
 
 from evoliez.md.metal_placement import (
-    MG_COORD_DIST, bridging_metal_position, insert_mg_into_pdb, mg_hetatm_line)
+    METAL_GEOM_FAIL, METAL_SKIP_INVALID, METAL_VALID, MG_COORD_DIST,
+    bridging_metal_position, insert_mg_into_pdb, mg_hetatm_line, prepare_metal_setup)
+
+_PDB = "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\nEND\n"
 
 
 def test_bridges_both_anions_at_coordination_distance():
@@ -40,6 +43,36 @@ def test_far_apart_falls_back_to_midpoint():
 def test_coincident_atoms_do_not_crash():
     m = bridging_metal_position([1, 1, 1], [1, 1, 1])
     assert np.allclose(m, [1, 1, 1])
+
+
+def test_prepare_metal_setup_valid():
+    out, prov = prepare_metal_setup(_PDB, [0, 0, 0], [3, 0, 0], reference=[0, 10, 0])
+    assert prov["status"] == METAL_VALID
+    assert prov["inserted_in_pdb"] is True
+    assert prov["openff_parameterized"] is False        # invariant: Mg never via OpenFF
+    assert prov["amber_standard_ion"] == "server_verified_pending"
+    assert "MG" in out and out != _PDB
+
+
+def test_prepare_metal_setup_disabled_is_noop():
+    out, prov = prepare_metal_setup(_PDB, [0, 0, 0], [3, 0, 0], enabled=False)
+    assert prov["status"] == METAL_SKIP_INVALID
+    assert prov["inserted_in_pdb"] is False
+    assert out == _PDB                                    # structure untouched
+
+
+def test_prepare_metal_setup_missing_atoms_is_classified_not_crash():
+    # reactive atoms not resolved -> classified skip, NOT a low-NAC result, structure unchanged
+    out, prov = prepare_metal_setup(_PDB, None, [3, 0, 0])
+    assert prov["status"] == METAL_SKIP_INVALID
+    assert out == _PDB
+
+
+def test_prepare_metal_setup_deterministic_wt_vs_mutant():
+    # identical reactive-atom coords -> identical Mg position (valid Delta-NAC prerequisite)
+    _, p1 = prepare_metal_setup(_PDB, [0, 0, 0], [3, 0, 0], reference=[0, 10, 0])
+    _, p2 = prepare_metal_setup(_PDB, [0, 0, 0], [3, 0, 0], reference=[0, 10, 0])
+    assert p1["position"] == p2["position"]
 
 
 def test_mg_hetatm_and_insertion():

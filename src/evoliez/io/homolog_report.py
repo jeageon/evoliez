@@ -188,7 +188,9 @@ def write_homolog_report(path, **kwargs) -> None:
     from pathlib import Path
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(build_homolog_report_html(**kwargs), encoding="utf-8")
+    from evoliez.io._report_kit import assert_html_clean
+    p.write_text(assert_html_clean(build_homolog_report_html(**kwargs), title="homolog"),
+                 encoding="utf-8")
 
 
 _TEMPLATE = """<!DOCTYPE html>

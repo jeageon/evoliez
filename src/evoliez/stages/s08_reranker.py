@@ -273,6 +273,22 @@ class RerankerStage(Stage):
                     "s08 selection_lanes: low_ml_control lane is EMPTY despite available "
                     "low-ML candidates -- the ML false-negative safety net vanished. Check "
                     "lane sizing (low_ml_controls / from_ml_high).")
+            # Record the ACTUAL s08 lane->quota mapping (ROADMAP_V5 step 5): at s08 the
+            # stability/geometry config slots are REPURPOSED to size the s08-computable
+            # evolutionary / ligand-competence lanes (stability/geometry are s09 products). Made
+            # explicit here so provenance is unambiguous about which config field sized which lane.
+            ctx.persist_meta("s08_lane_quota_mapping", {
+                "note": ("s08 repurposes from_stability_high -> evolutionary_high and "
+                         "from_geometry_high -> ligand_competence_high because stability/geometry "
+                         "are not yet computable at s08; a future PR splits these into dedicated "
+                         "config fields."),
+                "ml_high": _redock.from_ml_high,
+                "evolutionary_high__from_stability_high": _redock.from_evolutionary_high,
+                "ligand_competence_high__from_geometry_high": _redock.from_ligand_high,
+                "diversity": _redock.from_diversity,
+                "low_ml_control": _redock.low_ml_controls,
+                "selected_by_lane": lane_counts(top),
+            })
         else:
             top = candidates[: rcfg.top_for_redocking]
         # Persist per-candidate reranker scores + features (the s08 report reads this;

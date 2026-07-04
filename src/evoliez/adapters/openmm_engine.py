@@ -931,6 +931,21 @@ def _run_real(
             # whether the active site MAINTAINS the reactive arrangement.
             if getattr(nac_cfg, "template_cosubstrate_placement", False):
                 _apply_nac4_placement(matched, nac_cfg)
+            # ── ROADMAP_V5 V5-2 metal-setup GATE (server-verified-pending) ──────────────
+            # When the mechanism requests Mg2+ (metal_setup.requested, threaded from s10), the
+            # bridging ion is inserted HERE — after the co-substrate near-attack placement, so
+            # the nucleophile-O (3-HP carboxylate) and phosphate-O (ATP alpha-P) coords are
+            # available, and BEFORE the protein PDB is handed to SystemGenerator/PDBFixer so the
+            # Amber ion parameters pick MG up as a standard ion. Integration (server):
+            #     from evoliez.md.metal_placement import prepare_metal_setup
+            #     nuc = <coords of nac_map['donor_heavy']>; pha = <coords of nac_map['acceptor']>
+            #     pdb_text, metal_prov = prepare_metal_setup(pdb_text, nuc, pha, reference=pocket_centroid,
+            #                                                enabled=metal_setup['requested'])
+            #     # rebuild the protein Topology from pdb_text so the MG residue enters the system
+            # INVARIANTS (enforced by prepare_metal_setup): Mg is a structure-level MG HETATM,
+            # NEVER an OpenFF molecule; WT and every mutant get the SAME deterministic placement;
+            # a failure is a classified metal_setup status, never a low-NAC result. Left as a gate
+            # (not executed) until verified against the real OpenMM/PDBFixer round-trip on GPU.
             off_ligs = [_offmol_from_rdkit(rd) for _id, rd in matched]
             # Fixed-charge templates BY LIGAND ID: design ligand from cx.ligand, each
             # cofactor from its (id, smiles, charges_mol2, formal_charge, n_heavy) spec.

@@ -8,6 +8,8 @@
    wt_anchored + reference_like record is no longer double-counted as BOTH paper_grade and
    classes['rejected'] (the confusing "paper-grade:N ∧ rejected:N" dual state).
 """
+import pytest
+
 from evoliez.md.gate_stack import CONFIRMED_COMPUTATIONAL, REJECTED
 from evoliez.ml.calibration import recommendation
 from evoliez.ranking.claim_guard import lint_text
@@ -62,6 +64,33 @@ def test_catalytic_lead_and_paper_grade_forbidden():
 def test_new_patterns_are_negation_safe():
     # a negated statement about the forbidden phrase is allowed
     assert not lint_text("This is not a strong candidate.")
+
+
+# --- 4. CAR overclaim on the provenance path (reviewer requirement C) ------------------
+
+def test_car_overclaim_phrases_blocked_at_floor_provenance():
+    from evoliez.ranking.claim_guard import assert_report_clean, lint_report
+    # floor (no wet-lab) provenance: none of the CAR-run problem phrases may appear in a report
+    for phrase in ("G430R;S433F;G407K is the catalytic lead",
+                   "the mutant is confirmed productive",
+                   "this candidate is paper-grade",
+                   "a strong candidate for testing",
+                   "activity improved over the wild type",
+                   "a stable functional complex"):
+        assert lint_report(phrase, None), f"should be blocked at floor provenance: {phrase!r}"
+        with pytest.raises(AssertionError):
+            assert_report_clean(phrase, None)
+
+
+def test_car_allowed_replacements_pass():
+    from evoliez.ranking.claim_guard import assert_report_clean, lint_report
+    for phrase in ("G430R;S433F;G407K is a hypothesis-grade lead",
+                   "a screening-level catalytic-geometry hypothesis",
+                   "a structurally viable candidate",
+                   "the candidate is anchored-evaluated",
+                   "prioritized for experimental testing"):
+        assert not lint_report(phrase, None), f"should pass under floor provenance: {phrase!r}"
+        assert_report_clean(phrase, None)      # must not raise
 
 
 # --- 2. paper-grade requires a non-rejected verdict -----------------------------------
