@@ -230,12 +230,17 @@ class InputPreprocessStage(Stage):
         ctx.put("ligand_manifest", manifest)
         ctx.put("dock_ligands", [m for m in manifest if m.dock])
         ctx.put("context_ligands", [m for m in manifest if m.keep_as_context])
-        ctx.put("catalytic_positions", ctx.meta("catalytic_positions", []))
+        # Reparse catalytic from CONFIG (not the persisted meta) so a config change
+        # to catalytic_residues propagates on --resume — parity with fixed_residues
+        # below and with run(). doctor validates the tokens; seq/RDKit are present.
+        catalytic = parse_residue_tokens(ctx.config.input.catalytic_residues)
+        ctx.put("catalytic_positions", catalytic)
+        ctx.persist_meta("catalytic_positions", catalytic)
         ctx.put(
             "fixed_positions",
             sorted(
                 set(parse_residue_tokens(ctx.config.input.fixed_residues))
-                | set(ctx.meta("catalytic_positions", []))
+                | set(catalytic)
             ),
         )
         ctx.put(

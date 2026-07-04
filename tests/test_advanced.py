@@ -132,7 +132,8 @@ def test_run_ablation_reports_layer_deltas(tmp_path):
 
 
 def test_calibration_and_ece():
-    assert recommendation(5.0, 0.1, 1, 100) == "strong candidate"
+    # The top confident + positive-geometry label is claim-safe (V5-5): no bare "strong candidate".
+    assert recommendation(5.0, 0.1, 1, 100, geometry=0.3) == "priority screening candidate"
     assert recommendation(0.0, 0.9, 50, 100) == "reject"
     ece = expected_calibration_error([0.9, 0.1, 0.8], [1, 0, 1])
     assert 0.0 <= ece <= 1.0

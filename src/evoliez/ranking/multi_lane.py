@@ -28,6 +28,12 @@ class LaneConfig:
     from_ml_high: int = 25
     from_stability_high: int = 12
     from_geometry_high: int = 12
+    # s08-COMPUTABLE mechanism-plausibility lanes (ROADMAP_V5 step 5): evolutionary tolerance
+    # (MSA permissiveness) + ligand/cofactor competence (interaction_gain) are known BEFORE any
+    # fold/MD, so unlike stability/geometry (s09 products) these lanes can rescue a low-ML but
+    # evolutionarily-tolerated / ligand-competent candidate at the s08 redock gate itself.
+    from_evolutionary_high: int = 0
+    from_ligand_high: int = 0
     from_diversity: int = 8
     low_ml_controls: int = 8
 
@@ -87,6 +93,14 @@ def select_multi_lane(candidates: Sequence, cfg: LaneConfig) -> List:
 
     lane("ml_high", _topk(candidates, lambda c: _score(c, "ml_score", -9.0),
                           cfg.from_ml_high, taken))
+    # s08-computable mechanism-plausibility lanes (step 5): rescue low-ML but
+    # evolutionarily-tolerated / ligand-competent candidates BEFORE the fold/MD funnel.
+    lane("evolutionary_high",
+         _topk(candidates, lambda c: _score(c, "msa_permissiveness", -9.0),
+               cfg.from_evolutionary_high, taken))
+    lane("ligand_competence_high",
+         _topk(candidates, lambda c: _score(c, "interaction_gain", -9.0),
+               cfg.from_ligand_high, taken))
     lane("stability_high",
          _topk(candidates, lambda c: _score(c, "stability_score", -9.0),
                cfg.from_stability_high, taken))

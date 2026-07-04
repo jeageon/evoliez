@@ -320,6 +320,12 @@ class MutationGenConfig(_Base):
     )  # ligandmpnn | msa_sampler | chemistry_rules
     max_candidates: int = 2000
     design_radius_angstrom: float = 8.0
+    # Whether the design mask includes the sphere around EVERY co-modelled ligand
+    # (True, v2 default) or ONLY the primary design ligand + catalytic neighborhood
+    # (False). Set False when cofactors sit in a DIFFERENT site/domain you want to
+    # keep intact (e.g. CAR: design the A-domain 3-HP pocket, not the R-domain NADPH
+    # pocket) so the design/MD budget isn't spent on off-target cofactor-pocket mutants.
+    design_around_extra_ligands: bool = True
     fix_catalytic_residues: bool = True
     fix_highly_conserved_residues: bool = True
     conservation_fix_threshold: float = 0.9

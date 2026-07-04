@@ -26,10 +26,23 @@ def candidate_uncertainty(cand: Candidate) -> float:
     return round(max(0.0, min(1.0, u)), 4)
 
 
-def recommendation(score: float, uncertainty: float, rank: int, n: int) -> str:
+def recommendation(
+    score: float, uncertainty: float, rank: int, n: int,
+    geometry: float | None = None,
+) -> str:
+    """Recommendation class — all labels are claim-safe (no bare "strong candidate", which
+    ClaimGuard forbids as catalysis-implying). A top-rank, confident candidate is a "priority
+    screening candidate" only if its reaction geometry is actually positive. ``geometry`` is the
+    reaction-geometry signal (e.g. ΔNAC-vs-WT, >0 = more productive than WT). geometry 0 (computed,
+    dead) or None (not computed) caps the label at a structural/binding recommendation: the pipeline
+    proves structure + binding, not catalysis, so a catalytically-dead or unmeasured candidate is
+    never a priority. This kills the CAR-class overclaim (a geometry-0 mutant stamped "strong
+    candidate") at the source, not just at report-lint time."""
     top = rank <= max(1, int(0.15 * n))
     if top and uncertainty < 0.4:
-        return "strong candidate"
+        if geometry is not None and geometry > 0:
+            return "priority screening candidate"
+        return "structural/binding candidate"
     if uncertainty >= 0.65:
         return "reject"
     return "uncertain candidate"

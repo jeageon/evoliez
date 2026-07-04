@@ -1,7 +1,7 @@
 """s08 family-specific reranker HTML report builder.
 
 Reads reports/provenance/reranked_candidates.json (+ generated/validated cross-refs +
-_state.json meta + the WT Boltz complex) and renders a standalone paper-grade HTML
+_state.json meta + the WT Boltz complex) and renders a standalone HTML
 report: the ml_score distribution with the real-fold cutoff, library composition,
 folded-vs-rest feature means, generator mix, a top-N table, and an interactive 3Dmol
 viewer. Called from the s08 stage (auto) and standalone (scripts/gen_s08_report.py).

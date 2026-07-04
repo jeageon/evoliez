@@ -1,0 +1,43 @@
+# Mechanism template surface: adenylation_phosphoryl_transfer (ROADMAP_V5 V5-3)
+#
+# ANL-superfamily adenylation half-reaction (CAR / NRPS A-domain / acyl-CoA synthetase):
+# a substrate carboxylate O- attacks the ATP ALPHA-phosphorus in-line (acyl-adenylate + PPi).
+# This is DISTINCT from the generic phosphoryl_transfer (Pgamma / kinase) template. The
+# nucleophile + acceptor are chosen by SMARTS (generic), the in-line angle is a READ-ONLY
+# occupancy metric (never restrained). Mg2+ bridges the carboxylate and the phosphates: it is
+# declared via reaction_state.metal_state and added to the MD structure when modelled (V5-2);
+# the Mg geometry + A3-loop phosphate-contact terms are added per-target, NOT in the default,
+# so a no-Mg run does not hit an uncomputable-atom abort.
+key: adenylation_phosphoryl_transfer
+required_reaction_state:
+  - metal_state                  # Mg2+ coordination is state-defining (declared even if not modelled)
+  - conformational_state         # A-domain closed (adenylation) vs open
+  - substrate_state              # the acid substrate protonation/identity
+default_geometry_terms:
+  - kind: distance
+    label: nuc_O_to_alphaP
+    # nucleophile = substrate carboxylate O- ; acceptor = ATP alpha-P (ester O to a ribose C
+    # distinguishes it from the beta/gamma phosphates)
+    a_smarts: "[OX1-]"
+    a_idx: 0
+    b_smarts: "[PX4]([OX2][CX4])"
+    b_idx: 0
+    distance_min: 0.0
+    distance_max: 3.6
+    weight: 1.0
+  - kind: angle
+    label: inline_attack_Onuc_Pa_Oleaving
+    a_smarts: "[OX1-]"                 # O_nuc
+    a_idx: 0
+    b_smarts: "[PX4]([OX2][CX4])"      # alpha-P (vertex)
+    b_idx: 0
+    c_smarts: "[OX2]([PX4])[PX4]"      # alpha-beta bridging O (leaving group)
+    c_idx: 0
+    angle_min: 150.0
+    angle_max: 180.0
+    weight: 1.0
+notes: >
+  CAR/ANL-superfamily adenylation (acyl-adenylate formation): carboxylate O- -> ATP ALPHA-P,
+  in-line anti to the alpha-beta bridging O. Palpha NOT Pgamma. Per-target: add the Mg2+ bridge
+  + A3-loop (K/S/T) phosphate-contact terms when Mg is modelled. The angle is read-only
+  occupancy (no angle restraint — that would manufacture NAC).

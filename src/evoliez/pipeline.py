@@ -54,6 +54,15 @@ class Pipeline:
             "1" if ctx.config.allow_mock_fallback else "0"
         )
         try:
+            # ROADMAP_V5 step 3 — mechanism-mode policy. Absent mechanism = legacy (banner,
+            # never hard-fail); EVOLIEZ_STRICT_MECHANISM=1 requires a declared MechanismSpec.
+            from evoliez.mechanism.mode import enforce_mechanism_policy
+            _mode, _banner = enforce_mechanism_policy(ctx.config)
+            if _banner:
+                log.info("mechanism mode: legacy — %s", _banner)
+            else:
+                log.info("mechanism mode: %s", _mode)
+
             stages = self._effective_stages(ctx)
             names = [s.name for s in stages]
             start = names.index(from_stage) if from_stage else 0

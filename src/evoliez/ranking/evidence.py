@@ -32,15 +32,20 @@ def verdict_of(rec: dict) -> str:
 
 
 def is_paper_grade(rec: dict) -> bool:
-    """Paper-grade requires a REAL anchored validation (Phase E gate): the candidate was
-    validated WT-anchored, its design pose stayed reference_like, and a gate-stack verdict
-    exists. A pre-v2 / Boltz-pose record can never be paper-grade."""
+    """Paper-grade requires a REAL anchored validation (Phase E gate) AND a non-REJECTED
+    verdict: the candidate was validated WT-anchored, its design pose stayed reference_like,
+    a gate-stack verdict exists, and that verdict is not REJECTED. A pre-v2 / Boltz-pose record
+    can never be paper-grade. A structurally-REJECTED candidate (e.g. failed MD stability) is
+    anchored-evaluated but NOT paper-grade — counting it as paper-grade double-counts it as both
+    `paper_grade` AND `classes['rejected']`, the confusing "paper-grade:N ∧ rejected:N" dual state."""
     if rec.get("validation_structure") != "wt_anchored":
         return False
     pg = (rec.get("pose_gate") or {}).get("design_ligand") or {}
     if pg.get("status") != "reference_like":
         return False
-    return isinstance(rec.get("gate_stack"), dict)
+    if not isinstance(rec.get("gate_stack"), dict):
+        return False
+    return verdict_of(rec) != REJECTED
 
 
 def _val(rec: dict, key: str, default: float = 0.0) -> float:

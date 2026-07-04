@@ -123,7 +123,14 @@ def _classify_real_mutant(cand: Candidate, gnina_pose, diffdock_pose):
     g = gnina_pose.rmsd_to_reference if gnina_pose is not None else None
     d = diffdock_pose.rmsd_to_reference if diffdock_pose is not None else None
     retain = g is not None and g <= _GNINA_RETAIN_A
-    escape = d is None or d > _DD_ESCAPE_A
+    # "escape" is a GLOBAL-search (DiffDock) failure signal and REQUIRES positive
+    # evidence: d present AND beyond the escape cutoff. A missing DiffDock pose
+    # (d is None — DiffDock disabled, or an unverifiable pose) is NEUTRAL, not an
+    # escape (docstring + s09 line "None -> neutral, never a free pass"). The old
+    # `d is None or ...` made every candidate "escaped" in gnina-only mode, so a
+    # static catalytic-geometry penalty alone (mech_bad) then rejected ~all folded
+    # mutants and collapsed the MD set — MD must be free to test the DYNAMIC geometry.
+    escape = d is not None and d > _DD_ESCAPE_A
     binding_bad = cand.scores.get("d_ligand_iptm", 0.0) < _IPTM_DROP
     mech_bad = cand.scores.get("catalytic_geometry_penalty", 0.0) > _CAT_DISRUPT
     struct_bad = int(binding_bad) + int(mech_bad)

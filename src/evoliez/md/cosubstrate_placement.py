@@ -119,3 +119,33 @@ def place_formate_for_nac(nadp_mol, formate_mol, donor_spec, acceptor_spec,
     formate_coords = np.asarray(formate_mol.GetConformer().GetPositions(), float)
     return place_cosubstrate(formate_coords, don["heavy"], don["transfer"],
                              acc_pos, normal, face_toward=face, nac_distance=nac_distance)
+
+
+def place_donor_at_acceptor(acceptor_mol, donor_mol, donor_spec, acceptor_spec,
+                            nac_distance: float = 3.2):
+    """Near-attack placement for an ADENYLATION-style reaction where the DONOR molecule
+    (e.g. the DESIGN ligand 3-HP, carboxylate O) attacks a NON-RING acceptor atom (e.g.
+    the ATP alpha-P on a cofactor) — the inverse of the FDH formate case. Rigid-translates
+    ``donor_mol`` so its donor atom sits ``nac_distance`` Å off the acceptor along the
+    in-line axis (anti to the acceptor's leaving group — the bridging O toward the beta-P).
+    Returns new donor coords (donor_mol atom order), or None if atoms can't be resolved."""
+    from evoliez.md.nac import identify_acceptor, identify_donor
+    acc = identify_acceptor(acceptor_mol, acceptor_spec)
+    don = identify_donor(donor_mol, donor_spec)
+    if acc is None or don is None:
+        return None
+    ac = np.asarray(acceptor_mol.GetConformer().GetPositions(), float)
+    acc_pos = ac[acc]
+    a_atom = acceptor_mol.GetAtomWithIdx(acc)
+    ld = None
+    for nb in a_atom.GetNeighbors():                 # leaving group = bridging O (acc-O-P')
+        if nb.GetSymbol() == "O" and any(
+                nn.GetSymbol() == "P" and nn.GetIdx() != acc for nn in nb.GetNeighbors()):
+            ld = acc_pos - ac[nb.GetIdx()]; break
+    if ld is None:                                   # fallback: exposed face (away from acceptor bulk)
+        ld = acc_pos - ac.mean(axis=0)
+    ld = ld / np.linalg.norm(ld)
+    target = acc_pos + ld * float(nac_distance)
+    dc = np.asarray(donor_mol.GetConformer().GetPositions(), float)
+    d_idx = don.get("transfer", don["heavy"])        # for O-attack (transfer_is_h=False) heavy==transfer
+    return dc + (target - dc[d_idx])

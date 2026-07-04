@@ -250,6 +250,12 @@ class RerankerStage(Stage):
                 enabled=True,
                 from_ml_high=max(rcfg.top_for_redocking, _sl.from_ml_high),
                 from_stability_high=0, from_geometry_high=0,
+                # stability/geometry are s09 products (inert here) -> repurpose their config
+                # slots to size the s08-COMPUTABLE evolutionary (MSA permissiveness) + ligand
+                # competence (interaction_gain) lanes, so a low-ML but evolutionarily-tolerated /
+                # ligand-competent candidate reaches s08b. No new Config field (purge-safe).
+                from_evolutionary_high=_sl.from_stability_high,
+                from_ligand_high=_sl.from_geometry_high,
                 from_diversity=_sl.from_diversity,
                 low_ml_controls=_sl.low_ml_controls)
             top = select_multi_lane(candidates, _redock)
@@ -257,6 +263,16 @@ class RerankerStage(Stage):
                 "s08 redock queue via MULTI-LANE: %d candidate(s) %s "
                 "(baseline top_for_redocking=%d + probes)",
                 len(top), lane_counts(top), rcfg.top_for_redocking)
+            # The low_ml_control lane is the explicit ML-false-negative safety net. If it was
+            # requested but produced NONE while low-ML candidates were available (the union did
+            # not consume the whole pool), the safety net silently vanished -> fail loud.
+            if (_sl.low_ml_controls > 0
+                    and lane_counts(top).get("low_ml_control", 0) == 0
+                    and len(candidates) > _redock.from_ml_high):
+                raise RuntimeError(
+                    "s08 selection_lanes: low_ml_control lane is EMPTY despite available "
+                    "low-ML candidates -- the ML false-negative safety net vanished. Check "
+                    "lane sizing (low_ml_controls / from_ml_high).")
         else:
             top = candidates[: rcfg.top_for_redocking]
         # Persist per-candidate reranker scores + features (the s08 report reads this;

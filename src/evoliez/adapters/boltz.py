@@ -205,6 +205,20 @@ def _to_a3m(src: Path, dst: Path) -> Optional[Path]:
             for h, s in recs if s.strip()]
     if not recs:
         return None
+    # a3m REQUIRES the query (first record) ungapped: its residues DEFINE the
+    # match columns that every MSA feature is indexed by. s03 emits a BLOCK
+    # alignment whose query row itself carries '-' gaps (insertion columns from
+    # divergent homologs), so naively relabelling it .a3m hands Boltz a gapped
+    # query — the MSA columns then no longer map to query residues and the fold
+    # silently degrades (patchy low pLDDT). Restrict every row to the query's
+    # non-gap columns so the query is ungapped (len == target) and each homolog
+    # stays aligned to it (insertions relative to the query are dropped, which is
+    # valid a3m and does not affect per-query-residue features).
+    q_seq = recs[0][1]
+    match_cols = [i for i, c in enumerate(q_seq) if c != "-"]
+    if match_cols and len(match_cols) != len(q_seq):
+        recs = [(h, "".join(s[i] if i < len(s) else "-" for i in match_cols))
+                for h, s in recs]
     dst.parent.mkdir(parents=True, exist_ok=True)   # defensive: target dir may not exist
     dst.write_text("".join(f"{h}\n{s}\n" for h, s in recs))
     return dst

@@ -1,8 +1,8 @@
 """v2 evidence-class paper report (ROADMAP_V2 Phase E output).
 
-Renders the paper-grade view of a v2 run from disk — NO DB, NO stage re-run. The final claim
+Renders the anchored-evaluated view of a v2 run from disk — NO DB, NO stage re-run. The final claim
 is an EVIDENCE CLASS, not a scalar rank: candidates grouped by gate-stack verdict, the
-paper-grade set (anchored validation + reference_like pose + a verdict), the ML functional-
+anchored-evaluated set (anchored validation + reference_like pose + a verdict), the ML functional-
 state re-evaluation (ml enriches binding-validity, not catalysis), and the MSA QC (depth is
 not diversity). Reads:
   reports/provenance/{md_candidates,evidence_classes}.json  +  _state.json meta.
@@ -64,7 +64,7 @@ def build_paper_report_v2(run_dir) -> str:
     ev_section = (
         "<h2>Evidence classes (final claim = a class, not a rank)</h2>"
         f"<p>{ev_pills or 'none'}</p>"
-        "<p class='muted'>A candidate is <b>paper-grade</b> only if it was validated "
+        "<p class='muted'>A candidate is <b>anchored-evaluated</b> only if it was validated "
         "WT-anchored, kept a reference_like design pose, and carries a gate-stack verdict — "
         "the per-mutant Boltz-pose path can never qualify (it is a pose-search hypothesis).</p>")
 
@@ -87,7 +87,7 @@ def build_paper_report_v2(run_dir) -> str:
         pg = ((r.get("pose_gate") or {}).get("design_ligand") or {}).get("status", "—")
         flags = []
         if cid in paper:
-            flags.append(kit.pill("paper-grade", "#16a34a"))
+            flags.append(kit.pill("anchored-evaluated", "#16a34a"))
         if cid in pareto:
             flags.append(kit.pill("pareto", "#2563eb"))
         rows.append(

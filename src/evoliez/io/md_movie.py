@@ -30,7 +30,7 @@ def _traj_text(run_dir: Path, sub: str, base: str) -> Optional[str]:
 
 
 def _default_specs(run_dir: Path) -> List[Tuple[str, str, str]]:
-    """(subdir, base, role) for WT + the catalytic lead + the RBFE-favourable.
+    """(subdir, base, role) for WT + the top-ranked lead + the RBFE-favourable.
     Derived from md_candidates.json so labels/metrics stay in sync."""
     prov = run_dir / "reports" / "provenance" / "md_candidates.json"
     lead, rbfe = None, []
@@ -76,7 +76,7 @@ def build_trajectory_movie_html(run_dir) -> str:
                     " · baseline geometry")
             color = "#888"
         elif role == "lead":
-            title = f"{kit.esc(c.get('mutation_string', base))} · catalytic lead"
+            title = f"{kit.esc(c.get('mutation_string', base))} · top-ranked lead"
             metr = (f"NAC {c.get('nac_occupancy')} (ΔNAC "
                     f"+{c.get('nac_delta_vs_wt')}) · d_min "
                     f"{nac.get('distance_min')} Å · ⟨angle⟩ {nac.get('angle_mean')}°")

@@ -69,7 +69,12 @@ class ReactionState(_Base):
     """The biochemical state that makes a geometry meaningful. Template-required fields
     are enforced by MechanismSpec; an absent required field aborts at load."""
     pH: Optional[float] = None
-    cofactor_redox_state: Optional[str] = None     # e.g. NADP+ / NADPH
+    cofactor_redox_state: Optional[str] = None     # e.g. NADP+ / NADPH (REDOX cofactors)
+    cofactor_state: Optional[str] = None           # e.g. ATP / ATP_Mg (NON-redox cofactors, e.g.
+    #                                                adenylation): kept DISTINCT from
+    #                                                cofactor_redox_state — the latter is the
+    #                                                oxidation state of a redox cofactor; this is the
+    #                                                identity/binding state of a non-redox cofactor.
     substrate_state: Optional[str] = None
     substrate_is_real: bool = True                 # real substrate vs analog/proxy
     protonation_model: Optional[str] = None
