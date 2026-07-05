@@ -1,0 +1,150 @@
+# =====================================================================
+# SrCAR -> 3-HP adenylation, V5 SMOKE (Mg/OpenMM integration check ONLY).
+# =====================================================================
+# DERIVED FROM configs/car_srcar_3hp_v5.yaml — identical EXCEPT the MD tier, which is
+# dropped to a fast smoke (level 1 / 0.05 ns / 1 replica / top 3 / no RBFE / no GBSA).
+# Purpose: verify on the server that the V5-2 Mg2+ structure-level MG HETATM is inserted,
+# is NOT OpenFF-parameterized, is recognised by Amber as a standard ion, and that the V5-1
+# O->P angle is finite — NOT to produce catalytic rankings. Keep the MD block below in sync
+# with the production config's non-MD sections when they change.
+
+project:
+  name: srcar_3hp_v5_smoke
+  objective: activity_improvement
+  output_dir: /mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_v5_smoke
+
+input:
+  target_id: srcar
+  target_fasta: car/targets/srcar_Adomain.fasta
+  ligand:
+    id: 3HP
+    type: smiles
+    value: "OCCC(=O)[O-]"
+    role: design_ligand
+    net_charge: -1
+    allow_am1bcc: true
+  extra_ligands:
+    - id: ATP
+      type: smiles
+      value: "Nc1ncnc2n(cnc12)[C@@H]1O[C@H](COP(=O)([O-])OP(=O)([O-])OP(=O)([O-])[O-])[C@@H](O)[C@H]1O"
+      role: cofactor
+      net_charge: -4
+      allow_am1bcc: false
+      charges_mol2: params/atp_4minus/ATP.fixed.mol2   # pre-derived AM1-BCC (43 atoms, -4)
+  catalytic_residues: ["S268", "T269", "K273"]
+  fixed_residues: ["S268", "T269", "K273"]
+  cofactor: ATP
+  ec_number: "1.2.1.30"
+
+mechanism:
+  reaction:
+    class: adenylation_phosphoryl_transfer
+  reaction_state:
+    substrate_state: 3HP_carboxylate
+    cofactor_state: ATP
+    metal_state: Mg2+_bridged
+    conformational_state: A_domain_closed
+    protonation_model: pH7_4_manual
+
+homologs:
+  method: mmseqs2
+  database: /mnt/data/jglee/evoliez_db/uniref30_2302_seqdb
+  max_sequences: 20000
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 80
+  diffusion_samples: 25
+
+interaction_model:
+  enabled: true
+  representative_homologs: auto
+  representative_coverage: 0.90
+  representative_min: 40
+  representative_max: 48
+  poses_per_homolog: 12
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: false
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, ligandmpnn]
+  max_candidates: 8000
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 400
+  top_for_md: 3
+  mutant_boltz_enabled: true
+  mutant_boltz_top_n: 3
+  mutant_boltz_diffusion_samples: 5
+
+validation:
+  redocking:
+    methods: [gnina, diffdock]
+  stability:
+    method: thermompnn
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    engine: openmm
+    protocol_level: 1               # SMOKE: fast screen tier
+    solvent: implicit
+    production_ns: 0.05             # SMOKE: 0.05 ns (integration check, not a production NAC)
+    replicas: 1                    # SMOKE
+    top_candidates: 3              # SMOKE: WT reference + top 3
+    require_real_structure: true
+    rbfe:
+      enabled: false               # SMOKE: off
+    binding_dg:
+      enabled: false               # SMOKE: off
+    reactive_geometry:
+      enabled: true
+      donor_smarts: "[OX1-]"
+      acceptor_smarts: "[PX4]([OX2][CX4])"
+      donor_idx: 0
+      acceptor_idx: 0
+      transfer_is_h: false
+      distance_max: 3.6
+      angle_min: 150.0
+      label: 3HP_carboxylate_to_ATP_alphaP
+      template_cosubstrate_placement: true
+      restrain_cosubstrate: true
+      restraint_radius_A: 3.6
+
+scoring:
+  family_interaction: 1.0
+
+selection_lanes:
+  enabled: true
+  from_ml_high: 25
+  from_stability_high: 12
+  from_geometry_high: 12
+  from_diversity: 8
+  low_ml_controls: 8
+
+compute:
+  cpu_core_budget: 16
+  gpu_pool: []
+  fail_loud_on_cpu_md: true
+
+output:
+  final_library_size: 96
+  top_single_mutants: 50
+  report_format: [markdown, csv, pymol_session]
+
+backend: real
+backends: {}
+allow_mock_fallback: false
+seed: 1234
