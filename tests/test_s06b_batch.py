@@ -70,3 +70,16 @@ def test_missing_stem_returns_none(tmp_path):
     preds.mkdir(parents=True)
     assert parse_prediction_dir(
         preds / "hom_404_boltz_input", "AGS", _ligand(), "boltz2") is None
+
+
+def test_empty_rep_chunk_guard_skips_boltz(tmp_path):
+    """REGRESSION (E1 subset crash): fewer reps than GPUs (3 homologs / 4 GPUs) -> _lpt_partition
+    yields empty buckets. An empty rep chunk must return cleanly WITHOUT `boltz predict` on a
+    never-created _batch_in_gpuN dir ('Path does not exist' killed s06b). Same class as PR #9 (s08b)."""
+    from evoliez.config import ComplexPredictionConfig
+    from evoliez.stages.s06b_interaction_model import _run_batch_chunk
+    cp = ComplexPredictionConfig(diffusion_samples=2, use_msa_server=False)
+    payload = ("3", [], _ligand(), cp, str(tmp_path), 42, None, None)
+    gpu, results_dir, reps = _run_batch_chunk(payload)
+    assert gpu == "3" and results_dir == "" and reps == []
+    assert not (tmp_path / "_batch_in_gpu3").exists()
