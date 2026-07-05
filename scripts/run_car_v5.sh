@@ -42,6 +42,9 @@ fi
 export PATH="/mnt/data/jglee/envs/evoliez/bin:/mnt/data/jglee/bin:/mnt/data/jglee/envs/boltz/bin:${AMBER_PATH}$PATH"
 
 # --- shared-box safety: cap CPU threads, GPU pool from the environment ---
+# UTF-8 file I/O regardless of the launch locale: a setsid/detached shell can inherit LANG=C (ASCII),
+# and the reports contain unicode (Δ, °, Å, —, →) so write_text() would UnicodeEncodeError at s11.
+export PYTHONUTF8=1; export LC_ALL="${LC_ALL:-C.UTF-8}"; export LANG="${LANG:-C.UTF-8}"
 export EVOLIEZ_NUM_THREADS="${EVOLIEZ_NUM_THREADS:-8}"
 export OMP_NUM_THREADS="$EVOLIEZ_NUM_THREADS"; export MKL_NUM_THREADS="$EVOLIEZ_NUM_THREADS"
 export OPENBLAS_NUM_THREADS="$EVOLIEZ_NUM_THREADS"; export NUMEXPR_NUM_THREADS="$EVOLIEZ_NUM_THREADS"
