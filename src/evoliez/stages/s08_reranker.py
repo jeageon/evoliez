@@ -263,16 +263,19 @@ class RerankerStage(Stage):
                 "s08 redock queue via MULTI-LANE: %d candidate(s) %s "
                 "(baseline top_for_redocking=%d + probes)",
                 len(top), lane_counts(top), rcfg.top_for_redocking)
-            # The low_ml_control lane is the explicit ML-false-negative safety net. If it was
-            # requested but produced NONE while low-ML candidates were available (the union did
-            # not consume the whole pool), the safety net silently vanished -> fail loud.
+            # The low_ml_control lane is the explicit ML-false-negative safety net. It only
+            # MATTERS when candidates are actually EXCLUDED from the union (len(top) <
+            # len(candidates)): if the union already contains every candidate, an empty
+            # low_ml_control is harmless (everything is redocked anyway). Fail loud only when
+            # candidates were cut yet the low-ML probe produced none -- then the net vanished.
             if (_sl.low_ml_controls > 0
                     and lane_counts(top).get("low_ml_control", 0) == 0
-                    and len(candidates) > _redock.from_ml_high):
+                    and len(top) < len(candidates)):
                 raise RuntimeError(
-                    "s08 selection_lanes: low_ml_control lane is EMPTY despite available "
-                    "low-ML candidates -- the ML false-negative safety net vanished. Check "
-                    "lane sizing (low_ml_controls / from_ml_high).")
+                    "s08 selection_lanes: low_ml_control lane is EMPTY while %d candidate(s) "
+                    "were EXCLUDED from the redock union -- the ML false-negative safety net "
+                    "vanished. Check lane sizing (low_ml_controls / from_ml_high)."
+                    % (len(candidates) - len(top)))
             # Record the ACTUAL s08 lane->quota mapping (ROADMAP_V5 step 5): at s08 the
             # stability/geometry config slots are REPURPOSED to size the s08-computable
             # evolutionary / ligand-competence lanes (stability/geometry are s09 products). Made
