@@ -38,6 +38,20 @@ def test_ligand_lane_rescues_low_ml_high_interaction_gain():
     assert "lig" in {c.candidate_id for c in sel}
 
 
+def test_small_pool_union_includes_all_no_spurious_low_ml_fail():
+    # REGRESSION (smoke crash): 419-candidate pool + from_ml_high=400 -> ml_high takes 400, the
+    # other lanes take the remaining 19, so the union includes ALL 419. low_ml_control is then
+    # empty simply because nothing is left -- NOT a vanished safety net. The s08 guard keys on
+    # len(top) < len(candidates) (candidates EXCLUDED), which is 0 here, so it must NOT fire.
+    cands = [_c(f"m{i}", ml=float(i), pos=i % 7) for i in range(419)]
+    sel = select_multi_lane(cands, LaneConfig(
+        enabled=True, from_ml_high=400, from_evolutionary_high=12, from_ligand_high=12,
+        from_diversity=8, low_ml_controls=8))
+    ids = {c.candidate_id for c in sel}
+    assert len(ids) == 419                                  # union includes every candidate
+    assert 419 - len(ids) == 0                              # nothing excluded -> guard won't fire
+
+
 def test_union_never_shrinks_below_ml_high_baseline():
     cands = [_c(f"m{i}", ml=float(i), pos=i) for i in range(20)]
     sel = select_multi_lane(cands, LaneConfig(
