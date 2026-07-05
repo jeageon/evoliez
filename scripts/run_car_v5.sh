@@ -89,7 +89,11 @@ PY
   focused)
     CONFIG="${CAR_CONFIG:-configs/car_srcar_3hp_v5.yaml}"
     OUT="/mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_v5"
-    echo ">> Day 5 focused rerun  config=$CONFIG  out=$OUT"
+    # Seed s07 with EXACTLY the reviewer-locked manifest (WT + 18 mutants): no stochastic
+    # generation, no s08b fold-queue blow-up, fully reproducible. Env-gated (purge-safe).
+    export EVOLIEZ_SEED_CANDIDATES_CSV="${EVOLIEZ_SEED_CANDIDATES_CSV:-$CAR_ROOT/configs/car_v5_focused_candidates.csv}"
+    echo ">> focused 2 ns NAC run  config=$CONFIG  out=$OUT"
+    echo ">> seed manifest=$EVOLIEZ_SEED_CANDIDATES_CSV ($(grep -cvE '^mutation_string|^WT|^$' "$EVOLIEZ_SEED_CANDIDATES_CSV" 2>/dev/null || echo '?') mutants + WT baseline)"
     "$EVO_PY" -m evoliez.cli run -c "$CONFIG" --resume "$@"
     _provenance_verdict "$OUT";;
 
