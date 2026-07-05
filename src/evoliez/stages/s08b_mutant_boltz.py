@@ -83,6 +83,8 @@ def _run_mutant_batch_chunk(payload):
 
     (gpu, muts_meta, ligand, cp_cfg, base_outdir, seed, extra_ligands,
      msa_path, metal_ccd) = payload
+    if not muts_meta:                         # defensive: never `boltz predict` an empty chunk dir
+        return gpu, "", []
     # IN_DIR and OUT_DIR MUST differ: Boltz rescans IN_DIR and errors if OUT_DIR
     # is nested inside it. Per-GPU names keep concurrent chunks isolated.
     chunk_in = Path(base_outdir) / f"_batch_in_gpu{gpu}"
@@ -176,10 +178,15 @@ def _run_batched_mutants(payloads, gpu_list, ligand, cp_cfg, outdir, seed,
     muts_meta_all = [(p[0], p[1]) for p in payloads]  # (cand_id, seq)
     mut_buckets = _lpt_partition(muts_meta_all, len(gpu_list),
                                  weight=lambda m: len(m[1]) ** 2)
+    # Skip GPUs whose bucket is EMPTY: with fewer mutants than GPUs (e.g. a 2-mutant smoke on 4
+    # GPUs) _lpt_partition returns empty buckets, and dispatching one would run `boltz predict` on a
+    # never-created _batch_in_gpuN dir → "Path does not exist" crashes the whole stage. Mirrors the
+    # `if ch` guard in run_md_batches.
     chunks = [
         (g, mut_buckets[gi], ligand, cp_cfg, str(outdir),
          seed, extra_ligands, shared_msa, metal_ccd)
         for gi, g in enumerate(gpu_list)
+        if mut_buckets[gi]
     ]
 
     # --- Phase 1: one batched Boltz process per GPU (concurrent) ---

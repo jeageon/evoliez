@@ -119,6 +119,7 @@ def _drive_two_phase(tmp_path, cand_ids, gpu_list, lig, cp, msa_path=None,
     chunks = [
         (g, buckets[gi], lig, cp, str(tmp_path), seed, extra_ligands, msa_path, None)
         for gi, g in enumerate(gpu_list)
+        if buckets[gi]                       # mirror the prod skip of empty GPU buckets
     ]
     parse_jobs = []
     for ch in chunks:
@@ -136,6 +137,28 @@ def _drive_two_phase(tmp_path, cand_ids, gpu_list, lig, cp, msa_path=None,
 # --------------------------------------------------------------------------- #
 # Tests
 # --------------------------------------------------------------------------- #
+def test_empty_chunk_guard_skips_boltz(tmp_path):
+    """REGRESSION (2-mutant/4-GPU smoke crash): with fewer mutants than GPUs, _lpt_partition yields
+    empty buckets. An empty chunk must return cleanly WITHOUT launching `boltz predict` on a
+    never-created _batch_in_gpuN dir (which errored 'Path does not exist' and killed the stage)."""
+    from evoliez.stages.s08b_mutant_boltz import _run_mutant_batch_chunk
+    cp = ComplexPredictionConfig(diffusion_samples=2, use_msa_server=False)
+    payload = ("3", [], _ligand(), cp, str(tmp_path), 1234, None, None, None)
+    gpu, results_dir, muts = _run_mutant_batch_chunk(payload)
+    assert gpu == "3" and results_dir == "" and muts == []
+    assert not (tmp_path / "_batch_in_gpu3").exists()   # never created a dir to fold
+
+
+def test_fewer_mutants_than_gpus_folds_all_no_crash(tmp_path, monkeypatch):
+    """2 mutants over 4 GPUs: the 2 empty buckets are skipped, the 2 real mutants still fold."""
+    folded_log: list = []
+    _install_fake_boltz_run(monkeypatch, folded_log)
+    predicted = _drive_two_phase(
+        tmp_path, ["mut_00001", "mut_00002"], ["0", "1", "2", "3"],
+        _ligand(), ComplexPredictionConfig(diffusion_samples=2, use_msa_server=False))
+    assert set(predicted) == {"mut_00001", "mut_00002"}
+
+
 def test_batched_mutants_one_launch_per_gpu_parses_all(tmp_path, monkeypatch):
     """4 mutants over 2 GPUs -> 2 Boltz launches (one per GPU, chunked via the
     LPT partition), every mutant parsed into a finalized Complex keyed by id."""
