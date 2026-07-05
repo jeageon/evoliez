@@ -170,7 +170,12 @@ class MDStage(Stage):
                     instability=0.0, catalytic_positions=catalytic,
                     backend=backend, dry_run=ctx.dry_run,
                     ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_specs,
+                    metal_requested=_metal_requested,
                 )
+                # WT + every mutant get the SAME deterministic Mg placement, so the WT run's
+                # actual metal_setup outcome is authoritative for the run-level contract.
+                if getattr(wt_res, "metal_setup", None):
+                    metal_setup.update(wt_res.metal_setup)
                 wt_metrics = analyse(wt_res, weights)
                 wt_nac = wt_metrics.nac_occupancy
                 (ctx.paths.md_candidate("_wt_reference") / "analysis.json"
@@ -256,7 +261,7 @@ class MDStage(Stage):
                     instability=_inst, catalytic_positions=catalytic,
                     backend=backend, dry_run=ctx.dry_run,
                     ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_specs,
-                    fail_loud_on_cpu=_fail_loud)
+                    fail_loud_on_cpu=_fail_loud, metal_requested=_metal_requested)
 
         # Phase 2: analyse + scores + pose gate + record + DB (serial, main process).
         for cand in candidates:
