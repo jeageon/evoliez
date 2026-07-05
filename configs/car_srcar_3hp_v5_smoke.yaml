@@ -30,6 +30,7 @@ input:
       role: cofactor
       net_charge: -4
       allow_am1bcc: false
+      charges_mol2: params/atp_4minus/ATP.fixed.mol2   # pre-derived AM1-BCC (43 atoms, -4)
   catalytic_residues: ["S268", "T269", "K273"]
   fixed_residues: ["S268", "T269", "K273"]
   cofactor: ATP
