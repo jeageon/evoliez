@@ -93,6 +93,9 @@ class MDResult:
     # partners were absent. See evoliez.md.nac.
     nac_occupancy: Optional[float] = None
     nac: Dict[str, object] = field(default_factory=dict)
+    # ROADMAP_V5 V5-2 — bridging Mg2+ setup outcome (structure-level MG ion, never OpenFF).
+    # {requested, inserted_in_pdb, openff_parameterized, status, position, amber_standard_ion}.
+    metal_setup: Dict[str, object] = field(default_factory=dict)
     integration_failed: bool = False
     failure_reason: Optional[str] = None
 
@@ -603,9 +606,14 @@ def _ligand_system_generator(off_lig, workdir: Path, cache_dir: "Path | None" = 
 
 
 def _ligand_system_generator_multi(off_ligs, workdir: Path,
-                                   cache_dir: "Path | None" = None):
+                                   cache_dir: "Path | None" = None,
+                                   with_metal: bool = False):
     """A SystemGenerator for the catalytic-screen path with MULTIPLE small
     molecules (design ligand + co-substrate/cofactor, e.g. NADP + formate).
+
+    ``with_metal`` (ROADMAP_V5 V5-2) adds ``amber14/tip3p.xml`` to the protein FF stack so a
+    structure-level ``MG`` HETATM is parameterized as an Amber standard ion (+2), NOT via OpenFF.
+    Off by default so the FDH / no-metal catalytic path is byte-for-byte unchanged.
     Registers every molecule and probes ligand-only create_system for EACH
     (the binding constraint is the hardest, usually the cofactor): the FF must
     handle ALL of them. Same FF ladder + shared ligand-keyed cache as the
@@ -630,11 +638,13 @@ def _ligand_system_generator_multi(off_ligs, workdir: Path,
         ffs.append("espaloma-0.3.2")
     except Exception:
         pass
+    _protein_ffs = (["amber14-all.xml", "amber14/tip3p.xml", "implicit/obc2.xml"]
+                    if with_metal else ["amber14-all.xml", "implicit/obc2.xml"])
     last = None
     for ff in ffs:
         try:
             sg = SystemGenerator(
-                forcefields=["amber14-all.xml", "implicit/obc2.xml"],
+                forcefields=_protein_ffs,
                 small_molecule_forcefield=ff,
                 molecules=list(off_ligs),
                 cache=str(cache_root / f"ligff_multi_{key}_{ff}.json"),
@@ -669,6 +679,7 @@ def run_md(
     ligand_cache_dir: "Path | None" = None,
     extra_ligands: "Sequence[tuple] | None" = None,
     fail_loud_on_cpu: bool = False,
+    metal_requested: bool = False,
 ) -> MDResult:
     """``ligand_cache_dir``: shared, stable per-run directory for the ligand
     force-field cache. The ligand is identical across all candidates in a run,
@@ -931,21 +942,11 @@ def _run_real(
             # whether the active site MAINTAINS the reactive arrangement.
             if getattr(nac_cfg, "template_cosubstrate_placement", False):
                 _apply_nac4_placement(matched, nac_cfg)
-            # ── ROADMAP_V5 V5-2 metal-setup GATE (server-verified-pending) ──────────────
-            # When the mechanism requests Mg2+ (metal_setup.requested, threaded from s10), the
-            # bridging ion is inserted HERE — after the co-substrate near-attack placement, so
-            # the nucleophile-O (3-HP carboxylate) and phosphate-O (ATP alpha-P) coords are
-            # available, and BEFORE the protein PDB is handed to SystemGenerator/PDBFixer so the
-            # Amber ion parameters pick MG up as a standard ion. Integration (server):
-            #     from evoliez.md.metal_placement import prepare_metal_setup
-            #     nuc = <coords of nac_map['donor_heavy']>; pha = <coords of nac_map['acceptor']>
-            #     pdb_text, metal_prov = prepare_metal_setup(pdb_text, nuc, pha, reference=pocket_centroid,
-            #                                                enabled=metal_setup['requested'])
-            #     # rebuild the protein Topology from pdb_text so the MG residue enters the system
-            # INVARIANTS (enforced by prepare_metal_setup): Mg is a structure-level MG HETATM,
-            # NEVER an OpenFF molecule; WT and every mutant get the SAME deterministic placement;
-            # a failure is a classified metal_setup status, never a low-NAC result. Left as a gate
-            # (not executed) until verified against the real OpenMM/PDBFixer round-trip on GPU.
+            # ROADMAP_V5 V5-2: the bridging Mg2+ is inserted LATER, in the modeller phase (after
+            # the protein-only PDBFixer strip + addHydrogens + the OpenFF ligands are added), as a
+            # structure-level MG residue Amber's tip3p ion params parameterize (NEVER OpenFF).
+            # It cannot go into the input PDB here because _protein_only_pdbfixed's removeHeterogens
+            # would strip it. See the `metal_requested and nac_on` block below.
             off_ligs = [_offmol_from_rdkit(rd) for _id, rd in matched]
             # Fixed-charge templates BY LIGAND ID: design ligand from cx.ligand, each
             # cofactor from its (id, smiles, charges_mol2, formal_charge, n_heavy) spec.
@@ -997,6 +998,7 @@ def _run_real(
         if multi:
             system_generator, _ff = _ligand_system_generator_multi(
                 off_ligs, workdir, cache_dir=ligand_cache_dir,
+                with_metal=bool(metal_requested and nac_on),
             )
         else:
             system_generator, _ff = _ligand_system_generator(
@@ -1021,6 +1023,14 @@ def _run_real(
     # OpenFF round-trip preserves atom order, so the block is exactly the
     # contiguous topology range the molecule occupies.
     mol_blocks: List[tuple] = []
+    # ROADMAP_V5 V5-2 metal-setup outcome (populated in the modeller phase below).
+    metal_setup_result: Dict[str, object] = {
+        "requested": bool(metal_requested),
+        "inserted_in_pdb": False,
+        "openff_parameterized": False,       # invariant: Mg is NEVER an OpenFF molecule
+        "amber_standard_ion": ("amber14/tip3p ion (MG)" if metal_requested else None),
+        "status": ("skipped_invalid_metal_setup" if metal_requested else "not_requested"),
+    }
     try:
         topo, posns = _protein_only_pdbfixed(pdb_path)
         if topo is None:                          # pdbfixer absent
@@ -1060,6 +1070,45 @@ def _run_real(
             mol_blocks.append(
                 (off, list(range(n0, modeller.topology.getNumAtoms())))
             )
+        # ROADMAP_V5 V5-2 — insert the bridging Mg2+ as a structure-level MG residue (Amber
+        # tip3p ion, +2, NEVER OpenFF), DETERMINISTICALLY between the 3-HP carboxylate O
+        # (nucleophile) and the ATP alpha-P (acceptor) so WT and every mutant get the same
+        # placement. Added to the topology here (NOT the input PDB, which removeHeterogens would
+        # strip) and parameterized by create_system via the tip3p ion FF (with_metal). A failure
+        # is a classified metal_setup status, never a low-NAC biological result.
+        if metal_requested and nac_on:
+            try:
+                import openmm as _mm
+                from evoliez.md.metal_placement import (
+                    METAL_GEOM_FAIL, METAL_VALID, bridging_metal_position)
+                from evoliez.md.nac import ReactiveSpec, resolve_reactive_indices
+                _spec = ReactiveSpec(
+                    donor_smarts=nac_cfg.donor_smarts, acceptor_smarts=nac_cfg.acceptor_smarts,
+                    donor_idx=nac_cfg.donor_idx, acceptor_idx=nac_cfg.acceptor_idx,
+                    transfer_is_h=nac_cfg.transfer_is_h)
+                _rdb = [(off.to_rdkit(), gidx) for off, gidx in mol_blocks]
+                _nmap = resolve_reactive_indices(_rdb, _spec)
+                if _nmap and "donor_heavy" in _nmap and "acceptor" in _nmap:
+                    _posA = np.array(modeller.positions.value_in_unit(unit.angstrom))
+                    _nuc, _pha = _posA[_nmap["donor_heavy"]], _posA[_nmap["acceptor"]]
+                    _nprot = mol_blocks[0][1][0]            # protein atom count (1st ligand start)
+                    _ref = _posA[:_nprot].mean(axis=0)      # pocket ref -> deterministic side
+                    _mg = bridging_metal_position(_nuc, _pha, reference=_ref)   # Angstrom
+                    _mt = app.Topology(); _ch = _mt.addChain()
+                    _mt.addAtom("MG", app.element.magnesium,
+                                _mt.addResidue("MG", _ch))
+                    modeller.add(_mt, unit.Quantity(
+                        [_mm.Vec3(*(float(v) / 10.0 for v in _mg))], unit.nanometer))
+                    metal_setup_result.update(
+                        inserted_in_pdb=True, status=METAL_VALID,
+                        position=[round(float(v), 3) for v in _mg])
+                    log.info("MD Mg2+ bridge inserted for %s at %s A (structure-level MG ion)",
+                             candidate_id, metal_setup_result["position"])
+                else:
+                    metal_setup_result["note"] = "reactive atoms (nuc O / alpha-P) not resolved"
+            except Exception as _mex:  # noqa: BLE001
+                metal_setup_result.update(status=METAL_GEOM_FAIL, note=str(_mex)[:160])
+                log.warning("MD Mg2+ insertion failed for %s: %s", candidate_id, _mex)
         system = system_generator.create_system(
             modeller.topology, molecules=off_ligs
         )
@@ -1407,5 +1456,6 @@ def _run_real(
         hbond_occupancy=hbond_occupancy,
         nac_occupancy=nac_occupancy,
         nac=nac_json,
+        metal_setup=metal_setup_result,
         energy_drift=round(float(drift), 4),
     )
