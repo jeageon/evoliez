@@ -54,13 +54,14 @@ def predict_complex(
     seed: int = 1234,
     extra_ligands: Optional[List[Ligand]] = None,
     gpu_device: Optional[str] = None,
+    metal_ccd: Optional[str] = None,
 ) -> Complex:
     outdir.mkdir(parents=True, exist_ok=True)
     if backend is Backend.real:
         return _predict_real(
             label, sequence, ligand, cfg, outdir, dry_run=dry_run,
             msa_path=msa_path, seed=seed, extra_ligands=extra_ligands,
-            gpu_device=gpu_device,
+            gpu_device=gpu_device, metal_ccd=metal_ccd,
         )
     return _predict_mock(label, sequence, ligand, cfg, outdir,
                          extra_ligands=extra_ligands)
@@ -232,6 +233,7 @@ def _build_spec(
     outdir: Path,
     msa_path: Optional[Path],
     extra_ligands: Optional[List[Ligand]] = None,
+    metal_ccd: Optional[str] = None,
 ):
     """Build a single rep's Boltz input spec (protein A + primary ligand B +
     co-modelled extra ligands C+ + the MSA/affinity wiring). Returns
@@ -251,8 +253,18 @@ def _build_spec(
     # Co-modelled cofactors/substrates as their OWN ligand entities (chains C,
     # D, …) so Boltz sees the complete active site. The affinity binder stays
     # "B" (the design-target ligand); the extras are structural context.
-    for cid, el in zip("CDEFGHIJKLMNOPQRSTUVWXYZ", extra_ligands or []):
+    _chains = "CDEFGHIJKLMNOPQRSTUVWXYZ"
+    for cid, el in zip(_chains, extra_ligands or []):
         spec["sequences"].append({"ligand": {"id": cid, "smiles": el.smiles}})
+    # ROADMAP_V5 V5-2 — co-fold the physiological metal ion (e.g. Mg2+) as a CCD ion so the
+    # anionic substrate + cofactor are pre-organized around it during diffusion rather than
+    # repelling to a non-productive pose. Boltz accepts `ccd` XOR `smiles` per ligand entity
+    # (schema.py:1028-1034). The ion is DROPPED from the parsed ligand set (metal-ion elements
+    # are skipped in the structure parsers) — MD re-places it deterministically as an Amber
+    # ion; it never reaches OpenFF. `MG` etc. are standard PDB CCD codes in Boltz's dictionary.
+    _n_extra = len(extra_ligands or [])
+    if metal_ccd and _n_extra < len(_chains):
+        spec["sequences"].append({"ligand": {"id": _chains[_n_extra], "ccd": metal_ccd}})
     if cfg.predict_affinity:
         spec["properties"] = [{"affinity": {"binder": "B"}}]
     if msa_path is not None:
@@ -331,6 +343,7 @@ def _predict_real(
     seed: int = 1234,
     extra_ligands: Optional[List[Ligand]] = None,
     gpu_device: Optional[str] = None,
+    metal_ccd: Optional[str] = None,
 ) -> Complex:
     # dry-run previews the FULL command set (like Vina) without the tool
     # installed, writes the exact Boltz input YAML so the contract can be
@@ -345,7 +358,8 @@ def _predict_real(
         if gpu_device is None:
             apply_gpu_selection()
     spec, msa_path = _build_spec(
-        label, sequence, ligand, cfg, outdir, msa_path, extra_ligands
+        label, sequence, ligand, cfg, outdir, msa_path, extra_ligands,
+        metal_ccd=metal_ccd,
     )
 
     yml = outdir / f"{label}_boltz_input.yaml"
@@ -505,6 +519,7 @@ def write_batch_input(
     *,
     msa_path: Optional[Path] = None,
     extra_ligands: Optional[List[Ligand]] = None,
+    metal_ccd: Optional[str] = None,
 ) -> bool:
     """Write ONE rep's ``<label>_boltz_input.yaml`` into the shared chunk
     ``in_dir`` using the SAME spec as the per-rep path (`_build_spec`). MSA a3m
@@ -514,7 +529,8 @@ def write_batch_input(
     prediction under ``predictions/<label>_boltz_input/``."""
     in_dir.mkdir(parents=True, exist_ok=True)
     spec, resolved_msa = _build_spec(
-        label, sequence, ligand, cfg, in_dir, msa_path, extra_ligands
+        label, sequence, ligand, cfg, in_dir, msa_path, extra_ligands,
+        metal_ccd=metal_ccd,
     )
     (in_dir / f"{label}_boltz_input.yaml").write_text(
         yaml.safe_dump(spec, sort_keys=False)
@@ -785,27 +801,37 @@ def _parse_cif_atoms(path: Path):
                                 # primary ligand = first ligand chain -> lig;
                                 # co-modelled extra ligands (other chains) -> extra
                                 # (v2 multi-ligand: full functional state for s06).
-                                ck = ("label_asym_id" if "label_asym_id" in idx
-                                      else "auth_asym_id" if "auth_asym_id" in idx
-                                      else None)
-                                ch = p[idx[ck]] if ck else None
-                                if primary_chain is None:
-                                    primary_chain = ch
+                                # A co-folded monatomic metal ion is dropped (never a
+                                # downstream OpenFF ligand; MD re-places it as an Amber ion).
                                 el = p[idx["type_symbol"]]
-                                if ch is None or ch == primary_chain:
-                                    lig.append(LigandAtom(
-                                        id=f"{el}{len(lig)}", element=el or "C",
-                                        coord=(x, y, z)))
-                                else:
-                                    _e = extra.setdefault(ch, [])
-                                    _e.append(LigandAtom(
-                                        id=f"{el}{len(_e)}", element=el or "C",
-                                        coord=(x, y, z)))
+                                if (el or "").upper() not in _METAL_ION_ELEMENTS:
+                                    ck = ("label_asym_id" if "label_asym_id" in idx
+                                          else "auth_asym_id" if "auth_asym_id" in idx
+                                          else None)
+                                    ch = p[idx[ck]] if ck else None
+                                    if primary_chain is None:
+                                        primary_chain = ch
+                                    if ch is None or ch == primary_chain:
+                                        lig.append(LigandAtom(
+                                            id=f"{el}{len(lig)}", element=el or "C",
+                                            coord=(x, y, z)))
+                                    else:
+                                        _e = extra.setdefault(ch, [])
+                                        _e.append(LigandAtom(
+                                            id=f"{el}{len(_e)}", element=el or "C",
+                                            coord=(x, y, z)))
                         j += 1
                 i = j
                 continue
         i += 1
     return residues, lig, extra
+
+
+# Monatomic metal-ion elements co-folded for substrate pre-organization but DROPPED from
+# the parsed ligand set: MD re-places the metal as an Amber ion, and a single-atom ion is
+# never an OpenFF-parameterizable organic ligand. Skipping them keeps s09/s10 seeing exactly
+# the organic ligand set they saw before the co-fold — only the substrate coordinates change.
+_METAL_ION_ELEMENTS = {"MG", "MN", "ZN", "CA", "FE", "NI", "CO", "CU", "K", "NA"}
 
 
 def _parse_pdb_atoms(path: Path):
@@ -833,12 +859,14 @@ def _parse_pdb_atoms(path: Path):
             # by other ligands). Co-modelled cofactors/substrates/metals are separate chains
             # (C, D, …) -> collected into `extra` (v2 multi-ligand: the FULL functional state
             # for the s06 design mask). The PDB chain id is column 22 (0-based index 21).
+            el = line[76:78].strip() or line[12:14].strip()
+            if el.upper() in _METAL_ION_ELEMENTS:
+                continue      # co-folded metal ion: pre-organizes the fold, not a downstream ligand
             chain = line[21] if len(line) > 21 else " "
             if primary_chain is None:
                 primary_chain = chain
             x, y, z = (float(line[30:38]), float(line[38:46]),
                        float(line[46:54]))
-            el = line[76:78].strip() or line[12:14].strip()
             if chain == primary_chain:
                 lig.append(LigandAtom(id=f"{el}{len(lig)}", element=el or "C",
                                       coord=(x, y, z)))

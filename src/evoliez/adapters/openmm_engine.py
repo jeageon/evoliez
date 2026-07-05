@@ -720,7 +720,7 @@ def run_md(
                 cx, candidate_id, cfg, workdir,
                 catalytic_positions=catalytic_positions, dry_run=dry_run,
                 ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_ligands,
-                fail_loud_on_cpu=fail_loud_on_cpu,
+                fail_loud_on_cpu=fail_loud_on_cpu, metal_requested=metal_requested,
             )
         except Exception as exc:  # spec 23 Risk 4: fail gracefully per candidate
             log.warning("MD failed for %s (%s); recording failure", candidate_id, exc)
@@ -807,6 +807,7 @@ def _run_real(
     ligand_cache_dir: "Path | None" = None,
     extra_ligands: "Sequence[tuple] | None" = None,
     fail_loud_on_cpu: bool = False,
+    metal_requested: bool = False,
 ) -> MDResult:
     if dry_run:
         log.info("[dry-run] would run OpenMM L%d (%s) for %s",
