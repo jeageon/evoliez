@@ -64,11 +64,11 @@ complex_prediction:
 
 interaction_model:
   enabled: true
-  representative_homologs: auto
+  representative_homologs: 3              # CORRECTED-Mg smoke: minimal s06b (verify s10 Mg, not score)
   representative_coverage: 0.90
   representative_min: 40
   representative_max: 48
-  poses_per_homolog: 12
+  poses_per_homolog: 4                    # smoke: fewer poses per homolog
   contact_cutoff: 6.0
   k_nearest_residues: 8
   model: xgboost
