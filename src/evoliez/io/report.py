@@ -117,7 +117,8 @@ def _write_markdown(
     # ROADMAP_V3 B3 — final_report.md is the CLI-advertised PRIMARY deliverable but it
     # bypasses the HTML page() ClaimGuard gate, so lint it here too: warn+banner by
     # default, hard-raise under EVOLIEZ_STRICT_CLAIMS. Keeps the top deliverable honest.
-    p.write_text(_claimguard_markdown("\n".join(L) + "\n", "final_report.md"))
+    # encoding pinned: the report has unicode (Δ, °, Å, —) and a locale-C launch would ASCII-crash.
+    p.write_text(_claimguard_markdown("\n".join(L) + "\n", "final_report.md"), encoding="utf-8")
     return p
 
 
@@ -150,5 +151,5 @@ def _write_pymol(paths: ProjectPaths, ranked: Sequence[Candidate]) -> Path:
         path = c.details.get("complex_path")
         if path:
             lines.append(f"load {path}, {c.candidate_id}")
-    p.write_text("\n".join(lines) + "\n")
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return p
