@@ -1,0 +1,4 @@
+mutation_string,category,rationale
+WT,control,parental baseline (must get Mg + valid O->P baseline)
+G430R;S433F;G407K,lead,prior static lead (focused was confounded — no candidate Mg)
+P438N,clean_single,cleanest single-site design

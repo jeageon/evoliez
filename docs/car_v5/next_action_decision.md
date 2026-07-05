@@ -41,6 +41,21 @@ diagnostic-first principle.
 - Small provenance summaries (this file, acceptance report, geometry table, fingerprint, verdict json)
   live in `docs/car_v5/`.
 
+## ADDENDUM (2026-07-06) — corrected sequence after the E3 Mg bug
+
+E3 found the focused candidate MDs lacked Mg (batch fan-out dropped `metal_requested`; fixed in PR #8).
+So E1 is NOT the immediate next step — the corrected Mg path must first be verified on the real
+multi-GPU path before spending explicit-solvent compute:
+
+```
+A. corrected-Mg smoke  : WT + lead + P438N, implicit, 0.05 ns, >=2 GPUs (force run_md_batches)
+B. E3 re-diagnostic    : confirm WT AND candidates both have MG in topology
+C. (only if A/B clean) : E1 explicit-solvent subset
+```
+
+A is a **verification smoke** (does PR #8 put Mg into candidates on the batch path?), not an attempt to
+get a scientific answer from implicit solvent. Launch: `bash scripts/run_car_v5.sh corrected-smoke`.
+
 ## Open decision for the user
 
 E1 (explicit-solvent s10 path) is a **real feature + a multi-hour compute escalation**. Recommend

@@ -51,3 +51,18 @@ the WT baseline nor a productive candidate pose is held long enough to yield dis
 
 **No wet-lab plate is recommended from this run** (recommending one off non-discriminating geometry
 would be an overclaim). See `next_action_decision.md`.
+
+## ADDENDUM (2026-07-06) — candidate comparison WITHDRAWN as confounded
+
+The E3 diagnostic (`e3_mg_retention_report.md`, PR #8) found that **the focused 2 ns candidate
+comparison is invalid: the mutant MDs lacked Mg** in the multi-GPU batch fan-out path
+(`run_md_batches` never forwarded `metal_requested`; the WT reference — run serially — kept Mg). So
+"valid Mg" held only at run/WT level, NOT for the mutant comparison.
+
+- The candidate-level geometry rankings from this run **must not be used** (no "lead", no "control
+  beats lead", no activity language).
+- The run remains useful **as a diagnostic** — it discovered a real platform bug.
+- Mg-consistent candidate MD must be **re-run** (fix landed in PR #8). Next: a corrected-Mg smoke
+  verifying candidates get Mg on the real multi-GPU path, then the explicit-solvent subset tier.
+- CAR V5 machinery has reached **evidence-validity testing**, but **candidate prioritization is not
+  yet supported.**
