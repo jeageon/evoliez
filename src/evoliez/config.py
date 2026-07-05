@@ -278,10 +278,11 @@ class MDConfig(_Base):
     rbfe: RBFEConfig = Field(default_factory=RBFEConfig)
     binding_dg: BindingDGConfig = Field(default_factory=BindingDGConfig)
     protocol_level: int = Field(1, ge=0, le=3)  # spec 15.2
-    # implicit (GBSA/obc2) is what the OpenMM path actually runs today. "explicit"
-    # is NOT yet wired (no addSolvent/PME) — it is accepted but the engine warns
-    # and runs+reports implicit. Real explicit-solvent replicas = final-tier TODO.
-    solvent: str = "implicit"  # implicit | explicit (explicit -> falls back to implicit)
+    # implicit (GBSA/obc2) is the default. "explicit" (ROADMAP_V5 E1) is REAL on the multi-ligand
+    # catalytic path: TIP3P water box + PME + Na+/Cl- neutralize (addSolvent before create_system),
+    # so a charged substrate/cofactor/metal cluster is stabilised instead of diffusing out of a GBSA
+    # pocket. Explicit on the single-ligand path still warns + falls back to implicit.
+    solvent: str = "implicit"  # implicit | explicit (explicit needs the multi-ligand build)
     temperature_K: float = 300.0
     timestep_fs: float = 2.0
     minimize_steps: int = 5000
