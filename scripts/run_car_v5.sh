@@ -12,7 +12,7 @@
 set -euo pipefail
 ulimit -n 65536 2>/dev/null || ulimit -n 8192 2>/dev/null || true
 
-MODE="${1:?usage: run_car_v5.sh <preflight|smoke|focused> [extra cli args...]}"; shift || true
+MODE="${1:?usage: run_car_v5.sh <preflight|smoke|corrected-smoke|focused> [extra cli args...]}"; shift || true
 
 CAR_ROOT="${CAR_ROOT:-/mnt/data/jglee/EvoLiEZ_car}"
 EVO_PY="${EVO_PY:-/mnt/data/jglee/envs/evoliez/bin/python}"
@@ -86,6 +86,19 @@ PY
     "$EVO_PY" -m evoliez.cli run -c "$CONFIG" --resume "$@"
     _provenance_verdict "$OUT";;
 
+  corrected-smoke)
+    # PR#8 verification (reviewer Day1): confirm the metal_requested fan-out fix actually puts Mg
+    # into CANDIDATE MDs on the real multi-GPU batch path (the bug was serial-ok / batch-broken).
+    # 3-candidate manifest (WT + lead + P438N), implicit, 0.05 ns, >=2 GPUs to force run_md_batches.
+    CONFIG="${CAR_CONFIG:-configs/car_srcar_3hp_v5_cmg.yaml}"
+    OUT="/mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_v5_cmg"
+    export EVOLIEZ_SEED_CANDIDATES_CSV="${EVOLIEZ_SEED_CANDIDATES_CSV:-$CAR_ROOT/configs/car_v5_corrected_mg_manifest.csv}"
+    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"      # >1 GPU => batch fan-out path
+    echo ">> corrected-Mg smoke  config=$CONFIG  out=$OUT  GPUs=$CUDA_VISIBLE_DEVICES"
+    echo ">> seed manifest=$EVOLIEZ_SEED_CANDIDATES_CSV (2 mutants + WT baseline)"
+    "$EVO_PY" -m evoliez.cli run -c "$CONFIG" --resume "$@"
+    _provenance_verdict "$OUT";;
+
   focused)
     CONFIG="${CAR_CONFIG:-configs/car_srcar_3hp_v5.yaml}"
     OUT="/mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_v5"
@@ -97,5 +110,5 @@ PY
     "$EVO_PY" -m evoliez.cli run -c "$CONFIG" --resume "$@"
     _provenance_verdict "$OUT";;
 
-  *) echo "unknown mode: $MODE (use preflight|smoke|focused)"; exit 2;;
+  *) echo "unknown mode: $MODE (use preflight|smoke|corrected-smoke|focused)"; exit 2;;
 esac
