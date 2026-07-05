@@ -30,6 +30,23 @@ focused ranking is withdrawn (confounded); these are re-evaluated Mg-consistent 
 - `car_srcar_3hp_v5_explicit_subset.yaml` (WT+4, 0.3 ns, replicas 1) → `run_car_v5.sh explicit-subset`
   — Day 5. Start short; escalate ns/replicas only if stable.
 
+## Co-substrate restraint decision (avoid a silent confound)
+E1 keeps `restrain_cosubstrate: true` (distance-only flat-bottom, r0 = 3.6 Å, k = 2 kcal/mol/Å²),
+**identical to the implicit baseline**. This is deliberate, not an oversight:
+- It makes E1 a **controlled implicit-vs-explicit contrast** — the ONLY changed variable is the
+  solvent model, so a retention/geometry difference is attributable to solvent.
+- The restraint is **flat-bottom → inactive within 3.6 Å**. In implicit the co-substrate escaped
+  *past* 3.6 Å despite it (retention 0.52), so if explicit keeps the pose inside the well, that is
+  the **solvent** holding it, not the restraint.
+- It is **distance-only on the co-substrate — NOT an angle restraint** (the O→Pα angle stays fully
+  read-only), so it cannot manufacture NAC. It is a declared *retention screen*, which the review
+  explicitly permits.
+- It restores a **valid WT baseline** (the focused WT diffused → no baseline); a retained WT gives
+  a meaningful reference for candidate ΔNAC.
+
+If E1 passes with the restraint, a **restraint-OFF confirmation** on the top candidate is the clean
+follow-up (strongest claim: explicit solvent holds the pose with no tether at all).
+
 ## Gating & verdict
 - **Do the build smoke first**; only run the subset if it builds clean.
 - PASS: WT baseline finite · Mg bridge tracked · O→P distance/angle finite · candidate-level
