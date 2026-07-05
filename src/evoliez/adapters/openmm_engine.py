@@ -666,6 +666,62 @@ def _ligand_system_generator_multi(off_ligs, workdir: Path,
     raise _LigandParamUnsupported(str(last))
 
 
+def _ligand_system_generator_explicit(off_ligs, workdir: Path,
+                                      cache_dir: "Path | None" = None,
+                                      with_metal: bool = True):
+    """ROADMAP_V5 E1 — a SystemGenerator for the EXPLICIT-solvent catalytic path: TIP3P water +
+    PME electrostatics (periodic), so a highly charged 3-HP⁻/ATP⁴⁻/Mg²⁺ cluster is stabilised by
+    real water + counter-ions instead of the implicit-GBSA screen that let the co-substrate diffuse
+    (E3 diagnostic). Same GAFF ligand ladder + shared ligand-keyed cache as the implicit path; the
+    ONLY differences are (1) no ``implicit/obc2.xml`` (implicit and explicit are mutually exclusive)
+    and (2) PME periodic kwargs. ``amber14/tip3p.xml`` supplies both the TIP3P water model and the
+    monovalent ions (Na⁺/Cl⁻) that ``addSolvent(neutralize=True)`` needs, and the Amber Mg²⁺ ion —
+    Mg is NEVER OpenFF, same invariant as the implicit path. Caller must ``modeller.addSolvent`` on
+    ``sg.forcefield`` before ``create_system`` so the topology is periodic (PME kicks in)."""
+    import hashlib
+
+    import openmm.app as app
+    from openmmforcefields.generators import SystemGenerator
+
+    off_ligs = list(off_ligs)
+    cache_root = cache_dir if cache_dir is not None else workdir
+    cache_root.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha1(
+        ("explicit|" + "|".join(_ligand_cache_key(o) for o in off_ligs)).encode("utf-8")
+    ).hexdigest()[:16]
+
+    ffs = ["gaff-2.11"]
+    try:
+        import espaloma  # noqa: F401
+        ffs.append("espaloma-0.3.2")
+    except Exception:
+        pass
+    # tip3p is REQUIRED (water + ions); with_metal is implied for the CAR adenylation path but we
+    # keep the flag so the water FF is always present regardless (explicit needs it either way).
+    _protein_ffs = ["amber14-all.xml", "amber14/tip3p.xml"]
+    last = None
+    for ff in ffs:
+        try:
+            sg = SystemGenerator(
+                forcefields=_protein_ffs,
+                small_molecule_forcefield=ff,
+                molecules=list(off_ligs),
+                cache=str(cache_root / f"ligff_explicit_{key}_{ff}.json"),
+                forcefield_kwargs={"constraints": app.HBonds, "rigidWater": True},
+                periodic_forcefield_kwargs={"nonbondedMethod": app.PME},
+                nonperiodic_forcefield_kwargs={"nonbondedMethod": app.NoCutoff},
+            )
+            for o in off_ligs:                  # PROBE each ligand ALONE (non-periodic)
+                sg.create_system(o.to_topology().to_openmm(), molecules=[o])
+            log.info("%d ligand(s) parameterized with %s (EXPLICIT/PME)", len(off_ligs), ff)
+            return sg, ff
+        except Exception as exc:
+            last = exc
+            log.warning("small-molecule FF %s cannot parameterize the ligand set "
+                        "(explicit): %s", ff, str(exc)[:200])
+    raise _LigandParamUnsupported(str(last))
+
+
 def run_md(
     cx: Complex,
     candidate_id: str,
@@ -820,19 +876,14 @@ def _run_real(
     import openmm.app as app
     from openmm import unit
 
-    # Solvent honesty (paper integrity): this path builds an IMPLICIT GBSA system
-    # (implicit/obc2.xml in the SystemGenerator below) — there is NO addSolvent /
-    # PME / periodic box yet. So we run AND report implicit regardless of the
-    # requested mode, warning if explicit was asked, rather than mislabelling a
-    # GBSA run as explicit-solvent. Real explicit-solvent replicas are a
-    # final-tier TODO (top candidates), not the per-candidate screening path.
-    actual_solvent = "implicit"
-    if cfg.solvent == "explicit":
-        log.warning(
-            "MD solvent='explicit' requested for %s, but the OpenMM path runs "
-            "implicit GBSA only (no PME/periodic box); running + reporting "
-            "IMPLICIT, not explicit", candidate_id,
-        )
+    # Solvent honesty (paper integrity): report what we ACTUALLY build. The default path is
+    # IMPLICIT GBSA (implicit/obc2.xml). ROADMAP_V5 E1 adds a real EXPLICIT path (TIP3P water box +
+    # PME + Na⁺/Cl⁻ neutralize) for the multi-ligand catalytic screen, so a highly charged
+    # 3-HP⁻/ATP⁴⁻/Mg²⁺ cluster is stabilised instead of diffusing out of a GBSA pocket (E3). Explicit
+    # requires the multi-ligand build (the modeller phase does addSolvent); a single-ligand request
+    # falls back to implicit with a warning rather than mislabelling.
+    _want_explicit = (cfg.solvent == "explicit")
+    actual_solvent = "implicit"        # finalised once `multi` is known (E1 explicit needs multi)
 
     apply_gpu_selection()
     # OpenFF AM1-BCC charging needs antechamber/sqm on PATH; inject
@@ -926,6 +977,13 @@ def _run_real(
     nac_on = bool(nac_cfg and getattr(nac_cfg, "enabled", False))
     _extras = list(extra_ligands or [])
     multi = nac_on and bool(_extras)
+    # E1: explicit solvent requires the multi-ligand build (the modeller phase does addSolvent on
+    # the full complex). A single-ligand explicit request falls back to implicit rather than lying.
+    if _want_explicit and multi:
+        actual_solvent = "explicit"
+    elif _want_explicit and not multi:
+        log.warning("MD solvent='explicit' for %s but this is the single-ligand path "
+                    "(no co-substrate); running + reporting IMPLICIT", candidate_id)
     try:
         if multi:
             specs = [(cx.ligand.id or "design", cx.ligand.smiles)] + [
@@ -996,7 +1054,12 @@ def _run_real(
         # AM1-BCC/antechamber charge derivation runs ONCE for the run's
         # (identical) ligand instead of re-running under each candidate's
         # workdir. Falls back to workdir when no shared dir was threaded in.
-        if multi:
+        if multi and actual_solvent == "explicit":
+            system_generator, _ff = _ligand_system_generator_explicit(
+                off_ligs, workdir, cache_dir=ligand_cache_dir,
+                with_metal=bool(metal_requested and nac_on),
+            )
+        elif multi:
             system_generator, _ff = _ligand_system_generator_multi(
                 off_ligs, workdir, cache_dir=ligand_cache_dir,
                 with_metal=bool(metal_requested and nac_on),
@@ -1110,6 +1173,25 @@ def _run_real(
             except Exception as _mex:  # noqa: BLE001
                 metal_setup_result.update(status=METAL_GEOM_FAIL, note=str(_mex)[:160])
                 log.warning("MD Mg2+ insertion failed for %s: %s", candidate_id, _mex)
+        # E1 — EXPLICIT solvent: after protein+ligands(+Mg) are in the modeller, wrap them in a
+        # TIP3P box with Na⁺/Cl⁻ neutralization. addSolvent APPENDS water/ions AFTER the solute, so
+        # every solute atom index (mol_blocks, the reactive NAC indices, the inserted Mg) is
+        # preserved and the restraint/NAC layers below stay valid. create_system then sees a
+        # periodic topology → PME. Mg stays an Amber ion (added before solvation, never OpenFF).
+        if actual_solvent == "explicit":
+            _n_before = modeller.topology.getNumAtoms()
+            modeller.addSolvent(
+                system_generator.forcefield, model="tip3p",
+                padding=1.0 * unit.nanometer, neutralize=True,
+                ionicStrength=0.15 * unit.molar,
+            )
+            _n_after = modeller.topology.getNumAtoms()
+            metal_setup_result["explicit_solvent"] = {
+                "model": "tip3p", "padding_nm": 1.0, "ionic_strength_M": 0.15,
+                "solvent_atoms_added": _n_after - _n_before,
+            }
+            log.info("MD explicit solvent for %s: TIP3P box + PME, %d solvent atoms added "
+                     "(Na+/Cl- neutralized, 0.15 M)", candidate_id, _n_after - _n_before)
         system = system_generator.create_system(
             modeller.topology, molecules=off_ligs
         )

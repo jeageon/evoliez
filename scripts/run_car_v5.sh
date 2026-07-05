@@ -12,7 +12,7 @@
 set -euo pipefail
 ulimit -n 65536 2>/dev/null || ulimit -n 8192 2>/dev/null || true
 
-MODE="${1:?usage: run_car_v5.sh <preflight|smoke|corrected-smoke|focused> [extra cli args...]}"; shift || true
+MODE="${1:?usage: run_car_v5.sh <preflight|smoke|corrected-smoke|explicit-smoke|explicit-subset|focused> [extra cli args...]}"; shift || true
 
 CAR_ROOT="${CAR_ROOT:-/mnt/data/jglee/EvoLiEZ_car}"
 EVO_PY="${EVO_PY:-/mnt/data/jglee/envs/evoliez/bin/python}"
@@ -99,6 +99,27 @@ PY
     "$EVO_PY" -m evoliez.cli run -c "$CONFIG" --resume "$@"
     _provenance_verdict "$OUT";;
 
+  explicit-smoke)
+    # E1 Day4 build smoke: does the explicit (TIP3P+PME) system BUILD and stay finite? WT + P438N,
+    # 20 ps. Not a science run — a build/stability gate before the subset. >=2 GPUs (batch path).
+    CONFIG="${CAR_CONFIG:-configs/car_srcar_3hp_v5_explicit_smoke.yaml}"
+    OUT="/mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_v5_e1_smoke"
+    export EVOLIEZ_SEED_CANDIDATES_CSV="${EVOLIEZ_SEED_CANDIDATES_CSV:-$CAR_ROOT/configs/car_v5_e1_build_smoke_manifest.csv}"
+    echo ">> E1 explicit BUILD smoke  config=$CONFIG  out=$OUT"
+    "$EVO_PY" -m evoliez.cli run -c "$CONFIG" --resume "$@"
+    _provenance_verdict "$OUT";;
+
+  explicit-subset)
+    # E1 Day5: explicit-solvent subset (WT + 4 candidates, 0.3 ns) — does explicit solvent retain
+    # productive O->P geometry that implicit GBSA lost? Mg-consistent (PR#8). RBFE/GBSA off.
+    CONFIG="${CAR_CONFIG:-configs/car_srcar_3hp_v5_explicit_subset.yaml}"
+    OUT="/mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_v5_e1"
+    export EVOLIEZ_SEED_CANDIDATES_CSV="${EVOLIEZ_SEED_CANDIDATES_CSV:-$CAR_ROOT/configs/car_v5_e1_subset_manifest.csv}"
+    echo ">> E1 explicit SUBSET  config=$CONFIG  out=$OUT"
+    echo ">> seed manifest=$EVOLIEZ_SEED_CANDIDATES_CSV"
+    "$EVO_PY" -m evoliez.cli run -c "$CONFIG" --resume "$@"
+    _provenance_verdict "$OUT";;
+
   focused)
     CONFIG="${CAR_CONFIG:-configs/car_srcar_3hp_v5.yaml}"
     OUT="/mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_v5"
@@ -110,5 +131,5 @@ PY
     "$EVO_PY" -m evoliez.cli run -c "$CONFIG" --resume "$@"
     _provenance_verdict "$OUT";;
 
-  *) echo "unknown mode: $MODE (use preflight|smoke|corrected-smoke|focused)"; exit 2;;
+  *) echo "unknown mode: $MODE (use preflight|smoke|corrected-smoke|explicit-smoke|explicit-subset|focused)"; exit 2;;
 esac

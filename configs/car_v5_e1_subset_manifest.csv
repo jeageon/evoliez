@@ -1,0 +1,6 @@
+mutation_string,category,rationale
+WT,control,parental baseline (Mg + valid O->P baseline)
+G430R;S433F;G407K,lead,prior static lead (re-evaluated Mg-consistent + explicit)
+P438N,clean_single,cleanest single-site design
+G430H;P438L;A275I,scalar_control,pipeline scalar control
+T265S;G274A;A275V,control,binding/stability control
