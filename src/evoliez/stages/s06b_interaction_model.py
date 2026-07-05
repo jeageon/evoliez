@@ -204,6 +204,8 @@ def _run_batch_chunk(payload):
 
     (gpu, reps_meta, ligand, cp_cfg, base_outdir, seed, extra_ligands,
      rep_msas) = payload
+    if not reps_meta:                         # defensive: never `boltz predict` an empty chunk dir
+        return gpu, "", []
     # IN_DIR and OUT_DIR MUST differ: Boltz rescans IN_DIR and errors if OUT_DIR
     # is nested inside it. Per-GPU names keep concurrent chunks isolated.
     chunk_in = Path(base_outdir) / f"_batch_in_gpu{gpu}"
@@ -290,10 +292,15 @@ def _run_batched_ensemble(reps, payloads, gpu_list, ligand, cp_cfg, outdir,
     # homologs gate Phase 1 while the others idle.
     rep_buckets = _lpt_partition(reps_meta_all, len(gpu_list),
                                  weight=lambda m: len(m[1]) ** 2)
+    # Skip GPUs whose bucket is EMPTY: with fewer reps than GPUs (e.g. 3 homologs on 4 GPUs)
+    # _lpt_partition returns empty buckets, and dispatching one runs `boltz predict` on a
+    # never-created _batch_in_gpuN dir → "Path does not exist" crashes the stage. Same class of
+    # bug as s08b's mutant fan-out (fixed in PR #9).
     chunks = [
         (g, rep_buckets[gi], ligand, cp_cfg, str(outdir),
          seed, extra_ligands, rep_msas)
         for gi, g in enumerate(gpu_list)
+        if rep_buckets[gi]
     ]
 
     # --- Phase 1: one batched Boltz process per GPU (concurrent) ---
@@ -1044,7 +1051,7 @@ class InteractionModelStage(Stage):
             # on macOS (local tests only).
             _pbuckets = _lpt_partition(payloads, len(gpu_list),
                                        weight=lambda p: len(p[1]) ** 2)  # p[1]=seq
-            chunks = [(g, _pbuckets[gi]) for gi, g in enumerate(gpu_list)]
+            chunks = [(g, _pbuckets[gi]) for gi, g in enumerate(gpu_list) if _pbuckets[gi]]
             mpctx = mp.get_context("spawn" if sys.platform == "darwin" else "fork")
             self.log.info("ensemble fan-out: %d reps across %d GPUs %s "
                           "(per-rep process pool)", len(reps), len(gpu_list), gpu_list)
