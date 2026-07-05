@@ -1,0 +1,4 @@
+system,mutation,mg_lines_in_minimized_pdb,mg_present
+_wt_reference,WT,2,yes
+mut_00000,G430R;S433F;G407K,2,yes
+mut_00001,P438N,2,yes

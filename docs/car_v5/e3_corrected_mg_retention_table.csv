@@ -1,0 +1,4 @@
+mutation,mg_bridge_occ,mg_nuc_occ,mg_leav_occ,attack_window_occ,first_bridge_loss,first_escape,d_nuc_pa_init,d_nuc_pa_final,n_frames,mode
+WT,0.0,0.0,0.0,0.0,0,0,6.57358705997467,5.1474303007125854,50,substrate_left_first (pose/solvent anchoring)
+G430R;S433F;G407K,0.0,1.0,0.0,0.02,0,0,6.098757386207581,4.293805360794067,50,substrate_left_first (pose/solvent anchoring)
+P438N,0.0,1.0,0.0,0.26,0,0,4.289799332618713,3.9616188406944275,50,substrate_left_first (pose/solvent anchoring)
