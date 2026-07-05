@@ -1,0 +1,19 @@
+{
+  "verdict": "CONDITIONAL_PASS",
+  "reasons": [
+    "geometry valid (angle finite, Mg tracked, WT baseline present) but candidates do not discriminate \u2014 a sampling limitation, NOT a pipeline failure"
+  ],
+  "checks": {
+    "metal_requested": true,
+    "metal_status": "valid_metal_setup",
+    "openff_parameterized": false,
+    "geometry_source": "legacy_reactive_geometry_from_mechanism_spec",
+    "wt_angle_finite": true,
+    "wt_baseline_present": true,
+    "n_candidates": 34,
+    "n_angle_computed": 33,
+    "n_angle_nan": 0,
+    "discriminates": false
+  },
+  "escalation": "longer MD / explicit solvent / QM-MM / reference-ensemble refinement"
+}

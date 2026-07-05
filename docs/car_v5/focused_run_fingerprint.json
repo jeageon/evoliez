@@ -1,0 +1,17 @@
+{
+  "run": "srcar_3hp_v5_focused",
+  "purpose": "2 ns reaction-geometry (NAC) discrimination on the reviewer-locked candidate set; NOT lead-efficacy",
+  "code_commit": "28efed47e1220281ca6b29dea6f14ace30400df1",
+  "code_branch": "feat/server-hardening",
+  "config_file": "configs/car_srcar_3hp_v5.yaml",
+  "config_sha256": "6391e4749407870bad6741acc13c76e5ea17a1e3029d9df726a32fcbadebd0be",
+  "manifest_file": "configs/car_v5_focused_candidates.csv",
+  "manifest_sha256": "9d6af1290b80bb0b03b1ca6649b90186d7a14371b17a22e01f648390468c6951",
+  "manifest_candidates": {"total_rows": 19, "wt_baseline": 1, "mutants_seeded_to_s07": 18},
+  "seed_mechanism": "EVOLIEZ_SEED_CANDIDATES_CSV (env-gated; no config field => config_sha1 stable, no purge)",
+  "md_tier": {"protocol_level": 3, "production_ns": 2.0, "replicas": 3, "top_candidates": 24},
+  "deferred": {"rbfe": false, "reason": "focused question is NAC geometry, not relative binding FE"},
+  "metal": {"co_fold_ccd": "MG", "md_placement": "deterministic Amber ion (never OpenFF)"},
+  "acceptance": "scripts/check_car_v5_provenance.py -> PASS/CONDITIONAL_PASS/FAIL on evidence-validity",
+  "output_dir": "/mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_v5"
+}

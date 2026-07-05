@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import os
 from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
@@ -172,6 +173,51 @@ class MutationGenStage(Stage):
                       "(no re-generation, folds reused)", len(cands))
         return True
 
+    def _candidates_from_manifest(self, csv_path: str, res) -> "List[Candidate]":
+        """Seed EXACTLY the mutations named in a focused-manifest CSV (``mutation_string``
+        column), bypassing stochastic generation. Fail-loud on a wt/sequence mismatch (a
+        numbering error must not silently mutate the wrong residue). WT/control rows with no
+        parseable mutation are skipped. Downstream (protected-assert, msa_permissiveness,
+        safety, provenance, ctx.put) is shared with the generated path, so run/load parity holds."""
+        import csv as _csv
+        from pathlib import Path
+
+        from evoliez.types import Candidate, Mutation
+        p = Path(csv_path)
+        if not p.exists():
+            raise FileNotFoundError(
+                "EVOLIEZ_SEED_CANDIDATES_CSV points at a missing file: %s" % csv_path)
+        cands: List[Candidate] = []
+        mism: List[str] = []
+        with p.open(newline="") as fh:
+            for row in _csv.DictReader(fh):
+                s = (row.get("mutation_string") or row.get("mutation") or "").strip()
+                if not s or s.upper() in ("WT", "PARENTAL", "NONE", "-"):
+                    continue
+                muts: List[Mutation] = []
+                for tok in s.split(";"):
+                    tok = tok.strip()
+                    if len(tok) >= 3 and tok[1:-1].lstrip("-").isdigit():
+                        wt, pos, mut = tok[0], int(tok[1:-1]), tok[-1]
+                        r = res.get(pos)
+                        if r is not None and getattr(r, "aa", "X") not in ("X", wt):
+                            mism.append("%s (structure has %s%d)" % (tok, r.aa, pos))
+                        muts.append(Mutation(wt=wt, position=pos, mut=mut))
+                if muts:
+                    cands.append(Candidate(
+                        candidate_id="mut_%05d" % len(cands), mutations=muts,
+                        generator="focused_manifest",
+                        details={"manifest_category": (row.get("category") or "").strip(),
+                                 "manifest_rationale": (row.get("rationale") or "").strip()}))
+        if mism:
+            raise RuntimeError(
+                "focused manifest mutation(s) disagree with the structure sequence — likely a "
+                "residue-numbering mismatch; fix the manifest or config: " + "; ".join(mism))
+        if not cands:
+            raise RuntimeError(
+                "focused manifest %s yielded 0 mutation candidates (only WT/controls?)" % csv_path)
+        return cands
+
     def run(self, ctx: RunContext) -> None:
         cx = ctx.require("wt_complex")
         feats = ctx.require("position_features")
@@ -190,28 +236,39 @@ class MutationGenStage(Stage):
         nearest = {p: min(c.distance for c in cs)
                    for p, cs in by_pos_contacts.items()}
 
-        # --- per-generator single-substitution pools (NO global cap here) --- #
-        pools: Dict[str, _Pool] = {}
-        if "chemistry_rules" in mgcfg.methods:
-            pools["chemistry_rules"] = self._chemistry(
-                designable, res, by_pos_contacts, atom)
-        if "msa_sampler" in mgcfg.methods:
-            pools["msa_sampler"] = self._msa(designable, res, pf, mgcfg)
-        if "ligandmpnn" in mgcfg.methods:
-            pools["ligandmpnn"] = self._ligandmpnn(
-                ctx, cx, designable, catalytic, fixed, res, mgcfg)
+        # FOCUSED run (env-gated, purge-safe: NOT a config field): MD exactly the
+        # reviewer-locked manifest instead of stochastically generating hundreds of
+        # candidates. This keeps the s08b fold queue at the manifest size (no 41-fold
+        # blow-up) and makes the focused set fully reproducible. WT/control rows with no
+        # parseable mutation are skipped (WT is the s10 reference baseline, not a candidate).
+        seed_csv = os.environ.get("EVOLIEZ_SEED_CANDIDATES_CSV", "").strip()
+        if seed_csv:
+            candidates = self._candidates_from_manifest(seed_csv, res)
+            self.log.info("s07: seeded %d candidate(s) from focused manifest %s "
+                          "(stochastic generation bypassed)", len(candidates), seed_csv)
+        else:
+            # --- per-generator single-substitution pools (NO global cap here) --- #
+            pools: Dict[str, _Pool] = {}
+            if "chemistry_rules" in mgcfg.methods:
+                pools["chemistry_rules"] = self._chemistry(
+                    designable, res, by_pos_contacts, atom)
+            if "msa_sampler" in mgcfg.methods:
+                pools["msa_sampler"] = self._msa(designable, res, pf, mgcfg)
+            if "ligandmpnn" in mgcfg.methods:
+                pools["ligandmpnn"] = self._ligandmpnn(
+                    ctx, cx, designable, catalytic, fixed, res, mgcfg)
 
-        # allowed-AA pool per position from EVERY proposed substitution
-        allowed: Dict[int, set] = {}
-        for gen_pool in pools.values():
-            for muts, _ in gen_pool:
-                for m in muts:
-                    allowed.setdefault(m.position, set()).add(m.mut)
-        if mgcfg.multipoint:
-            pools["multipoint"] = self._multipoint(allowed, res, nearest, mgcfg)
+            # allowed-AA pool per position from EVERY proposed substitution
+            allowed: Dict[int, set] = {}
+            for gen_pool in pools.values():
+                for muts, _ in gen_pool:
+                    for m in muts:
+                        allowed.setdefault(m.position, set()).add(m.mut)
+            if mgcfg.multipoint:
+                pools["multipoint"] = self._multipoint(allowed, res, nearest, mgcfg)
 
-        # --- quota-bounded assembly + dedup + trim --------------------------- #
-        candidates = self._assemble(pools, mgcfg)
+            # --- quota-bounded assembly + dedup + trim --------------------------- #
+            candidates = self._assemble(pools, mgcfg)
 
         # CROSS-GENERATOR protected ASSERT (reviewer requirement): the generators
         # already exclude catalytic/fixed, so this is the independent check that
