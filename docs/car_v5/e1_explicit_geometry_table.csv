@@ -1,0 +1,6 @@
+system,mutation,category,solvent,retention_fraction,escape,d_initial_ang,d_min_ang,d_mean_ang,angle_mean_deg
+WT,WT,control,explicit,1.00,False,3.20,4.70,5.12,169
+mut_00000,G430R;S433F;G407K,lead,explicit,0.88,False,3.20,4.96,5.70,98
+mut_00001,P438N,clean_single,explicit,0.12,True,3.20,5.27,6.33,112
+mut_00002,G430H;P438L;A275I,scalar_control,explicit,0.54,True,3.20,5.47,5.98,131
+mut_00003,T265S;G274A;A275V,control,explicit,0.14,True,3.20,5.41,6.46,95
