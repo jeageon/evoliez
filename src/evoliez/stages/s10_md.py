@@ -253,7 +253,7 @@ class MDStage(Stage):
                 _md_tasks, _gpu_pool, mdcfg,
                 ligand_cache_dir=str(ligand_cache_dir) if ligand_cache_dir
                 else None, extra_specs=extra_specs, catalytic=catalytic,
-                fail_loud_on_cpu=_fail_loud)
+                fail_loud_on_cpu=_fail_loud, metal_requested=_metal_requested)
         else:
             for _cid, _mc, _wd, _inst in _md_tasks:
                 _results[_cid] = run_md(

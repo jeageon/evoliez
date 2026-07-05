@@ -24,7 +24,7 @@ def _md_chunk_worker(payload):
     """Run ONE GPU's chunk of candidates through run_md (module-level + picklable). Pins the
     GPU before the heavy import; returns {candidate_id: MDResult}. A single candidate's failure
     is captured as a failed MDResult so it never kills the chunk."""
-    gpu, tasks, mdcfg, ligand_cache_dir, extra_specs, catalytic, fail_loud = payload
+    gpu, tasks, mdcfg, ligand_cache_dir, extra_specs, catalytic, fail_loud, metal_requested = payload
     if gpu is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
     if not tasks:
@@ -40,7 +40,7 @@ def _md_chunk_worker(payload):
                 mc, cid, mdcfg, Path(wd), instability=inst,
                 catalytic_positions=catalytic, backend=Backend.real,
                 dry_run=False, ligand_cache_dir=lcd, extra_ligands=extra_specs,
-                fail_loud_on_cpu=fail_loud)
+                fail_loud_on_cpu=fail_loud, metal_requested=metal_requested)
         except Exception as exc:  # noqa: BLE001 — one candidate must not kill the chunk
             out[cid] = MDResult(
                 candidate_id=cid, status="failed",
@@ -60,9 +60,15 @@ def run_md_batches(
     extra_specs,
     catalytic: Sequence[int],
     fail_loud_on_cpu: bool = False,
+    metal_requested: bool = False,
 ) -> Dict[str, object]:
     """Fan run_md across the GPU pool (one chunk per GPU, round-robin). Returns
-    {candidate_id: MDResult}. The caller handles the <=1-GPU / mock serial fallback."""
+    {candidate_id: MDResult}. The caller handles the <=1-GPU / mock serial fallback.
+
+    ``metal_requested`` MUST be threaded here: the WT reference MD runs via a direct run_md()
+    call (which passes it), but every candidate runs through this fan-out. Omitting it silently
+    dropped Mg from ALL candidate MDs while WT kept it — confounding every WT-vs-mutant NAC
+    comparison in a multi-GPU run (E3 diagnostic, 2026-07-05)."""
     import multiprocessing as mp
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -70,7 +76,8 @@ def run_md_batches(
     chunks: List[list] = [[] for _ in gpus]
     for i, t in enumerate(tasks):
         chunks[i % len(gpus)].append(t)
-    payloads = [(g, ch, mdcfg, ligand_cache_dir, extra_specs, list(catalytic), fail_loud_on_cpu)
+    payloads = [(g, ch, mdcfg, ligand_cache_dir, extra_specs, list(catalytic),
+                 fail_loud_on_cpu, metal_requested)
                 for g, ch in zip(gpus, chunks) if ch]
     out: Dict[str, object] = {}
     # SPAWN (not fork): a forked worker inherits the parent's already-imported openmm_engine
