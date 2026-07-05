@@ -57,3 +57,6 @@ reports_out/
 /tmp/
 # regenerable v3 run reports (same policy as /reports/, runs/)
 /reports_v3/
+
+# CAR run artifacts (deliverable in GDrive; never commit)
+car/results/
