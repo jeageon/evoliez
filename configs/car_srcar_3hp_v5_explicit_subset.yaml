@@ -75,7 +75,7 @@ complex_prediction:
 
 interaction_model:
   enabled: true
-  representative_homologs: auto
+  representative_homologs: 3              # E1: minimal s06b (manifest-seeded, ml_score irrelevant)
   representative_coverage: 0.90
   representative_min: 40
   representative_max: 48
