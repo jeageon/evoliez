@@ -1,0 +1,20 @@
+mutation,mg_bridge_occ,mg_nuc_occ,mg_leav_occ,attack_window_occ,first_bridge_loss,first_escape,d_nuc_pa_init,d_nuc_pa_final,n_frames,mode
+WT,0.0,0.0,0.0,0.0,0,0,5.925019383430481,6.6566067934036255,50,substrate_left_first (pose/solvent anchoring)
+G430R;S433F;G407K,,,,,,,,,50,no MG in topology
+G430R,,,,,,,,,50,no MG in topology
+S433F,,,,,,,,,50,no MG in topology
+G407K,,,,,,,,,50,no MG in topology
+G430R;S433F,,,,,,,,,50,no MG in topology
+G430R;G407K,,,,,,,,,50,no MG in topology
+S433F;G407K,,,,,,,,,50,no MG in topology
+P438N,,,,,,,,,50,no MG in topology
+P438R,,,,,,,,,50,no MG in topology
+P438K,,,,,,,,,50,no MG in topology
+P438Q,,,,,,,,,50,no MG in topology
+P438S,,,,,,,,,50,no MG in topology
+P438T,,,,,,,,,50,no MG in topology
+Y264F;T265S;G274A,,,,,,,,,50,no MG in topology
+P438R;G407H,,,,,,,,,50,no MG in topology
+T265S;G274A;A275V,,,,,,,,,50,no MG in topology
+G430H;S433I,,,,,,,,,50,no MG in topology
+G430H;P438L;A275I,,,,,,,,,50,no MG in topology
