@@ -751,11 +751,13 @@ def _load_plddt(outdir: Path, idx: int) -> List[float]:
     return []
 
 
-def _parse_cif_atoms(path: Path):
+def _parse_cif_atoms(path: Path, fold_only_metal: "str | None" = None):
     """Minimal mmCIF _atom_site loop parser (Boltz default output format).
-    Returns (residues[CA], ligand_atoms[HETATM])."""
+    Returns (residues[CA], ligand_atoms[HETATM]). ``fold_only_metal`` (a CCD code)
+    drops ONLY the metal residue EvoLiEZ co-folded — never a target's own metal."""
     from evoliez.types import LigandAtom, Residue
 
+    drop = _fold_only_metal_resname(fold_only_metal)
     lines = path.read_text().splitlines()
     cols: list[str] = []
     residues: list[Residue] = []
@@ -801,10 +803,15 @@ def _parse_cif_atoms(path: Path):
                                 # primary ligand = first ligand chain -> lig;
                                 # co-modelled extra ligands (other chains) -> extra
                                 # (v2 multi-ligand: full functional state for s06).
-                                # A co-folded monatomic metal ion is dropped (never a
-                                # downstream OpenFF ligand; MD re-places it as an Amber ion).
+                                # Drop ONLY the fold-only metal WE injected (by CCD residue
+                                # name) -> never a target's own heme/metalloenzyme metal.
+                                rn = (p[idx["label_comp_id"]].upper()
+                                      if "label_comp_id" in idx else "")
                                 el = p[idx["type_symbol"]]
-                                if (el or "").upper() not in _METAL_ION_ELEMENTS:
+                                # drop ONLY a true monatomic ion (resname==element==injected CCD)
+                                # -> a polyatomic ligand sharing the code keeps every atom
+                                if not (drop and rn == drop
+                                        and (el or "").strip().upper() == drop):
                                     ck = ("label_asym_id" if "label_asym_id" in idx
                                           else "auth_asym_id" if "auth_asym_id" in idx
                                           else None)
@@ -827,19 +834,33 @@ def _parse_cif_atoms(path: Path):
     return residues, lig, extra
 
 
-# Monatomic metal-ion elements co-folded for substrate pre-organization but DROPPED from
-# the parsed ligand set: MD re-places the metal as an Amber ion, and a single-atom ion is
-# never an OpenFF-parameterizable organic ligand. Skipping them keeps s09/s10 seeing exactly
-# the organic ligand set they saw before the co-fold — only the substrate coordinates change.
-_METAL_ION_ELEMENTS = {"MG", "MN", "ZN", "CA", "FE", "NI", "CO", "CU", "K", "NA"}
+# CCD codes of monatomic metal ions EvoLiEZ may co-fold as a fold-only prior (Mg2+ bridging the
+# CAR substrate/cofactor anions). Used ONLY to VALIDATE a caller-supplied `fold_only_metal`: the
+# parser drops a metal residue ONLY when the caller states which ion WE injected into THIS Boltz
+# spec. A target's OWN metal — heme Fe, a metalloenzyme catalytic Zn, a metal-centered organic
+# ligand — is NEVER dropped (fold_only_metal is None for those), so this stays a general-purpose
+# enzyme parser. The co-folded ion is re-placed at MD as an Amber ion, so dropping it here keeps
+# s09/s10 seeing the same organic ligand set as before the co-fold — only substrate coords change.
+_KNOWN_METAL_CCDS = {"MG", "MN", "ZN", "CA", "FE", "NI", "CO", "CU", "K", "NA"}
 
 
-def _parse_pdb_atoms(path: Path):
+def _fold_only_metal_resname(fold_only_metal: "str | None") -> "str | None":
+    """Normalize+validate the caller's injected metal CCD to a resname to drop, or None.
+    Only a RECOGNIZED metal CCD is honoured, so a stray value can never drop a real ligand."""
+    if not fold_only_metal:
+        return None
+    code = str(fold_only_metal).strip().upper()
+    return code if code in _KNOWN_METAL_CCDS else None
+
+
+def _parse_pdb_atoms(path: Path, fold_only_metal: "str | None" = None):
     """Minimal PDB parser: (residues[CA], ligand_atoms[HETATM]). Mirrors
     _parse_cif_atoms so the structure backbone and the per-sample ligand poses
-    share one extraction path."""
+    share one extraction path. ``fold_only_metal`` (a CCD code, e.g. 'MG') drops
+    ONLY the metal residue EvoLiEZ co-folded into this spec — never a target's own metal."""
     from evoliez.types import LigandAtom, Residue
 
+    drop = _fold_only_metal_resname(fold_only_metal)
     residues: list[Residue] = []
     lig: list[LigandAtom] = []
     extra: dict = {}                       # v2 multi-ligand: non-primary ligand chains
@@ -860,8 +881,8 @@ def _parse_pdb_atoms(path: Path):
             # (C, D, …) -> collected into `extra` (v2 multi-ligand: the FULL functional state
             # for the s06 design mask). The PDB chain id is column 22 (0-based index 21).
             el = line[76:78].strip() or line[12:14].strip()
-            if el.upper() in _METAL_ION_ELEMENTS:
-                continue      # co-folded metal ion: pre-organizes the fold, not a downstream ligand
+            if drop and line[17:20].strip().upper() == drop and el.upper() == drop:
+                continue      # fold-only MONATOMIC metal WE injected (resname==element==CCD)
             chain = line[21] if len(line) > 21 else " "
             if primary_chain is None:
                 primary_chain = chain
@@ -877,17 +898,18 @@ def _parse_pdb_atoms(path: Path):
     return residues, lig, extra
 
 
-def _parse_structure_atoms(path: Path):
+def _parse_structure_atoms(path: Path, fold_only_metal: "str | None" = None):
     """(residues[CA], ligand_atoms[HETATM]) from a Boltz .cif or .pdb model."""
     if path.suffix in (".cif", ".mmcif"):
-        return _parse_cif_atoms(path)
-    return _parse_pdb_atoms(path)
+        return _parse_cif_atoms(path, fold_only_metal)
+    return _parse_pdb_atoms(path, fold_only_metal)
 
 
-def _parse_real_structure(pdb: Path, sequence: str, ligand: Ligand) -> Complex:
+def _parse_real_structure(pdb: Path, sequence: str, ligand: Ligand,
+                          fold_only_metal: "str | None" = None) -> Complex:
     from evoliez.types import ProteinStructure
 
-    residues, lig_atoms, extra_poses = _parse_structure_atoms(pdb)
+    residues, lig_atoms, extra_poses = _parse_structure_atoms(pdb, fold_only_metal)
     for i, r in enumerate(residues):
         if i < len(sequence):
             r.aa = sequence[i]
