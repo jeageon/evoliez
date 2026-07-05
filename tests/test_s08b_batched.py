@@ -117,7 +117,7 @@ def _drive_two_phase(tmp_path, cand_ids, gpu_list, lig, cp, msa_path=None,
     buckets = _lpt_partition(muts_meta_all, len(gpu_list),
                              weight=lambda m: len(m[1]) ** 2)
     chunks = [
-        (g, buckets[gi], lig, cp, str(tmp_path), seed, extra_ligands, msa_path)
+        (g, buckets[gi], lig, cp, str(tmp_path), seed, extra_ligands, msa_path, None)
         for gi, g in enumerate(gpu_list)
     ]
     parse_jobs = []
@@ -195,7 +195,7 @@ def test_phase1_writes_mutant_yamls_into_chunk_in_dir(tmp_path, monkeypatch):
     _install_fake_boltz_run(monkeypatch, folded_log)
     cp = ComplexPredictionConfig(diffusion_samples=1, use_msa_server=False)
     chunk = ("0", [("mut_00001", "AGS"), ("mut_00002", "AGS")],
-             _ligand(), cp, str(tmp_path), 1234, None, None)
+             _ligand(), cp, str(tmp_path), 1234, None, None, None)
 
     gpu, results_dir, muts = _run_mutant_batch_chunk(chunk)
 
@@ -225,7 +225,7 @@ def test_batched_fasta_msa_not_left_in_chunk_dir(tmp_path, monkeypatch):
     assert Path(shared).parent == tmp_path
 
     chunk = ("0", [("mut_00001", "AGS"), ("mut_00002", "AGS")],
-             _ligand(), cp, str(tmp_path), 1234, None, shared)
+             _ligand(), cp, str(tmp_path), 1234, None, shared, None)
     _gpu, results_dir, _muts = _run_mutant_batch_chunk(chunk)
 
     in_dir = tmp_path / "_batch_in_gpu0"

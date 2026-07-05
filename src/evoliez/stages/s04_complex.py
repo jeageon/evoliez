@@ -53,6 +53,12 @@ class ComplexPredictionStage(Stage):
                     "s04: target_structure %s not found; using Boltz", ref_pdb)
 
         if cx is None:
+            from evoliez.mechanism.spec import metal_ion_ccd
+            metal_ccd = metal_ion_ccd(getattr(ctx.config, "mechanism", None))
+            if metal_ccd:
+                self.log.info(
+                    "s04: co-folding metal ion %s (mechanism.reaction_state.metal_state) "
+                    "to pre-organize the anionic substrate/cofactor", metal_ccd)
             cx = predict_complex(
                 "wt",
                 seq,
@@ -64,6 +70,7 @@ class ComplexPredictionStage(Stage):
                 msa_path=msa_path if msa_path.exists() else None,
                 seed=ctx.config.seed,
                 extra_ligands=extra_ligands,
+                metal_ccd=metal_ccd,
             )
         ctx.put("wt_complex", cx)
         ctx.persist_meta("complex_confidence", cx.confidence)

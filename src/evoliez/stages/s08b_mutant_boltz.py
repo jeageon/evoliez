@@ -41,13 +41,13 @@ def _mutant_predict_worker(payload, gpu):
     the SAME conditions as the WT (s04) -- otherwise the Δ confounds the mutation
     effect with an input-condition difference (no MSA / missing cofactor)."""
     (cand_id, mut_seq, ligand, cp_cfg, outdir, backend, seed, dry_run,
-     msa_path, extra_ligands) = payload
+     msa_path, extra_ligands, metal_ccd) = payload
     mut_outdir = Path(outdir) / cand_id
     mut_outdir.mkdir(parents=True, exist_ok=True)
     mut_cx = predict_complex(
         cand_id, mut_seq, ligand, cp_cfg, mut_outdir,
         backend=backend, dry_run=dry_run, seed=seed, gpu_device=gpu,
-        msa_path=msa_path, extra_ligands=extra_ligands,
+        msa_path=msa_path, extra_ligands=extra_ligands, metal_ccd=metal_ccd,
     )
     return cand_id, mut_cx
 
@@ -82,7 +82,7 @@ def _run_mutant_batch_chunk(payload):
     from evoliez.adapters.boltz import predict_batch, write_batch_input
 
     (gpu, muts_meta, ligand, cp_cfg, base_outdir, seed, extra_ligands,
-     msa_path) = payload
+     msa_path, metal_ccd) = payload
     # IN_DIR and OUT_DIR MUST differ: Boltz rescans IN_DIR and errors if OUT_DIR
     # is nested inside it. Per-GPU names keep concurrent chunks isolated.
     chunk_in = Path(base_outdir) / f"_batch_in_gpu{gpu}"
@@ -94,7 +94,7 @@ def _run_mutant_batch_chunk(payload):
         # MSA difference. write_batch_input rewrites the a3m into chunk_in.
         any_msa_server |= write_batch_input(
             chunk_in, cand_id, seq, ligand, cp_cfg,
-            msa_path=msa_path, extra_ligands=extra_ligands,
+            msa_path=msa_path, extra_ligands=extra_ligands, metal_ccd=metal_ccd,
         )
     results_dir = predict_batch(
         chunk_in, chunk_out, cp_cfg, seed=seed, gpu_device=gpu,
@@ -147,7 +147,7 @@ def _shared_msa_a3m(msa_path, outdir, log=None):
 
 
 def _run_batched_mutants(payloads, gpu_list, ligand, cp_cfg, outdir, seed,
-                         extra_ligands, msa_path, log):
+                         extra_ligands, msa_path, log, metal_ccd=None):
     """GPU-batched mutant prediction: Phase 1 (one batched Boltz process per GPU)
     then Phase 2 (parallel per-mutant scoped parse). Returns
     {cand_id: Complex} — only mutants whose prediction parsed (a failed/skipped
@@ -178,7 +178,7 @@ def _run_batched_mutants(payloads, gpu_list, ligand, cp_cfg, outdir, seed,
                                  weight=lambda m: len(m[1]) ** 2)
     chunks = [
         (g, mut_buckets[gi], ligand, cp_cfg, str(outdir),
-         seed, extra_ligands, shared_msa)
+         seed, extra_ligands, shared_msa, metal_ccd)
         for gi, g in enumerate(gpu_list)
     ]
 
@@ -266,9 +266,14 @@ class MutantBoltzStage(Stage):
         msa_file = ctx.paths.msa / "alignment.fasta"
         msa_path = str(msa_file) if msa_file.exists() else None
         extra_ligands = ctx.get("extra_ligands", []) or None
+        # Co-fold the SAME physiological metal ion as the WT (s04) so every mutant is
+        # predicted under identical conditions — otherwise ΔBoltz confounds the mutation with
+        # a metal-present/absent input difference. Derived from mechanism.reaction_state.
+        from evoliez.mechanism.spec import metal_ion_ccd
+        metal_ccd = metal_ion_ccd(getattr(ctx.config, "mechanism", None))
         payloads = [
             (c.candidate_id, _mutant_sequence(seq, c), ligand, cp_cfg, outdir,
-             backend, ctx.config.seed, ctx.dry_run, msa_path, extra_ligands)
+             backend, ctx.config.seed, ctx.dry_run, msa_path, extra_ligands, metal_ccd)
             for c in top
         ]
         predicted = {}  # candidate_id -> mutant Complex
@@ -280,7 +285,7 @@ class MutantBoltzStage(Stage):
             # mock multi-GPU path below keeps the per-mutant pool (byte-identical).
             predicted = _run_batched_mutants(
                 payloads, gpu_list, ligand, cp_cfg, outdir, ctx.config.seed,
-                extra_ligands, msa_path, self.log)
+                extra_ligands, msa_path, self.log, metal_ccd=metal_ccd)
         elif len(gpu_list) > 1 and not ctx.dry_run:
             import multiprocessing as mp
             import sys

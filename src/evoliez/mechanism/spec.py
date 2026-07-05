@@ -135,6 +135,37 @@ class ReactionInfo(_Base):
     model_config = {"extra": "forbid", "populate_by_name": True}
 
 
+# CCD codes (PDB Chemical Component Dictionary) for monatomic metal ions, keyed by the
+# leading element symbol. Used to CO-FOLD the physiological metal declared in
+# ``reaction_state.metal_state`` (e.g. "Mg2+_bridged") in Boltz, so an anionic
+# substrate + cofactor are pre-organized AROUND the cation during diffusion instead of
+# electrostatically repelling to a non-productive starting pose. The ion is co-folded
+# ONLY (dropped from the parsed ligand set — MD re-places it deterministically as an
+# Amber ion), so this NEVER feeds OpenFF.
+_METAL_ELEMENT_TO_CCD = {
+    "Mg": "MG", "Mn": "MN", "Zn": "ZN", "Ca": "CA", "Fe": "FE",
+    "Ni": "NI", "Co": "CO", "Cu": "CU", "K": "K", "Na": "NA",
+}
+
+
+def metal_ion_ccd(mechanism) -> Optional[str]:
+    """Boltz CCD code for the metal declared in ``mechanism.reaction_state.metal_state``
+    (e.g. "Mg2+_bridged" -> "MG"), or None when no mechanism / no metal is declared.
+    Parses the LEADING element symbol so coordination suffixes ("_bridged",
+    "_coordinated") never false-match an unrelated element."""
+    if mechanism is None:
+        return None
+    rs = getattr(mechanism, "reaction_state", None)
+    state = getattr(rs, "metal_state", None) if rs is not None else None
+    if not state:
+        return None
+    import re
+    m = re.match(r"\s*([A-Za-z][a-z]?)", str(state))
+    if not m:
+        return None
+    return _METAL_ELEMENT_TO_CCD.get(m.group(1).capitalize())
+
+
 class MechanismSpec(_Base):
     """The full mechanism envelope. ``reaction.class`` selects a template that supplies
     default geometry terms + required reaction-state fields; the config overrides."""
