@@ -1,7 +1,7 @@
 {
   "run": "srcar_3hp_v5_focused",
   "purpose": "2 ns reaction-geometry (NAC) discrimination on the reviewer-locked candidate set; NOT lead-efficacy",
-  "code_commit": "28efed47e1220281ca6b29dea6f14ace30400df1",
+  "code_commit": "4d0eb7e",
   "code_branch": "feat/server-hardening",
   "config_file": "configs/car_srcar_3hp_v5.yaml",
   "config_sha256": "6391e4749407870bad6741acc13c76e5ea17a1e3029d9df726a32fcbadebd0be",
