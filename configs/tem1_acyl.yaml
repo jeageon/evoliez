@@ -1,0 +1,106 @@
+# NON-REDOX generality target — TEM-1 beta-lactamase (class A serine hydrolase, UniProt P62593).
+# Reaction: catalytic Ser68 Ogamma (STFK motif; Ambler Ser70) attacks the beta-lactam carbonyl C
+# = nucleophilic_acyl_substitution, a genuinely NON-redox, NON-metal, NON-CAR chemistry.
+# backend: mock -> validates the framework + runs end-to-end locally. FLIP to backend: real + a
+# homolog DB on the GPU server for the real generality run (see docs/car_v5/nonredox_tem1_plan.md).
+# CAVEAT: TEM-1's nucleophile is a PROTEIN residue (Ser Ogamma), not a ligand atom as in CAR/FDH;
+# the ligand-centric reactive_geometry below is a placeholder (mock) — a real reaction-geometry run
+# needs the protein-nucleophile NAC extension (documented as the follow-up).
+
+project:
+  name: tem1_acyl_nonredox
+  objective: activity_improvement
+  output_dir: runs/tem1_acyl
+
+input:
+  target_id: tem1_blat
+  target_fasta: car/targets/tem1_blat.fasta
+  ligand:
+    id: benzylpenicillin
+    type: smiles
+    value: "CC1(C)S[C@@H]2[C@H](NC(=O)Cc3ccccc3)C(=O)N2[C@H]1C(=O)O"   # penicillin G (beta-lactam substrate)
+    role: design_ligand
+  catalytic_residues: ["S68", "K71"]              # STFK catalytic Ser + Lys (match the FASTA)
+  fixed_residues: ["S68", "K71"]
+  ec_number: "3.5.2.6"
+
+mechanism:                       # NON-REDOX acyl class under the SAME mechanism-configurable framework
+  reaction:
+    class: nucleophilic_acyl_substitution
+  reaction_state:
+    protonation_model: pH7
+    conformational_state: michaelis
+
+homologs:
+  method: mmseqs2
+  max_sequences: 500
+
+msa:
+  method: mafft
+  remote_server: false
+
+complex_prediction:
+  primary_method: boltz2
+  diffusion_samples: 2
+
+interaction_model:
+  enabled: true
+  representative_homologs: 3
+  poses_per_homolog: 2
+
+gnn:
+  enabled: false
+
+mutation_generation:
+  methods: [chemistry_rules]
+  max_candidates: 40
+  design_radius_angstrom: 9.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 12
+  top_for_md: 4
+  mutant_boltz_enabled: true
+  mutant_boltz_top_n: 3
+  mutant_boltz_diffusion_samples: 2
+
+validation:
+  redocking:
+    methods: [vina]
+    poses_per_candidate: 2
+    exhaustiveness: 1
+    cpu: 4
+  stability:
+    method: ml
+  md:
+    enabled: true
+    protocol_level: 0
+    top_candidates: 4
+    reactive_geometry:
+      enabled: true
+      # PLACEHOLDER (mock): beta-lactam ring N -> its scissile carbonyl C. A real run needs the
+      # protein-Ser-Ogamma nucleophile NAC (follow-up), not this ligand-internal proxy.
+      donor_smarts: "[NX3]"
+      acceptor_smarts: "[CX3]=[OX1]"
+      donor_idx: 0
+      acceptor_idx: 0
+      distance_max: 3.5
+      angle_min: 150.0
+      label: serine_attack_on_betalactam_carbonyl
+
+selection_lanes:
+  enabled: true
+  from_ml_high: 8
+  from_diversity: 2
+  low_ml_controls: 2
+
+compute:
+  cpu_core_budget: 8
+
+output:
+  final_library_size: 16
+  report_format: [markdown, csv]
+
+backend: mock
+seed: 1234
