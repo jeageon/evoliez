@@ -1151,10 +1151,11 @@ def _run_real(
                 from evoliez.md.nac import ReactiveSpec, resolve_reactive_indices
                 _spec = ReactiveSpec(
                     donor_smarts=nac_cfg.donor_smarts, acceptor_smarts=nac_cfg.acceptor_smarts,
+                    donor_protein=getattr(nac_cfg, "donor_protein", None),
                     donor_idx=nac_cfg.donor_idx, acceptor_idx=nac_cfg.acceptor_idx,
                     transfer_is_h=nac_cfg.transfer_is_h)
                 _rdb = [(off.to_rdkit(), gidx) for off, gidx in mol_blocks]
-                _nmap = resolve_reactive_indices(_rdb, _spec)
+                _nmap = resolve_reactive_indices(_rdb, _spec, topology=modeller.topology)
                 if _nmap and "donor_heavy" in _nmap and "acceptor" in _nmap:
                     _posA = np.array(modeller.positions.value_in_unit(unit.angstrom))
                     _nuc, _pha = _posA[_nmap["donor_heavy"]], _posA[_nmap["acceptor"]]
@@ -1235,6 +1236,7 @@ def _run_real(
                 nac_spec = ReactiveSpec(
                     donor_smarts=nac_cfg.donor_smarts,
                     acceptor_smarts=nac_cfg.acceptor_smarts,
+                    donor_protein=getattr(nac_cfg, "donor_protein", None),
                     donor_idx=nac_cfg.donor_idx,
                     acceptor_idx=nac_cfg.acceptor_idx,
                     transfer_is_h=nac_cfg.transfer_is_h,
@@ -1246,7 +1248,7 @@ def _run_real(
                     retention_min_fraction=getattr(nac_cfg, "retention_min_fraction", 0.8),
                 )
                 rd_blocks = [(off.to_rdkit(), blk) for off, blk in mol_blocks]
-                nac_map = resolve_reactive_indices(rd_blocks, nac_spec)
+                nac_map = resolve_reactive_indices(rd_blocks, nac_spec, topology=modeller.topology)
                 if nac_map:
                     nac_idx = (nac_map["donor_heavy"], nac_map["transfer"],
                                nac_map["acceptor"])

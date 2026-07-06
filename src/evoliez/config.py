@@ -219,6 +219,12 @@ class ReactiveGeometryConfig(_Base):
     enabled: bool = False
     donor_smarts: str = ""
     acceptor_smarts: str = ""
+    # PROTEIN-nucleophile donor (serine hydrolase / protease): 'RESNAME:ATOM[:RESNUM]'
+    # (e.g. 'SER:OG:68'). When set, the nucleophile is this PROTEIN catalytic-residue atom
+    # (resolved from the MD topology) instead of a ligand ``donor_smarts`` match; the ligand
+    # then supplies only the acceptor (scissile carbonyl C). Generic serine/cysteine-hydrolase
+    # feature -- see docs/car_v5/nonredox_tem1_plan.md.
+    donor_protein: "Optional[str]" = None
     donor_idx: int = 0
     acceptor_idx: int = 0
     transfer_is_h: bool = True

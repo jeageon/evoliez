@@ -39,6 +39,12 @@ class ReactiveSpec:
     """
     donor_smarts: str             # e.g. formate '[CX3H1](=O)[O-]'
     acceptor_smarts: str          # e.g. nicotinamide C4 (see configs)
+    # PROTEIN-nucleophile donor (serine hydrolase / cysteine protease): the nucleophile is a
+    # PROTEIN catalytic-residue atom (e.g. Ser Ogamma), NOT a ligand atom as in CAR/FDH. Format
+    # 'RESNAME:ATOM[:RESNUM]' (e.g. 'SER:OG:68'). When set, the donor heavy/transferring atom is
+    # this protein atom and ``donor_smarts`` is ignored; the ligand supplies only the acceptor
+    # (e.g. the scissile carbonyl C). Requires a topology at resolve time (server MD).
+    donor_protein: "Optional[str]" = None
     donor_idx: int = 0            # which atom of the donor match is the heavy donor
     acceptor_idx: int = 0         # which atom of the acceptor match is the acceptor
     transfer_is_h: bool = True    # transferring atom = the H on the donor heavy atom
@@ -52,6 +58,14 @@ class ReactiveSpec:
     placement_angle_min: float = 0.0      # deg, frame-0 angle gate (0 = off by default)
     retention_distance_max: float = 6.0   # Å, "still in the active-site pocket" cutoff
     retention_min_fraction: float = 0.8   # require this fraction of frames retained for a valid NAC
+
+    def __post_init__(self):
+        # A PROTEIN O/S nucleophile (serine hydrolase / cysteine protease) attacks directly --
+        # there is no transferring H -- so the near-attack angle must use the Nuc--acceptor(=O)
+        # reference (leaving path), NOT the degenerate donor==transfer==acceptor angle. Enforce
+        # transfer_is_h=False whenever a protein donor is declared, regardless of the config.
+        if self.donor_protein:
+            self.transfer_is_h = False
 
 
 # NAC validity states (decoupled from md_status: the MD may run perfectly while the
@@ -168,8 +182,56 @@ def identify_leaving(mol, acceptor_idx: int) -> Optional[int]:
     return None
 
 
+def parse_protein_donor(spec_str: str) -> "tuple":
+    """Parse a protein-nucleophile donor string ``'RESNAME:ATOM[:RESNUM]'`` (e.g. ``'SER:OG:68'``)
+    into ``(resname_upper, atom_name, resnum_or_None)``. RESNUM is optional (matches the FIRST
+    such residue when omitted). Raises ValueError on a malformed string."""
+    parts = [p.strip() for p in str(spec_str).split(":")]
+    if len(parts) == 2:
+        return parts[0].upper(), parts[1], None
+    if len(parts) == 3 and parts[2]:
+        return parts[0].upper(), parts[1], int(parts[2])
+    raise ValueError("donor_protein must be 'RESNAME:ATOM[:RESNUM]', got %r" % (spec_str,))
+
+
+def resolve_protein_donor_index(topology, spec: ReactiveSpec) -> Optional[int]:
+    """GLOBAL trajectory atom index of the PROTEIN catalytic nucleophile named by
+    ``spec.donor_protein`` (e.g. a serine-hydrolase Ser Ogamma). Duck-typed on the OpenMM
+    Topology API: ``topology.residues()`` yields residues with ``.name`` / ``.id``, and
+    ``residue.atoms()`` yields atoms with ``.name`` / ``.index``. Returns None (honest skip, never
+    faked) when ``donor_protein`` is unset or no residue/atom matches."""
+    if not spec.donor_protein:
+        return None
+    resname, atomname, resnum = parse_protein_donor(spec.donor_protein)
+    for res in topology.residues():
+        if str(res.name).upper() != resname:
+            continue
+        if resnum is not None and str(res.id) != str(resnum):
+            continue
+        for atom in res.atoms():
+            if atom.name == atomname:
+                return int(atom.index)
+    return None
+
+
+def _acceptor_double_bonded_oxygen(mol, acceptor_idx: int) -> Optional[int]:
+    """For a NUCLEOPHILIC ACYL substitution (protein Ser/Cys attacks a carbonyl C), the read-only
+    reference for the Nuc--C(=O) angle is the carbonyl O double-bonded to the acceptor C. Returns
+    that O's local index, or None if the acceptor has no double-bonded O (leaving the phosphoryl /
+    hydride reference paths untouched). The angle is NEVER restrained -- this only defines the
+    geometric observable, it cannot manufacture NAC."""
+    a = mol.GetAtomWithIdx(acceptor_idx)
+    for nb in a.GetNeighbors():
+        if nb.GetSymbol() != "O":
+            continue
+        bond = mol.GetBondBetweenAtoms(acceptor_idx, nb.GetIdx())
+        if bond is not None and bond.GetBondTypeAsDouble() == 2.0:
+            return nb.GetIdx()
+    return None
+
+
 def resolve_reactive_indices(
-    mol_blocks: "Sequence[tuple]", spec: ReactiveSpec
+    mol_blocks: "Sequence[tuple]", spec: ReactiveSpec, topology=None
 ) -> Optional[Dict[str, int]]:
     """Map the RDKit donor/acceptor atoms onto GLOBAL trajectory atom indices.
 
@@ -184,7 +246,37 @@ def resolve_reactive_indices(
     though they are SEPARATE residues. Returns ``{donor_heavy, transfer,
     acceptor}`` in global indices, or ``None`` if either side is absent (an
     honest "reaction partners not both present" -> NAC is skipped, never faked).
+
+    PROTEIN-nucleophile mode (serine hydrolase / protease): when ``spec.donor_protein`` is set,
+    the donor is a PROTEIN catalytic-residue atom (e.g. Ser Ogamma) resolved from ``topology``
+    (not a ligand SMARTS), and the ligand supplies only the acceptor (the scissile carbonyl C).
+    The angle reference is then the carbonyl O (Nuc--C=O), and is never restrained.
     """
+    # PROTEIN nucleophile: resolve the donor from the topology, the acceptor from the ligand.
+    if spec.donor_protein:
+        if topology is None:
+            return None
+        protein_donor = resolve_protein_donor_index(topology, spec)
+        if protein_donor is None:
+            return None
+        acc = acc_blk = acc_rd = None
+        for rd, gidx in mol_blocks:
+            a = identify_acceptor(rd, spec)
+            if a is not None and a < len(gidx):
+                acc, acc_blk, acc_rd = a, gidx, rd
+                break
+        if acc is None:
+            return None
+        out = {
+            "donor_heavy": protein_donor,     # the protein O attacks directly -- no transferring H
+            "transfer": protein_donor,
+            "acceptor": int(acc_blk[acc]),
+        }
+        ref = _acceptor_double_bonded_oxygen(acc_rd, acc)
+        if ref is not None and ref < len(acc_blk):
+            out["leaving"] = int(acc_blk[ref])   # Nuc--C(=O) reference for the read-only angle
+        return out
+
     donor = donor_blk = None
     acceptor = acceptor_blk = acceptor_rd = None
     for rd, gidx in mol_blocks:
