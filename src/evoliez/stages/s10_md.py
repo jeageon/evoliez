@@ -236,6 +236,56 @@ class MDStage(Stage):
             _apply_charge_policy(mc)
             _prebuilt[cand.candidate_id] = (mc, boltz_mc, anchored_used)
 
+        # ROADMAP_V5 E4a — umbrella/PMF access-barrier sweep (ENV-gated, purge-safe: NO Config field,
+        # so config_sha1 is unchanged and no existing run is purged). EVOLIEZ_E4A_UMBRELLA="dmin,dmax,n,k"
+        # runs ONE biased MD per (candidate, window) reusing the SAME anchored complexes + explicit
+        # solvent + Mg build as the normal path; each writes umbrella_samples.json (the full O_nuc->Palpha
+        # distance+angle timeseries) for the WHAM driver. The normal single-MD scoring is skipped (this is
+        # a diagnostic run; drive with `--to s10`). The angle is NEVER biased -> cannot manufacture NAC.
+        import os as _os
+        _e4a_env = _os.environ.get("EVOLIEZ_E4A_UMBRELLA")
+        if (_e4a_env and backend is Backend.real and not ctx.dry_run and nac_enabled):
+            from evoliez.md.umbrella import umbrella_windows
+            try:
+                _p = [float(x) for x in _e4a_env.split(",")]
+                _dmin, _dmax, _nw, _uk = _p[0], _p[1], int(_p[2]), _p[3]
+            except Exception as _pex:      # noqa: BLE001
+                raise ValueError("EVOLIEZ_E4A_UMBRELLA must be 'dmin,dmax,n,k' (A,A,int,kcal/mol/A^2), "
+                                 "got %r (%s)" % (_e4a_env, _pex))
+            _windows = umbrella_windows(_dmin, _dmax, _nw)
+            _sweep = [("_wt_reference", wt)] + [
+                (c.candidate_id, _prebuilt[c.candidate_id][0]) for c in candidates]
+            self.log.info("s10 E4a UMBRELLA sweep: %d candidate(s) x %d windows [%.2f..%.2f A] k=%.1f "
+                          "(explicit=%s, Mg=%s)", len(_sweep), len(_windows), _dmin, _dmax, _uk,
+                          getattr(mdcfg, "solvent", "?"), _metal_requested)
+            _e4a_manifest = {"windows": _windows, "k_kcal": _uk, "candidates": [],
+                             "solvent": getattr(mdcfg, "solvent", None),
+                             "metal_requested": _metal_requested}
+            for _cid, _mc in _sweep:
+                _got = 0
+                for _d0 in _windows:
+                    _wd = ctx.paths.md_candidate(_cid) / "e4a" / ("window_%.2f" % _d0)
+                    _wd.mkdir(parents=True, exist_ok=True)
+                    if (_wd / "umbrella_samples.json").exists():   # idempotent: resume mid-sweep
+                        _got += 1
+                        continue
+                    try:
+                        run_md(_mc, _cid, mdcfg, _wd, instability=0.0,
+                               catalytic_positions=catalytic, backend=backend, dry_run=False,
+                               ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_specs,
+                               metal_requested=_metal_requested, umbrella=(_d0, _uk))
+                        _got += 1 if (_wd / "umbrella_samples.json").exists() else 0
+                    except Exception as _mex:   # one window must never kill the sweep
+                        self.log.warning("E4a window %.2f A for %s failed: %s", _d0, _cid, _mex)
+                self.log.info("s10 E4a: %s -> %d/%d windows sampled", _cid, _got, len(_windows))
+                _e4a_manifest["candidates"].append({"cid": _cid, "windows_sampled": _got})
+            _mf = ctx.paths.md / "e4a_manifest.json"
+            _mf.write_text(__import__("json").dumps(_e4a_manifest, indent=2), encoding="utf-8")
+            ctx.put("e4a_umbrella", _e4a_manifest)
+            self.log.info("s10 E4a umbrella sweep complete -> %s (analyse with "
+                          "scripts/e4a_umbrella_pmf.py)", _mf)
+            return
+
         # Phase 1: run_md — fanned across compute.gpu_pool when >1 real GPU, else serial
         # (byte-identical to the previous per-candidate loop). MDResult is picklable.
         from evoliez.utils.compute import gpu_pool_list

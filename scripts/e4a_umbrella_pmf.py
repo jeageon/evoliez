@@ -8,13 +8,14 @@ using the existing classical FF -- cheaper and less risky than QM/MM, and the co
 
 TWO PHASES:
   (1) SAMPLE (server, OpenMM): for each candidate, run one short explicit-solvent MD per umbrella
-      window with a harmonic O_nuc->Palpha bias (run_md(umbrella=(window_A, k)) -> a DCD per window).
-      s10 wires this when validation.md.umbrella is set; or a caller loops run_md directly.
-  (2) ANALYSE (this script, CPU/mdtraj + WHAM): read the per-window DCDs, extract the O_nuc->Palpha
-      distance timeseries (nac atoms from analysis.json), WHAM -> PMF -> near-attack access cost.
+      window with a harmonic O_nuc->Palpha bias. s10 drives this when EVOLIEZ_E4A_UMBRELLA="dmin,dmax,n,k"
+      is set (`evoliez run ... --to s10`); each window writes umbrella_samples.json (the full biased
+      O_nuc->Palpha distance + read-only angle timeseries -- NO DCD; the NAC subframes ARE the samples).
+  (2) ANALYSE (this script, pure-python WHAM -- no mdtraj): read the per-window umbrella_samples.json,
+      WHAM -> PMF -> near-attack access cost + angle-occupancy + overlap QC.
 
-Layout expected under <run>/e4a/<candidate>/window_<d0A>/{*.dcd, *_minimized.pdb, analysis.json}.
-Run on the server:  PYTHONPATH=src python scripts/e4a_umbrella_pmf.py runs/car_v5_e4a --k 10 --window-nac 3.6
+Layout: <run>/md/<candidate>/e4a/window_<d0A>/umbrella_samples.json (as s10 writes it).
+Run on the server:  PYTHONPATH=src python scripts/e4a_umbrella_pmf.py runs/srcar_3hp_v5_e4a --window-nac 3.6
 
 Claim discipline: reports SCREENING-LEVEL access-barrier evidence only -- NOT activity/kcat. Lower
 access cost = the candidate reaches the near-attack geometry more cheaply; it is NOT a rate claim.
@@ -24,53 +25,46 @@ import csv
 import glob
 import json
 import os
-import re
 import sys
 
 
-def _window_dist_angle(dcd, pdb, donor, acc, leaving):
-    import mdtraj as md
-    import numpy as np
-    t = md.load(dcd, top=pdb)
-    dist = md.compute_distances(t, [[donor, acc]])[:, 0] * 10.0   # nm -> A
-    ang = None
-    if leaving is not None:
-        ang = np.degrees(md.compute_angles(t, [[donor, acc, leaving]])[:, 0])  # O_nuc-Palpha-O_leaving
-    return dist, ang
+def _read_window(window_dir):
+    """Return (center_A, k_kcal, distances[], angles[]) from a window's umbrella_samples.json,
+    or None if it is absent/empty (window did not sample)."""
+    p = os.path.join(window_dir, "umbrella_samples.json")
+    if not os.path.exists(p):
+        return None
+    try:
+        s = json.load(open(p))
+    except Exception:  # noqa: BLE001
+        return None
+    d = s.get("distances_A") or []
+    if len(d) < 2:
+        return None
+    return float(s["window_A"]), float(s.get("k_kcal", 0.0)), d, (s.get("angles_deg") or None)
 
 
-def _nac_atoms(analysis_json):
-    a = ((json.load(open(analysis_json)).get("nac") or {}).get("atoms")) or {}
-    return a.get("donor_heavy"), a.get("acceptor"), a.get("leaving")
-
-
-def analyse_candidate(cand_dir, k_kcal, near_attack_A, angle_min, T_K=300.0, equil_frac=0.2):
+def analyse_candidate(cand_e4a_dir, k_kcal, near_attack_A, angle_min, T_K=300.0, equil_frac=0.2):
+    """cand_e4a_dir = <run>/md/<cid>/e4a ; WHAM the per-window samples -> access cost + QC."""
     from evoliez.md.umbrella import (access_free_energy, near_attack_angle_occupancy,
                                      wham, window_overlap)
-    wins = sorted(glob.glob(os.path.join(cand_dir, "window_*")))
-    centers, dists, angles = [], [], []
+    cid = os.path.basename(os.path.dirname(cand_e4a_dir))
+    wins = sorted(glob.glob(os.path.join(cand_e4a_dir, "window_*")))
+    centers, dists, angles, k_seen = [], [], [], k_kcal
     for wd in wins:
-        m = re.search(r"window_([0-9.]+)", os.path.basename(wd))
-        dcd = glob.glob(os.path.join(wd, "*.dcd"))
-        pdb = glob.glob(os.path.join(wd, "*_minimized.pdb"))
-        aj = os.path.join(wd, "analysis.json")
-        if not (m and dcd and pdb and os.path.exists(aj)):
+        r = _read_window(wd)
+        if r is None:
             continue
-        donor, acc, leaving = _nac_atoms(aj)
-        if donor is None or acc is None:
-            continue
-        try:
-            d, ang = _window_dist_angle(dcd[0], pdb[0], donor, acc, leaving)
-        except Exception as exc:  # noqa: BLE001
-            print("   (window %s read failed: %s)" % (os.path.basename(wd), str(exc)[:60]))
-            continue
+        c, kw, d, ang = r
+        if kw > 0:
+            k_seen = kw                                      # k recorded at sampling is authoritative
         cut = int(len(d) * equil_frac)                       # DISCARD equilibration frames
-        centers.append(float(m.group(1)))
+        centers.append(c)
         dists.append(d[cut:])
         angles.append(ang[cut:] if ang is not None else None)
     if len(centers) < 2:
-        return {"cid": os.path.basename(cand_dir), "error": "need >=2 sampled windows"}
-    x, pmf = wham(dists, centers, k_kcal, T_K=T_K)
+        return {"cid": cid, "error": "need >=2 sampled windows (got %d)" % len(centers)}
+    x, pmf = wham(dists, centers, k_seen, T_K=T_K)
     cost = access_free_energy(x, pmf, near_attack_max_A=near_attack_A)
     overlap = window_overlap(dists)
     ang_occ, n_na = (None, 0)
@@ -78,7 +72,7 @@ def analyse_candidate(cand_dir, k_kcal, near_attack_A, angle_min, T_K=300.0, equ
         ang_occ, n_na = near_attack_angle_occupancy(dists, angles, near_attack_A, angle_min)
     # convergence flag = enough windows overlap AND the near-attack window was actually reached
     converged = bool(overlap.get("sufficient") and cost is not None)
-    return {"cid": os.path.basename(cand_dir), "n_windows": len(centers),
+    return {"cid": cid, "n_windows": len(centers), "k_kcal": round(k_seen, 3),
             "access_cost_kcal": cost, "near_attack_angle_occ": ang_occ, "n_near_attack": n_na,
             "overlap_min": overlap.get("min_overlap"), "overlap_sufficient": overlap.get("sufficient"),
             "converged": converged}
@@ -90,16 +84,18 @@ _CLAIM_CEILING = "screening-level reaction-geometry access evidence (NOT activit
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
-    ap.add_argument("--k", type=float, default=10.0, help="umbrella k (kcal/mol/A^2), must match sampling")
+    ap.add_argument("--k", type=float, default=10.0, help="fallback umbrella k (kcal/mol/A^2) if not "
+                    "recorded in umbrella_samples.json")
     ap.add_argument("--window-nac", type=float, default=3.6, help="near-attack window (A)")
     ap.add_argument("--angle-min", type=float, default=150.0, help="in-line angle threshold (deg)")
     ap.add_argument("--out", default="docs/car_v5/e4a_pmf_access_table.csv")
     a = ap.parse_args()
-    e4a = os.path.join(a.run, "e4a")
-    cands = sorted(d for d in glob.glob(os.path.join(e4a, "*")) if os.path.isdir(d))
+    # s10 writes windows under <run>/md/<cid>/e4a/window_<d0>/ ; a candidate dir is any e4a dir with windows
+    cands = sorted(d for d in glob.glob(os.path.join(a.run, "md", "*", "e4a"))
+                   if glob.glob(os.path.join(d, "window_*")))
     if not cands:
-        print("no candidate dirs under %s -- run the umbrella sampling first "
-              "(run_md(umbrella=(window,k)) per window)" % e4a)
+        print("no <run>/md/*/e4a/window_* dirs under %s -- run the umbrella sampling first: "
+              "EVOLIEZ_E4A_UMBRELLA='2.8,5.4,10,10' evoliez run --config <e4a> --to s10" % a.run)
         sys.exit(2)
     rows = [analyse_candidate(c, a.k, a.window_nac, a.angle_min) for c in cands]
     # ONLY converged candidates are interpretable; separate access-cost from in-line NAC occupancy

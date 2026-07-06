@@ -1539,6 +1539,18 @@ def _run_real(
         # reactive arrangement (a diffused / mis-placed formate is NOT "low reactivity").
         nac_occupancy = nac_res.occupancy_or_none
         nac_json = nac_res.to_json()
+        # ROADMAP_V5 E4a: when an umbrella bias is active, persist the FULL per-frame O_nuc->Palpha
+        # distance + angle timeseries (to_json keeps only summaries) so the PMF driver can WHAM the
+        # per-window samples. The DISTANCE is the biased umbrella coordinate; the ANGLE is read-only.
+        if umbrella_setup is not None:
+            import json as _json
+            (workdir / "umbrella_samples.json").write_text(_json.dumps({
+                "window_A": umbrella_setup["window_A"], "k_kcal": umbrella_setup["k_kcal"],
+                "distances_A": [float(d) for d in nac_res.distances],
+                "angles_deg": [float(a) for a in nac_res.angles],
+                "atoms": nac_res.atoms, "n_frames": int(nac_res.n_frames),
+                "solvent_mode": actual_solvent,
+            }, indent=2), encoding="utf-8")
         log.info("MD NAC for %s: status=%s occupancy=%s retained=%.2f over %d frames "
                  "(d0=%.2f, d_min=%.2f Å, ang_mean=%.1f°)", candidate_id,
                  nac_res.status, nac_res.occupancy_or_none, nac_res.retention_fraction,
