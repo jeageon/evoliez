@@ -28,7 +28,17 @@ configs. Large run artifacts stay on the server / Google Drive, not GitHub.
 | E1 explicit-solvent | **CONDITIONAL_PASS** — explicit solvent **fixes the co-substrate diffusion** implicit GBSA suffered (WT retention 0.52→1.00, escape now False) → a **meaningful WT baseline** for the first time. But O→Pα relaxes to ~5 Å (not productive ~3 Å); no clean discrimination. |
 | E2 crystal-grounded | Crystal **5MST** (AMP + fumarate + metal) sets the productive target **O→Pα ~2.8–3.0 Å, in-line**. The explicit MD holds the **angle** (WT always ≥150°) but **never the productive distance** (occupancy of ≤3.6 Å = 0 for all). |
 
-## 3. Honest verdict — the CAR reaction question
+## 3. Banked statement (fixed wording)
+> **CAR V5 produced valid, Mg-consistent, explicit-solvent adenylation-geometry evidence, but no
+> candidate-level catalytic ranking. The classical MD tier identified a method limitation: the
+> productive O→Pα near-attack distance is not occupied under the current *unbiased* explicit-MD
+> observable.**
+
+The word *unbiased* matters: "not occupied under unbiased MD" is not the same as "the FF is wrong."
+The near-attack conformation is a **transient** reactive configuration, so the correct next observable
+is the *free-energy cost to access it* (E4a umbrella/PMF, §7), not whether unbiased MD sits there.
+
+## 3b. Honest verdict — the CAR reaction question
 EvoLiEZ produced **valid, Mg-consistent, explicit-solvent reaction-geometry evidence** with a
 crystal-grounded productive reference. The finding is a **clear mechanism/method limitation**: the
 classical fixed-charge force field maintains the in-line **angle** but cannot hold the productive
@@ -62,12 +72,25 @@ metal fan-out drop (#8) · **systemic empty-GPU-bucket** s08b (#9) + s06b×2 (#1
 (#12) · E1 explicit-solvent path (#11) · active-state ensemble builder (#15) · s06b 40→3 homologs ·
 E2 crystal reference + accommodation (#16). Corrected-Mg (#10) and result docs (#7/#14) merged.
 
-## 7. Deferred / next (platform priority = generality, not deeper CAR)
-- **QM/MM-lite** (reaction-distance question) — deferred; the only path to a candidate-level catalytic
-  claim, and it needs wet-lab calibration before any activity statement.
-- **Generality** (commercial-platform criterion): run **FDH** and **one non-redox enzyme** through the
-  same evidence/ClaimGuard framework to prove mechanism-configurability beyond CAR. **This is the next
-  work.**
+## 7. Deferred / next — correct escalation order
+- **E4a — O→Pα umbrella / PMF access-barrier screen (do FIRST, before QM/MM).** Measure the
+  free-energy cost for each candidate to *access* the near-attack geometry, using the existing
+  classical FF (cheap, low-risk). Only if that PMF is flat / uninformative does QM/MM become
+  justified. Built: `evoliez/md/umbrella.py` (WHAM verified) + `run_md(umbrella=…)` +
+  `scripts/e4a_umbrella_pmf.py`; server run pending. See `e4a_umbrella_pmf_plan.md`.
+- **QM/MM-lite** — only *after* E4a, and only to check reaction-core electronic plausibility on the
+  best frames; never a final activity claim (needs wet-lab calibration).
+- **Generality → a REAL non-redox backend run.** The mechanism-configurable framework is demonstrated
+  across 3 classes, but FDH + metalloenzyme are **mock**; a real non-redox target (TEM-1 / glycosidase)
+  is needed to move from *foundation* to *proof*.
+
+## 8. Positioning — "commercial-platform FOUNDATION", not "commercial-ready"
+The three completion criteria are met at the **architecture-proof / foundation** level: the framework
+is mechanism-configurable, claim-safe, and reproducible-from-commit. It is **not** a shippable product:
+still open are a real non-redox backend run, license/packaging/CI, artifact-storage policy, the 9
+pre-existing test failures, and ≥2 real benchmarks (see `docs/PRODUCTIZATION_FOUNDATION.md`). Describe
+the current state as **"commercial-platform foundation + one real hard case (CAR) + mock generality
+proof"**, not "commercial-ready."
 
 Deliverables: `docs/car_v5/` — corrected_mg_*, e1_explicit_*, e2_* (report, geometry/accommodation
 tables, reference ensemble, verdict JSONs).

@@ -736,6 +736,7 @@ def run_md(
     extra_ligands: "Sequence[tuple] | None" = None,
     fail_loud_on_cpu: bool = False,
     metal_requested: bool = False,
+    umbrella: "tuple | None" = None,
 ) -> MDResult:
     """``ligand_cache_dir``: shared, stable per-run directory for the ligand
     force-field cache. The ligand is identical across all candidates in a run,
@@ -777,6 +778,7 @@ def run_md(
                 catalytic_positions=catalytic_positions, dry_run=dry_run,
                 ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_ligands,
                 fail_loud_on_cpu=fail_loud_on_cpu, metal_requested=metal_requested,
+                umbrella=umbrella,
             )
         except Exception as exc:  # spec 23 Risk 4: fail gracefully per candidate
             log.warning("MD failed for %s (%s); recording failure", candidate_id, exc)
@@ -864,6 +866,7 @@ def _run_real(
     extra_ligands: "Sequence[tuple] | None" = None,
     fail_loud_on_cpu: bool = False,
     metal_requested: bool = False,
+    umbrella: "tuple | None" = None,
 ) -> MDResult:
     if dry_run:
         log.info("[dry-run] would run OpenMM L%d (%s) for %s",
@@ -1282,6 +1285,24 @@ def _run_real(
         except Exception as exc:                  # restraint must never break MD
             log.warning("MD NAC restraint failed for %s (%s); unrestrained",
                         candidate_id, exc)
+
+    # ROADMAP_V5 E4a — umbrella bias for a PMF window: a HARMONIC restraint on the O_nuc->Palpha
+    # DISTANCE only (never the angle), centred at umbrella=(window_A, k_kcal). The driver runs one
+    # window per call; WHAM over the windows reconstructs the access free-energy along the reaction
+    # coordinate. Distance-only, so it biases the sampled distance for the PMF but cannot manufacture
+    # the in-line NAC (the angle stays a free, read-only observable).
+    umbrella_setup = None
+    if umbrella is not None and nac_map and "donor_heavy" in nac_map and "acceptor" in nac_map:
+        try:
+            from evoliez.md.umbrella import add_umbrella_bond_restraint
+            _w0, _uk = float(umbrella[0]), float(umbrella[1])
+            add_umbrella_bond_restraint(system, nac_map["donor_heavy"], nac_map["acceptor"], _w0, _uk)
+            umbrella_setup = {"window_A": _w0, "k_kcal": _uk,
+                              "pair": [nac_map["donor_heavy"], nac_map["acceptor"]]}
+            log.info("MD E4a umbrella for %s: O_nuc-Palpha harmonic bias r0=%.2f A, k=%.1f "
+                     "kcal/mol/A^2 (distance-only, angle free)", candidate_id, _w0, _uk)
+        except Exception as exc:                  # umbrella must never break MD
+            log.warning("MD umbrella restraint failed for %s (%s); unbiased", candidate_id, exc)
 
     # The DESIGN ligand (off_ligs[0] / mol_blocks[0]) defines the BINDING
     # metrics; any co-substrate added for the catalytic screen (formate) is NOT
