@@ -103,3 +103,44 @@ def access_free_energy(bin_centers_A: Sequence[float], pmf_kcal: Sequence[float]
     if not mask.any():
         return None
     return float(np.min(pmf[mask]) - np.nanmin(pmf))
+
+
+def window_overlap(samples_by_window: Sequence[Sequence[float]], n_bins: int = 40) -> dict:
+    """QC: Bhattacharyya overlap between ADJACENT windows' distance histograms. WHAM is only
+    trustworthy when adjacent windows overlap; low overlap => the PMF is numbers, not free energy.
+    Returns {mean_overlap, min_overlap, sufficient} (sufficient = every adjacent pair overlaps >=0.1)."""
+    import numpy as np
+    ws = [np.asarray(s, dtype=float) for s in samples_by_window]
+    alls = np.concatenate([s for s in ws if len(s)]) if any(len(s) for s in ws) else np.array([0.0])
+    lo, hi = float(alls.min()), float(alls.max())
+    if hi <= lo:
+        hi = lo + 1e-6
+    edges = np.linspace(lo, hi, n_bins + 1)
+    hists = []
+    for s in ws:
+        h = np.histogram(s, bins=edges)[0].astype(float) if len(s) else np.zeros(n_bins)
+        hists.append(h / h.sum() if h.sum() > 0 else h)
+    bc = [float(np.sum(np.sqrt(hists[i] * hists[i + 1]))) for i in range(len(hists) - 1)]
+    if not bc:
+        return {"mean_overlap": None, "min_overlap": None, "sufficient": False}
+    return {"mean_overlap": round(float(np.mean(bc)), 3), "min_overlap": round(float(min(bc)), 3),
+            "sufficient": bool(min(bc) >= 0.10)}
+
+
+def near_attack_angle_occupancy(dist_by_window: Sequence[Sequence[float]],
+                                angle_by_window: Sequence[Sequence[float]],
+                                near_attack_max_A: float = 3.6,
+                                angle_min_deg: float = 150.0):
+    """Post-hoc separation of ACCESS from NAC: of the frames whose O_nuc-Palpha DISTANCE reached the
+    near-attack window (<= near_attack_max_A), the fraction that ALSO have an in-line angle
+    (>= angle_min_deg). The umbrella biases DISTANCE only, so a low-distance state is not necessarily
+    the in-line NAC -- this is the guard against calling a bent short-distance contact 'reactive'.
+    Returns (angle_occupancy_fraction, n_near_attack_frames); (None, 0) if the window was never reached."""
+    import numpy as np
+    d = np.concatenate([np.asarray(x, dtype=float) for x in dist_by_window])
+    a = np.concatenate([np.asarray(x, dtype=float) for x in angle_by_window])
+    m = np.isfinite(d) & np.isfinite(a) & (d <= near_attack_max_A)
+    n = int(m.sum())
+    if n == 0:
+        return None, 0
+    return float((a[m] >= angle_min_deg).mean()), n

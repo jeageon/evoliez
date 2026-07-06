@@ -4,7 +4,8 @@ verifies WHAM recovers a KNOWN harmonic PMF from synthetic harmonically-biased s
 import numpy as np
 import pytest
 
-from evoliez.md.umbrella import access_free_energy, umbrella_windows, wham
+from evoliez.md.umbrella import (access_free_energy, near_attack_angle_occupancy,
+                                 umbrella_windows, wham, window_overlap)
 
 
 def test_umbrella_windows_span_and_count():
@@ -56,3 +57,29 @@ def test_access_free_energy_none_when_window_unsampled():
     x = np.linspace(4.0, 6.0, 30)                       # never reaches <=3.6
     pmf = 0.5 * (x - 5.0) ** 2
     assert access_free_energy(x, pmf, near_attack_max_A=3.6) is None
+
+
+def test_window_overlap_qc():
+    rng = np.random.default_rng(1)
+    # tightly spaced windows (0.2 A apart, std ~0.22) -> good overlap
+    good = [rng.normal(c, 0.22, 2000) for c in umbrella_windows(3.0, 4.0, 6)]
+    assert window_overlap(good)["sufficient"] is True
+    # far-apart windows (no overlap) -> insufficient
+    bad = [rng.normal(3.0, 0.05, 2000), rng.normal(5.0, 0.05, 2000)]
+    assert window_overlap(bad)["sufficient"] is False
+
+
+def test_near_attack_angle_occupancy_separates_access_from_nac():
+    # window A: reaches <=3.6 A but BENT (angle ~100) ; window B: reaches <=3.6 A and IN-LINE (~170)
+    dist = [np.full(1000, 3.2), np.full(1000, 3.3)]
+    ang = [np.full(1000, 100.0), np.full(1000, 170.0)]
+    frac, n = near_attack_angle_occupancy(dist, ang, near_attack_max_A=3.6, angle_min_deg=150.0)
+    assert n == 2000 and abs(frac - 0.5) < 1e-6          # half the near-attack frames are in-line
+    # a purely bent short contact -> 0 in-line NAC even though the distance is reached
+    frac2, _ = near_attack_angle_occupancy([np.full(500, 3.0)], [np.full(500, 90.0)])
+    assert frac2 == 0.0
+
+
+def test_near_attack_angle_occupancy_none_when_unreached():
+    frac, n = near_attack_angle_occupancy([np.full(100, 5.0)], [np.full(100, 170.0)])
+    assert frac is None and n == 0
