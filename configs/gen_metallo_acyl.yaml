@@ -1,0 +1,114 @@
+# GENERALITY DEMO (derived from example_metalloenzyme.yaml) — adds a V5 mechanism block; the example stays legacy.
+# 2nd, NON-FDH target — a generality probe (ROADMAP_V2 Phase G acceptance + a mock
+# diagnostic to surface any hardcoded-FDH assumption). A metalloenzyme exercises roles
+# FDH never uses: a catalytic METAL + a SUBSTRATE + a design ligand, with a reaction
+# geometry that combines a donor-acceptor distance AND a metal-coordination term.
+# backend: mock -> runs end-to-end in seconds; the sequence is an illustrative placeholder
+# (same wiring caveat as smoke.yaml -- `evoliez doctor` blocks a REAL backend on it).
+
+project:
+  name: metalloenzyme_probe
+  objective: activity_improvement
+  output_dir: runs/metallo_probe_gen
+
+input:
+  target_id: metalloenzyme
+  target_fasta: examples/fdh/target.fasta     # illustrative placeholder (mock only)
+  ligand:
+    id: design_inhibitor
+    type: smiles
+    value: "CC(=O)[O-]"                        # small acetate-like design ligand
+    role: design_ligand
+  extra_ligands:
+    - id: zinc
+      type: smiles
+      value: "[Zn+2]"                          # catalytic metal (single-atom ion)
+      role: metal
+    - id: water_substrate
+      type: smiles
+      value: "O"                               # nucleophilic substrate
+      role: substrate
+  catalytic_residues: ["H30", "H69", "H127"]   # generic His-triad metal site
+  fixed_residues: ["H30", "H69", "H127"]
+  ec_number: "4.2.1.1"
+
+mechanism:                       # ROADMAP_V5 generality: a NON-REDOX acyl class under the SAME framework
+  reaction:
+    class: nucleophilic_acyl_substitution
+  reaction_state:
+    protonation_model: pH7
+    conformational_state: acyl_enzyme
+
+homologs:
+  method: mmseqs2
+  max_sequences: 200
+
+msa:
+  method: mafft
+  remote_server: false
+
+complex_prediction:
+  primary_method: boltz2
+  diffusion_samples: 2
+
+interaction_model:
+  enabled: true
+  representative_homologs: 3
+  poses_per_homolog: 2
+
+gnn:
+  enabled: false
+  build_dataset: true
+
+mutation_generation:
+  methods: [chemistry_rules]
+  max_candidates: 30
+  design_radius_angstrom: 9.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 10
+  top_for_md: 4
+  mutant_boltz_enabled: true
+  mutant_boltz_top_n: 3
+  mutant_boltz_diffusion_samples: 2
+
+validation:
+  redocking:
+    methods: [vina]
+    poses_per_candidate: 2
+    exhaustiveness: 1
+    cpu: 4
+  stability:
+    method: ml
+  md:
+    enabled: true
+    protocol_level: 0
+    top_candidates: 4
+    reactive_geometry:
+      enabled: true
+      # generic nucleophilic attack: substrate O -> a carbonyl-like acceptor
+      donor_smarts: "[OX2H2,OX1-]"
+      acceptor_smarts: "[CX3]=[OX1]"
+      donor_idx: 0
+      acceptor_idx: 0
+      distance_max: 3.5
+      angle_min: 150.0
+      label: nucleophile_to_carbonyl
+
+selection_lanes:
+  enabled: true                                # exercise the v2 lane union too
+  from_ml_high: 6
+  from_diversity: 2
+  low_ml_controls: 2
+
+compute:
+  cpu_core_budget: 8
+
+output:
+  final_library_size: 16
+  report_format: [markdown, csv]
+
+backend: mock
+seed: 1234
