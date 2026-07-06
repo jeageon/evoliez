@@ -1,0 +1,113 @@
+{
+  "ensemble": {
+    "ensemble_id": "srcar_reference_ensemble_explicit",
+    "seed_manifest_hash": "sha256:6439e3e8aa4cbc61e2ee675f05cb45dfc5d3974ee22460ec02ff06da12e7def2",
+    "conformers": [
+      {
+        "conformer_id": "srcar_ref_expl_001",
+        "source": "crystal_5MST_5MSW_active_state",
+        "weight": 1.0,
+        "geometry": {
+          "distance_A": 2.789,
+          "angle_deg": 119.51,
+          "contact_score": 1.0,
+          "strain_penalty": 0.0
+        },
+        "validity": {
+          "clash_score": 0.0,
+          "bond_strain": 0.0,
+          "ligand_integrity": 1.0,
+          "reactive_atom_availability": 1.0
+        },
+        "provenance": {
+          "source_stage": "crystal_5MST_5MSW_active_state",
+          "artifact_hash": "sha256:ba0be631e9b43c1fff8dcdd84466bc0f1e41cdfde1329786f595203a1852149a",
+          "measured": "true"
+        }
+      },
+      {
+        "conformer_id": "srcar_ref_expl_002",
+        "source": "crystal_5MST_5MSW_active_state",
+        "weight": 1.0,
+        "geometry": {
+          "distance_A": 3.049,
+          "angle_deg": 145.42,
+          "contact_score": 1.0,
+          "strain_penalty": 0.0
+        },
+        "validity": {
+          "clash_score": 0.0,
+          "bond_strain": 0.0,
+          "ligand_integrity": 1.0,
+          "reactive_atom_availability": 1.0
+        },
+        "provenance": {
+          "source_stage": "crystal_5MST_5MSW_active_state",
+          "artifact_hash": "sha256:8384c009a77dafe1b50e0e6774892808e740a7d2c80c5c3d93930b31c477fa24",
+          "measured": "true"
+        }
+      }
+    ],
+    "distributions": {
+      "hydride_distance_A": {
+        "mean": 2.919,
+        "median": 2.919,
+        "p10": 2.815,
+        "p90": 3.023,
+        "n": 2
+      },
+      "hydride_angle_deg": {
+        "mean": 132.465,
+        "median": 132.465,
+        "p10": 122.101,
+        "p90": 142.829,
+        "n": 2
+      },
+      "anchor_contact": {
+        "mean": 1.0,
+        "median": 1.0,
+        "p10": 1.0,
+        "p90": 1.0,
+        "n": 2
+      },
+      "strain_penalty": {
+        "mean": 0.0,
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 2
+      }
+    },
+    "uncertainty": {
+      "evidence_density": "limited",
+      "geometry_variance": 0.0169,
+      "ligand_pose_variance": 0.1678,
+      "reasons": [
+        "real crystal_5MST_5MSW_active_state frames (n=2)",
+        "no wet-lab calibration yet"
+      ]
+    },
+    "claim_level": "L0_uncalibrated",
+    "insufficiency_reason": "only 2 measured frame(s) (<8)"
+  },
+  "observations": [
+    {
+      "chain": "A",
+      "distance_A": 2.789,
+      "angle_deg": 119.51,
+      "nuc_atom": "O8",
+      "leaving_atom": "O2P",
+      "metal_to_nuc_A": 21.48,
+      "source_pdb": "5MST"
+    },
+    {
+      "chain": "B",
+      "distance_A": 3.049,
+      "angle_deg": 145.42,
+      "nuc_atom": "O",
+      "leaving_atom": "O1P",
+      "metal_to_nuc_A": 22.66,
+      "source_pdb": "5MST"
+    }
+  ]
+}
