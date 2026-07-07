@@ -338,8 +338,8 @@ def reactive_atom_names(spec: ReactiveBuildSpec,
     'O_leaving': ('acceptor', name)} for the roles present. Protein-nucleophile
     donors are resolved later from the topology, not here."""
     from rdkit import Chem
-    from evoliez.md.nac import (ReactiveSpec, identify_acceptor, identify_donor,
-                                identify_leaving)
+    from evoliez.md.nac import (ReactiveSpec, _acceptor_double_bonded_oxygen,
+                                identify_acceptor, identify_donor, identify_leaving)
 
     rs = ReactiveSpec(
         donor_smarts=spec.donor_smarts or "[#6]",
@@ -348,7 +348,22 @@ def reactive_atom_names(spec: ReactiveBuildSpec,
         acceptor_idx=spec.acceptor_idx, transfer_is_h=spec.transfer_is_h,
         label=spec.label)
     out: Dict[str, Tuple[str, str]] = {}
-    if design_ref_sdf and not spec.donor_protein and spec.donor_smarts:
+
+    # PROTEIN-nucleophile (serine hydrolase / protease): the O_nuc is a protein atom
+    # (resolved later from the topology). The acceptor (scissile carbonyl C) and its
+    # Burgi-Dunitz reference O (the carbonyl =O) are on the DESIGN ligand.
+    if spec.donor_protein:
+        if design_ref_sdf and spec.acceptor_smarts:
+            d = Chem.SDMolSupplier(str(design_ref_sdf), removeHs=False, sanitize=True)[0]
+            acc = identify_acceptor(d, rs) if d is not None else None
+            if acc is not None and acc < len(design_names):
+                out["P_alpha"] = ("design", design_names[acc])   # attacked carbonyl C
+                ref = _acceptor_double_bonded_oxygen(d, acc)     # Nuc--C=O reference
+                if ref is not None and ref < len(design_names):
+                    out["O_leaving"] = ("design", design_names[ref])
+        return out
+
+    if design_ref_sdf and spec.donor_smarts:
         d = Chem.SDMolSupplier(str(design_ref_sdf), removeHs=False, sanitize=True)[0]
         don = identify_donor(d, rs) if d is not None else None
         if don is not None and don["heavy"] < len(design_names):
@@ -478,6 +493,13 @@ class AmberSystemBuilder:
                                       if l.role in ("cofactor", "cosubstrate")), None)}
         maps: List[ReactiveAtomMap] = []
 
+        # tleap RENUMBERS residues 1..N in the prmtop, so a config residue NUMBER (from
+        # the original PDB) does NOT equal the prmtop number when the structure has
+        # gaps. Map by ORDINAL POSITION in protein_clean.pdb (which preserves the
+        # original numbering) and VALIDATE the residue identity — never a silent match.
+        pdb_order = self._protein_residue_order()   # [(orig_num:int, resname3), ...]
+        orig_to_ordinal = {num: i for i, (num, _rn) in enumerate(pdb_order)}
+
         def resolve_one(role: str, resname: str, atomname: str) -> None:
             mask = f":{resname}@{atomname}"
             sel = [i for i, a in enumerate(prm.atoms)
@@ -491,6 +513,32 @@ class AmberSystemBuilder:
                                         resid=a.residue.idx + 1, atom_name=atomname,
                                         amber_index=sel[0] + 1, mask=mask))
 
+        def resolve_protein_atom(role: str, resnum: int, atomname: str) -> None:
+            """Protein-nucleophile (Ser Oγ) via ordinal + identity, like catalytic."""
+            ordinal = orig_to_ordinal.get(resnum)
+            if ordinal is None or ordinal >= len(prm.residues):
+                maps.append(ReactiveAtomMap(role=role, residue="?", resid=-1,
+                    atom_name=atomname, amber_index=-1, mask="", orig_resid=resnum,
+                    status="unresolved"))
+                return
+            r0 = prm.residues[ordinal]
+            atom = next((a for a in r0.atoms if a.name == atomname), None)
+            if atom is None:
+                maps.append(ReactiveAtomMap(role=role, residue=r0.name, resid=r0.idx + 1,
+                    atom_name=atomname, amber_index=-1, mask="", orig_resid=resnum,
+                    status="unresolved"))
+                return
+            maps.append(ReactiveAtomMap(role=role, residue=r0.name, resid=r0.idx + 1,
+                atom_name=atomname, amber_index=atom.idx + 1,
+                mask=f":{r0.idx + 1}@{atomname}", orig_resid=resnum, status="ok"))
+
+        # protein-nucleophile donor (e.g. 'SER:OG:68') -> the O_nuc
+        if self.spec.reactive.donor_protein:
+            from evoliez.md.nac import parse_protein_donor
+            _rn, _atom, _num = parse_protein_donor(self.spec.reactive.donor_protein)
+            if _num is not None:
+                resolve_protein_atom("O_nuc", _num, _atom)
+
         for role, (which, name) in reactive_names.items():
             rn = role_res.get(which)
             if rn:
@@ -498,14 +546,6 @@ class AmberSystemBuilder:
         if mg_present and self.spec.metal.enabled:
             resolve_one("metal", self.spec.metal.ion, self.spec.metal.element)
 
-        # Catalytic residues. tleap RENUMBERS residues 1..N in the prmtop, so a config
-        # residue NUMBER (from the original PDB) does NOT equal the prmtop number when
-        # the structure has gaps. Map by ORDINAL POSITION in protein_clean.pdb (which
-        # preserves the original numbering) and VALIDATE the residue identity — never a
-        # silent number match. The protein residues occupy prmtop residues 0..Nprot-1
-        # in the same order (loadpdb preserves order).
-        pdb_order = self._protein_residue_order()   # [(orig_num:int, resname3), ...]
-        orig_to_ordinal = {num: i for i, (num, _rn) in enumerate(pdb_order)}
         for tag in self.spec.catalytic_residues:
             aa, num_s = tag[0], tag[1:]
             num = int(num_s)

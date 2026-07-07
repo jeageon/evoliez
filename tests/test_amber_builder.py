@@ -102,3 +102,28 @@ def test_one_letter():
     assert _one_letter("LYS") == "K"
     assert _one_letter("HIE") == "H"          # Amber protonation variant
     assert _one_letter("UNK") == "X"
+
+
+def test_protein_nucleophile_resolves_ligand_acceptor_only(tmp_path):
+    # TEM-1 serine hydrolase: donor is the PROTEIN Ser68 Oγ (resolved from topology,
+    # NOT here); the scissile carbonyl C + its Bürgi-Dunitz reference O are on the
+    # DESIGN ligand. The beta-lactam-specific SMARTS must pick the r4 (4-ring)
+    # carbonyl, not benzylpenicillin's acyclic side-chain amide.
+    m = Chem.AddHs(Chem.MolFromSmiles(
+        "CC1(C)S[C@@H]2[C@H](NC(=O)Cc3ccccc3)C(=O)N2[C@H]1C(=O)O"))
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    sdf = tmp_path / "pen.sdf"
+    with Chem.SDWriter(str(sdf)) as w:
+        w.write(m)
+    heavy = Chem.RemoveHs(m)
+    names = [f"{a.GetSymbol()}{i}" for i, a in enumerate(heavy.GetAtoms())]
+    spec = ReactiveBuildSpec(donor_protein="SER:OG:68",
+                             acceptor_smarts="[CX3;r4](=[OX1])[NX3;r4]",
+                             transfer_is_h=False, label="ser68_attack")
+    res = reactive_atom_names(spec, sdf, names, None, [])
+    assert "O_nuc" not in res                        # protein donor, resolved from topology
+    assert res["P_alpha"][0] == "design"             # scissile carbonyl on the ligand
+    assert res["O_leaving"][0] == "design"           # Bürgi-Dunitz carbonyl O
+    # the r4 carbonyl is the beta-lactam one (atom 16 in canonical order), not C7
+    beta_c = heavy.GetSubstructMatch(Chem.MolFromSmarts("[CX3;r4](=[OX1])[NX3;r4]"))[0]
+    assert res["P_alpha"][1] == names[beta_c]

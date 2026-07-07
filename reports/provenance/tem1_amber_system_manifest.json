@@ -1,0 +1,98 @@
+{
+  "schema": "amber_system_manifest/v1",
+  "fingerprint": "7868b7f85bef143d",
+  "protein": {
+    "n_residues": 286,
+    "seq_sha1": "7c356bb40ddc6627c5748675c42fad7955048c3b"
+  },
+  "force_field": {
+    "protein": "ff14SB",
+    "ligand": "gaff2",
+    "water": "tip3p",
+    "solvent": "explicit",
+    "box_buffer_A": 12.0
+  },
+  "ligands": [
+    {
+      "id": "LIG",
+      "role": "design_ligand",
+      "net_charge": 0,
+      "param_source": "am1bcc_gaff2",
+      "allow_am1bcc": true
+    }
+  ],
+  "metal": null,
+  "system": {
+    "n_atoms": 44326,
+    "net_charge": 0.003
+  },
+  "reactive_atoms": [
+    {
+      "role": "O_nuc",
+      "residue": "SER",
+      "resid": 68,
+      "orig_resid": 68,
+      "atom_name": "OG",
+      "amber_index": 1090,
+      "mask": ":68@OG",
+      "status": "ok"
+    },
+    {
+      "role": "P_alpha",
+      "residue": "LIG",
+      "resid": 287,
+      "orig_resid": null,
+      "atom_name": "C14",
+      "amber_index": 4456,
+      "mask": ":LIG@C14",
+      "status": "ok"
+    },
+    {
+      "role": "O_leaving",
+      "residue": "LIG",
+      "resid": 287,
+      "orig_resid": null,
+      "atom_name": "O2",
+      "amber_index": 4457,
+      "mask": ":LIG@O2",
+      "status": "ok"
+    },
+    {
+      "role": "catalytic",
+      "residue": "SER",
+      "resid": 68,
+      "orig_resid": 68,
+      "atom_name": "CA",
+      "amber_index": 1085,
+      "mask": ":68",
+      "status": "ok"
+    },
+    {
+      "role": "catalytic",
+      "residue": "THR",
+      "resid": 69,
+      "orig_resid": 69,
+      "atom_name": "CA",
+      "amber_index": 1096,
+      "mask": ":69",
+      "status": "ok"
+    },
+    {
+      "role": "catalytic",
+      "residue": "LYS",
+      "resid": 71,
+      "orig_resid": 71,
+      "atom_name": "CA",
+      "amber_index": 1130,
+      "mask": ":71",
+      "status": "ok"
+    }
+  ],
+  "reactive_spec": {
+    "label": "ser68_ogamma_attack_on_betalactam_carbonyl",
+    "donor_smarts": null,
+    "acceptor_smarts": "[CX3;r4](=[OX1])[NX3;r4]",
+    "donor_protein": "SER:OG:68",
+    "transfer_is_h": false
+  }
+}
