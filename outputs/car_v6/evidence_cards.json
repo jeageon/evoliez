@@ -1,0 +1,2332 @@
+[
+  {
+    "candidate_id": "car_v6_00",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_00",
+        "mutation": "WT",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_00",
+        "mutation": "WT",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_00",
+        "mutation": "WT",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "mutation": "WT",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_00",
+        "mutation": "WT",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_00",
+        "mutation": "WT",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_00",
+        "mutation": "WT",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "control",
+    "structural_viability": {
+      "confidence": "high",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_00",
+        "energy_drift": 0.006,
+        "ligand_retention": 1.0,
+        "ligand_rmsd_final_A": 1.973,
+        "md_status": "ok",
+        "mutation": "WT",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.75
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_00",
+        "mutation": "WT",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_01",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_01",
+        "mutation": "G430R;S433F;G407K",
+        "seed_role": "tier_A_catalytic_hypothesis",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_01",
+        "mutation": "G430R;S433F;G407K",
+        "seed_role": "tier_A_catalytic_hypothesis",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_01",
+        "mutation": "G430R;S433F;G407K",
+        "seed_role": "tier_A_catalytic_hypothesis",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "mutation": "G430R;S433F;G407K",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_01",
+        "mutation": "G430R;S433F;G407K",
+        "seed_role": "tier_A_catalytic_hypothesis",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_01",
+        "mutation": "G430R;S433F;G407K",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "tier_A_catalytic_hypothesis",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_01",
+        "mutation": "G430R;S433F;G407K",
+        "seed_role": "tier_A_catalytic_hypothesis",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "tier_A_catalytic_hypothesis",
+    "structural_viability": {
+      "confidence": "high",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_01",
+        "energy_drift": 0.0052,
+        "ligand_retention": 1.0,
+        "ligand_rmsd_final_A": 1.518,
+        "md_status": "ok",
+        "mutation": "G430R;S433F;G407K",
+        "seed_role": "tier_A_catalytic_hypothesis",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.75
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_01",
+        "mutation": "G430R;S433F;G407K",
+        "seed_role": "tier_A_catalytic_hypothesis",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "prioritized_for_assay"
+  },
+  {
+    "candidate_id": "car_v6_02",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_02",
+        "mutation": "G430R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_02",
+        "mutation": "G430R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_02",
+        "mutation": "G430R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "G430R",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_02",
+        "mutation": "G430R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_02",
+        "mutation": "G430R",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_02",
+        "mutation": "G430R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_02",
+        "mutation": "G430R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_02",
+        "mutation": "G430R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_03",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_03",
+        "mutation": "S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_03",
+        "mutation": "S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_03",
+        "mutation": "S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "S433F",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_03",
+        "mutation": "S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_03",
+        "mutation": "S433F",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_03",
+        "mutation": "S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_03",
+        "mutation": "S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_03",
+        "mutation": "S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_04",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_04",
+        "mutation": "G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_04",
+        "mutation": "G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_04",
+        "mutation": "G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "G407K",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_04",
+        "mutation": "G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_04",
+        "mutation": "G407K",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_04",
+        "mutation": "G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_04",
+        "mutation": "G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_04",
+        "mutation": "G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_05",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_05",
+        "mutation": "G430R;S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_05",
+        "mutation": "G430R;S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_05",
+        "mutation": "G430R;S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "G430R;S433F",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_05",
+        "mutation": "G430R;S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_05",
+        "mutation": "G430R;S433F",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_05",
+        "mutation": "G430R;S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_05",
+        "mutation": "G430R;S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_05",
+        "mutation": "G430R;S433F",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_06",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_06",
+        "mutation": "G430R;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_06",
+        "mutation": "G430R;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_06",
+        "mutation": "G430R;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "G430R;G407K",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_06",
+        "mutation": "G430R;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_06",
+        "mutation": "G430R;G407K",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_06",
+        "mutation": "G430R;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_06",
+        "mutation": "G430R;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_06",
+        "mutation": "G430R;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_07",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_07",
+        "mutation": "S433F;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_07",
+        "mutation": "S433F;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_07",
+        "mutation": "S433F;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "S433F;G407K",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_07",
+        "mutation": "S433F;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_07",
+        "mutation": "S433F;G407K",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_07",
+        "mutation": "S433F;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_07",
+        "mutation": "S433F;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_07",
+        "mutation": "S433F;G407K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_08",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_08",
+        "mutation": "P438N",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_08",
+        "mutation": "P438N",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_08",
+        "mutation": "P438N",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "mutation": "P438N",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_08",
+        "mutation": "P438N",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_08",
+        "mutation": "P438N",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_08",
+        "mutation": "P438N",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "high",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_08",
+        "energy_drift": 0.01,
+        "ligand_retention": 1.0,
+        "ligand_rmsd_final_A": 2.552,
+        "md_status": "ok",
+        "mutation": "P438N",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.75
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_08",
+        "mutation": "P438N",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic,v6_2_amber_md"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_09",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_09",
+        "mutation": "P438R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_09",
+        "mutation": "P438R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_09",
+        "mutation": "P438R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "P438R",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_09",
+        "mutation": "P438R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_09",
+        "mutation": "P438R",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_09",
+        "mutation": "P438R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_09",
+        "mutation": "P438R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_09",
+        "mutation": "P438R",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_10",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_10",
+        "mutation": "P438K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_10",
+        "mutation": "P438K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_10",
+        "mutation": "P438K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "P438K",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_10",
+        "mutation": "P438K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_10",
+        "mutation": "P438K",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_10",
+        "mutation": "P438K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_10",
+        "mutation": "P438K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_10",
+        "mutation": "P438K",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_11",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_11",
+        "mutation": "P438Q",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_11",
+        "mutation": "P438Q",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_11",
+        "mutation": "P438Q",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "P438Q",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_11",
+        "mutation": "P438Q",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_11",
+        "mutation": "P438Q",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_11",
+        "mutation": "P438Q",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_11",
+        "mutation": "P438Q",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_11",
+        "mutation": "P438Q",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_12",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_12",
+        "mutation": "P438S",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_12",
+        "mutation": "P438S",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_12",
+        "mutation": "P438S",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "P438S",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_12",
+        "mutation": "P438S",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_12",
+        "mutation": "P438S",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_12",
+        "mutation": "P438S",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_12",
+        "mutation": "P438S",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_12",
+        "mutation": "P438S",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_13",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_13",
+        "mutation": "P438T",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_13",
+        "mutation": "P438T",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_13",
+        "mutation": "P438T",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "P438T",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_13",
+        "mutation": "P438T",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_13",
+        "mutation": "P438T",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_13",
+        "mutation": "P438T",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_13",
+        "mutation": "P438T",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_13",
+        "mutation": "P438T",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_14",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_14",
+        "mutation": "Y264F;T265S;G274A",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_14",
+        "mutation": "Y264F;T265S;G274A",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_14",
+        "mutation": "Y264F;T265S;G274A",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "Y264F;T265S;G274A",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_14",
+        "mutation": "Y264F;T265S;G274A",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_14",
+        "mutation": "Y264F;T265S;G274A",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_14",
+        "mutation": "Y264F;T265S;G274A",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_14",
+        "mutation": "Y264F;T265S;G274A",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_14",
+        "mutation": "Y264F;T265S;G274A",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_15",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_15",
+        "mutation": "P438R;G407H",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_15",
+        "mutation": "P438R;G407H",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_15",
+        "mutation": "P438R;G407H",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "P438R;G407H",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_15",
+        "mutation": "P438R;G407H",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_15",
+        "mutation": "P438R;G407H",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_15",
+        "mutation": "P438R;G407H",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "mechanism_probe",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_15",
+        "mutation": "P438R;G407H",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_15",
+        "mutation": "P438R;G407H",
+        "seed_role": "mechanism_probe",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_16",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_16",
+        "mutation": "T265S;G274A;A275V",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_16",
+        "mutation": "T265S;G274A;A275V",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_16",
+        "mutation": "T265S;G274A;A275V",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "T265S;G274A;A275V",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_16",
+        "mutation": "T265S;G274A;A275V",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_16",
+        "mutation": "T265S;G274A;A275V",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_16",
+        "mutation": "T265S;G274A;A275V",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "control",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_16",
+        "mutation": "T265S;G274A;A275V",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_16",
+        "mutation": "T265S;G274A;A275V",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_17",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_17",
+        "mutation": "G430H;S433I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_17",
+        "mutation": "G430H;S433I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_17",
+        "mutation": "G430H;S433I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "G430H;S433I",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_17",
+        "mutation": "G430H;S433I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_17",
+        "mutation": "G430H;S433I",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_17",
+        "mutation": "G430H;S433I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "control",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_17",
+        "mutation": "G430H;S433I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_17",
+        "mutation": "G430H;S433I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  },
+  {
+    "candidate_id": "car_v6_18",
+    "claim_level": "L0_uncalibrated",
+    "evolutionary_tolerance": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "msa_neff_prior_not_activity_evidence"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_18",
+        "mutation": "G430H;P438L;A275I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "experimental_calibration": {
+      "confidence": "low",
+      "evidence": [
+        "no_wetlab_calibration"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_18",
+        "mutation": "G430H;P438L;A275I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "claims remain L0 until assay data are ingested",
+      "score": 0.0
+    },
+    "ligand_cofactor_competence": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "anchor_contact_retention_prior"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_18",
+        "mutation": "G430H;P438L;A275I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "mutation": "G430H;P438L;A275I",
+    "pose_uncertainty": {
+      "confidence": "low",
+      "evidence": [
+        "pose_disagreement_recorded_as_uncertainty"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_18",
+        "mutation": "G430H;P438L;A275I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "uncertainty risk, not inactivity evidence",
+      "score": 0.75
+    },
+    "reaction_geometry_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "soft_reaction_geometry_distribution"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_18",
+        "mutation": "G430H;P438L;A275I",
+        "panel_context": "V6-3 PMF: near-attack distance is accessible under bias but the in-line O_nuc-Palpha-O_leaving angle is never productive (0/1827 frames); PMF non-converged -> ranking prohibited",
+        "pmf_classification": "diagnostic_only",
+        "pmf_verdict": "diagnostic_only",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "low ensemble support",
+      "score": 0.15
+    },
+    "reference_state_accommodation": {
+      "confidence": "low",
+      "evidence": [
+        "reference_ensemble_v0_fit"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_18",
+        "mutation": "G430H;P438L;A275I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.4
+    },
+    "role": "control",
+    "structural_viability": {
+      "confidence": "low_to_medium",
+      "evidence": [
+        "stability_or_md_screening_signal"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_18",
+        "mutation": "G430H;P438L;A275I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.5
+    },
+    "substrate_positioning": {
+      "confidence": "low",
+      "evidence": [
+        "soft_distance_angle_contact_readout"
+      ],
+      "provenance": {
+        "candidate_id": "car_v6_18",
+        "mutation": "G430H;P438L;A275I",
+        "seed_role": "control",
+        "source": "car_v5_focused_design,v6_3_pmf_diagnostic"
+      },
+      "reason": "",
+      "score": 0.2
+    },
+    "summary_verdict": "control_or_probe"
+  }
+]
