@@ -32,7 +32,10 @@ def _cfg(out, seq):
     )
 
 
-def test_changed_fingerprint_purges_db_and_artifacts(tmp_path):
+def test_changed_fingerprint_purges_db_and_artifacts(tmp_path, monkeypatch):
+    # Purging is now OPT-IN behind a data-loss guard (a config change once deleted a
+    # finished run). This test exercises the purge PATH, so it opts in explicitly.
+    monkeypatch.setenv("EVOLIEZ_ALLOW_PURGE", "1")
     out = str(tmp_path / "run")
 
     # --- run A (target A) ---

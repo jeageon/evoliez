@@ -69,11 +69,11 @@ Baseline: 5 pre-existing failures + 2 introduced by V6-6's config. Post-V6-7:
 | `test_boltz_cif::test_parse_cif_atom_site_loop` | stale: `_parse_cif_atoms` now returns a 3-tuple | **FIXED** — unpack 3 |
 | `test_tool_output_parsers::test_boltz_pdb_and_cif` | same 3-tuple | **FIXED** — unpack 3 |
 | `test_boltz_outdir_scoping::…primary_ligand_chain` | `_parse_pdb_atoms` 3-tuple | **FIXED** — unpack 3 |
-| `test_config…[example_metalloenzyme.yaml]` | **accepted debt**: the example config reuses the FDH fasta with metalloenzyme placeholder residues (H94/H96/H119) | classify — owner: config/examples; it is an illustrative template, not a real target |
-| `test_reuse_dir_purge::…purges_db_and_artifacts` | **accepted debt**: tests the *old* purge behavior; the code intentionally added a data-loss **guard** that refuses to purge | classify — owner: run-context; the test must be updated to assert the guard (or set `EVOLIEZ_ALLOW_PURGE=1`) |
+| `test_config…[example_metalloenzyme.yaml]` | the example config reused the FDH fasta with placeholder residues (H94/H96/H119) not present at those positions | **FIXED** — retargeted to actual His positions in the bundled fasta (H217/H219/H224); the example stays illustrative but internally consistent |
+| `test_reuse_dir_purge::…purges_db_and_artifacts` | tested the *old* purge behavior; the code intentionally added a data-loss **guard** that refuses to purge unless opted in | **FIXED** — the test now opts in with `EVOLIEZ_ALLOW_PURGE=1` (it exercises the purge path it is named for); `test_same_fingerprint_keeps_db` still guards the no-purge default |
 
-Net: the two remaining failures are **classified accepted debt with owners**; neither
-is V6-related or a real regression.
+Net: **all 7 baseline failures are now resolved — the full suite is green.** None were
+V6 regressions (5 stale tests / config-schema, 2 example/guard consistency).
 
 ## 6. CI test separation
 

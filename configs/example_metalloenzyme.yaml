@@ -27,8 +27,10 @@ input:
       type: smiles
       value: "O"                               # nucleophilic substrate
       role: substrate
-  catalytic_residues: ["H94", "H96", "H119"]   # generic His-triad metal site
-  fixed_residues: ["H94", "H96", "H119"]
+  # generic His-triad metal site — positions chosen to be actual His in the bundled
+  # illustrative fasta (so residue tokens stay consistent with the sequence).
+  catalytic_residues: ["H217", "H219", "H224"]
+  fixed_residues: ["H217", "H219", "H224"]
   ec_number: "4.2.1.1"
 
 homologs:
