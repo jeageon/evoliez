@@ -104,11 +104,14 @@ steps = "".join([
    "<b>새 방법 도입:</b> O→P 거리 좌표에 조화 바이어스(우산) + WHAM으로 <b>접근 비용</b> 측정. 30창.",
    "창끼리 <b>겹침 0.00</b> → 미수렴. 프로그램이 스스로 <b>“해석 금지”</b> 판정(겉보기 순위는 있었으나 신뢰 불가). k=10 용수철이 너무 약함.",
    '<span class="tag t-bad">미수렴 · 재실행</span>'),
- step("fix","6","E4a PMF — 우산 샘플링 (k=60, 진행 중)",
-   "<b>용수철 6배(k=60) + 창 24개</b>(촘촘). 바이어스가 국소 지형을 지배 → 창이 제자리 + 겹침.",
-   "72창(WT+2후보) 스윕 진행 중. 수렴 시 <b>접근 비용</b> 해석; 평평하면 QM/MM-lite가 정직한 다음 tier.",
-   '<span class="tag t-warn">진행 중</span>'),
+ step("fix","6","E4a PMF — 우산 샘플링 (k=60, 완료)",
+   "<b>용수철 6배(k=60) + 창 촘촘화</b>(24→38→129창, 틈 구간 infill). 바이어스가 국소 지형을 지배 → 창이 제자리·단조·겹침.",
+   "창은 잘 고정됐지만 <b>겹침 틈이 남아 이동</b>(4.0→4.7 Å) → 4회 모두 <b>미수렴(conv=NO)</b>. 매번 툴이 스스로 해석 거부(가짜 lead 0). <b>근접구역 ≤3.6 Å은 잘 샘플링</b>, 전역 PMF만 틈을 건넘.",
+   '<span class="tag t-neu">FF 한계 확정 · claim-safe</span>'),
 ])
+
+e4a_conclusion = '''<div class="callout warn"><span class="lbl">E4a 최종 결론 (claim-safe)</span>
+고전 고정전하 힘장으로는 <b>1D O→Pα PMF가 깨끗이 수렴하지 않습니다</b> — 반응 좌표가 숨은 변수(공-기질 준안정 상태)와 결합해 40 ps 창이 그 전이를 못 건넙니다. E1·E2·E4a가 <b>같은 벽</b>(FF가 각도는 유지, 반응 거리 ~3 Å는 못 잡음)을 가리킵니다. 접근 비용(WT 5.53 / lead 2.90 / P438N 10.22)은 <b>미수렴이라 순위로 읽으면 안 됩니다</b>. 다음 tier(결정 대기): ① 일반성 전환 · ② QM/MM-lite · ③ 더 긴 샘플링/2D 좌표. 상세: <code>docs/car_v5/e4a_results_summary.md</code>.</div>'''
 
 session_code = '''<h2>이번 세션에서 바뀐 코드 (PR #22)</h2>
 <div class="scroll"><table>
@@ -147,7 +150,7 @@ foot = '''<div class="foot">
 
 body = (hero + '<p class="lead">단계별로 “이전 대비 무엇이 달라졌는지 + 무엇을 알아냈는지”를 정리합니다.</p>'
         + summary
-        + '<h2>검증 단계의 진화 (무엇이 달라졌나)</h2>' + steps
+        + '<h2>검증 단계의 진화 (무엇이 달라졌나)</h2>' + steps + e4a_conclusion
         + session_code + charts
         + structure_head + vbar_and_viewer + legend
         + claim + foot)

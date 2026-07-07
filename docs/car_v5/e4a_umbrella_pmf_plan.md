@@ -1,5 +1,10 @@
 # E4a — O_nuc→Pα umbrella / PMF access-barrier screen
 
+> **Results:** see [`e4a_results_summary.md`](e4a_results_summary.md). Verdict across 4 sampling attempts:
+> **NOT CONVERGED** (classical 1D PMF doesn't cleanly converge; the coverage gap shifts when infilled) →
+> honest FF-limitation endpoint, claim-safe. The plan below is the method; the summary is the outcome.
+
+
 ## Why this before QM/MM
 E2 found unbiased explicit MD never occupies the productive ~3 Å window. But the near-attack
 conformation (NAC) is a **transient reactive configuration, not a stable minimum**, so "does it sit at
