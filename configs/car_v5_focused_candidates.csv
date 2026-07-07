@@ -1,0 +1,20 @@
+mutation_string,category,rationale
+WT,control,parental baseline (must get identical Mg placement + valid O->P baseline)
+G430R;S433F;G407K,lead,integrated catalytic near-attack lead (Arg anchors 3-HP carboxylate in-line to alpha-P)
+G430R,deconvolution,lead single — Arg carboxylate anchor
+S433F,deconvolution,lead single — pocket packing
+G407K,deconvolution,lead single — Lys charge/anchor
+G430R;S433F,deconvolution,lead pairwise
+G430R;G407K,deconvolution,lead pairwise
+S433F;G407K,deconvolution,lead pairwise
+P438N,clean_single,cleanest single-site design (attack angle 155, no clash)
+P438R,clean_single,P438 Arg variant
+P438K,clean_single,P438 Lys variant
+P438Q,clean_single,P438 Gln variant
+P438S,clean_single,P438 Ser variant
+P438T,clean_single,P438 Thr variant
+Y264F;T265S;G274A,integrated,integrated ranking #2 (A3 loop, productive)
+P438R;G407H,integrated,integrated ranking #3 (productive, Delta-anchor +3)
+T265S;G274A;A275V,control,binding/stability control (MD-lite top, dynamic NAC 0)
+G430H;S433I,scalar_control,pipeline scalar top with catalytic geometry 0 (objective-conflict control)
+G430H;P438L;A275I,scalar_control,pipeline scalar top control

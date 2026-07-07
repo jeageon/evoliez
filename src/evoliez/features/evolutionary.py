@@ -36,6 +36,13 @@ class PositionFeature:
     pssm_vector: Dict[str, float] = field(default_factory=dict)
     allowed_aa: List[str] = field(default_factory=list)
     residue_class: Optional[int] = None
+    # subfamily-aware specificity signal (user §7): filled by features.subfamily
+    specificity_divergence: float = 0.0
+    # ESM2 single-sequence prior (0..1): predicted substitution variability at
+    # this position (high = the language model tolerates many residues). Filled
+    # by s03 when msa.esm_enabled; 0.0 otherwise. MSA-free, complements
+    # conservation_score (which is MSA-derived).
+    esm_variability: float = 0.0
 
 
 def target_column_map(msa: Sequence[tuple[str, str]]) -> Dict[int, int]:

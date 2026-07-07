@@ -1,0 +1,36 @@
+# Mechanism template surface: hydride_transfer (ROADMAP_V4 §7.11)
+#
+# This YAML mirrors the registered `hydride_transfer` template
+# (src/evoliez/mechanism/templates/__init__.py) as a config-only, reviewer-readable
+# surface. Atom selection is CHEMISTRY-GENERIC (SMARTS on the ligand/cofactor), so a new
+# hydride-transfer enzyme is a config exercise, not new code. No FDH residue numbers or
+# atom names appear here.
+key: hydride_transfer
+required_reaction_state:
+  - cofactor_redox_state       # e.g. NADP+/NADPH
+  - conformational_state       # e.g. closed_ternary_complex
+default_geometry_terms:
+  - kind: distance
+    label: donor_acceptor
+    # donor = carboxylate/hydride-donor C ; acceptor = nicotinamide C4 (generic SMARTS)
+    a_smarts: "[CX3H1](=O)[O-]"
+    a_idx: 0
+    b_smarts: "[cH1]([cH0]C(=O)[NX3])[cH1]"
+    b_idx: 0
+    distance_min: 0.0
+    distance_max: 3.5
+    weight: 1.0
+  - kind: angle
+    label: hydride_axis
+    a_smarts: "[CX3H1](=O)[O-]"
+    a_idx: 0
+    b_smarts: "[CX3H1](=O)[O-]"
+    b_idx: 0
+    c_smarts: "[cH1]([cH0]C(=O)[NX3])[cH1]"
+    c_idx: 0
+    angle_min: 150.0
+    angle_max: 180.0
+    weight: 1.0
+notes: >
+  Hydride transfer; cofactor redox + closed ternary reaction state required. The geometry
+  is defined by SMARTS against the cofactor/substrate, not by enzyme-specific residues.

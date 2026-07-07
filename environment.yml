@@ -24,8 +24,7 @@ dependencies:
   - scikit-learn
   - xgboost
   - openmm           # CPU platform is fine for minimization / MD-lite smoke tests
-  - mdanalysis
-  - mdtraj
+  - pdbfixer         # terminal/heavy-atom repair for real MD-lite smoke tests
   - pytest
   - pip:
       - -e .

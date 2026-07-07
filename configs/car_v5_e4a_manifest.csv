@@ -1,0 +1,4 @@
+mutation_string,category,rationale
+WT,control,parental baseline (Mg + valid O->P baseline) — the WHAM access-cost reference
+G430R;S433F;G407K,lead,prior static lead (re-evaluated Mg-consistent + explicit) — does it access ~3A cheaper than WT?
+P438N,clean_single,cleanest single-site design — access-cost contrast vs WT and the lead

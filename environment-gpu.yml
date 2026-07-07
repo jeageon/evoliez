@@ -1,20 +1,23 @@
-# SERVER environment (admin1-SYS-740GP-TNRT: 4x RTX A6000, CUDA 12.4).
+# SERVER environment (4x RTX A6000, CUDA 12.4). Solve-friendly:
+#  - channels limited to conda-forge + bioconda (+ nodefaults) -> no Anaconda
+#    ToS prompt, far smaller/faster SAT problem.
+#  - PyTorch is NOT a conda package here (the conda pytorch/nvidia/cudatoolkit
+#    metapackages are the classic "solve bomb"). It is pip-installed from the
+#    official cu121 wheels in the pip: section below.
+#  - OpenMM from conda-forge already ships its own CUDA runtime; no
+#    cudatoolkit pin needed.
 #
-# IMPORTANT: root "/" is ~99% full. Create the env on /mnt/data2, NOT on the
-# default ~/anaconda3/envs path:
+#   mamba env create -f environment-gpu.yml -p /mnt/data/<you>/envs/evoliez
+#   conda activate /mnt/data/<you>/envs/evoliez
 #
-#   conda env create -f environment-gpu.yml -p /mnt/data2/envs/evoliez
-#   conda activate /mnt/data2/envs/evoliez
-#
-# Boltz-2, LigandMPNN, DiffDock, GNINA and their weights are installed/fetched
-# separately (see docs/DATA_AND_WEIGHTS.md and scripts/fetch_weights.sh).
+# Boltz/LigandMPNN/DiffDock/GNINA + weights are installed separately
+# (docs/DATA_AND_WEIGHTS.md, scripts/fetch_weights.sh).
 #
 name: evoliez
 channels:
   - conda-forge
   - bioconda
-  - pytorch
-  - nvidia
+  - nodefaults
 dependencies:
   - python=3.10
   - pip
@@ -27,31 +30,32 @@ dependencies:
   - networkx
   - typer
   - rich
+  - pytest           # so `python -m pytest` / server_test.sh unit step runs
   # science
   - rdkit
   - biopython
   - scikit-learn
   - xgboost
-  # md (CUDA-enabled OpenMM)
+  # md (OpenMM conda-forge build includes the CUDA platform)
   - openmm
-  - cudatoolkit=12.*
-  - mdanalysis
-  - mdtraj
   - openff-toolkit
   - openmmforcefields
   - ambertools
-  # homology / MSA
+  # repairs Boltz chain termini (OXT) / missing heavy atoms before Amber
+  # parameterization; without it real MD hits "No template for residue".
+  - pdbfixer
+  # homology / MSA / docking
   - mafft
   - hmmer
   - mmseqs2
   - foldseek
   - blast
-  # docking
   - vina
   - openbabel
-  # deep learning (pin CUDA build at install time to match driver 550 / CUDA 12.4)
-  - pytorch
-  - pytorch-cuda=12.1
   - pip:
+      # GPU PyTorch from official CUDA 12.1 wheels (driver 550 / CUDA 12.4
+      # is backward compatible). torch_geometric is the optional GNN backend.
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch
+      - torch_geometric
       - -e .
-      # boltz / ligandmpnn / diffdock installed from source on the server; see runbook

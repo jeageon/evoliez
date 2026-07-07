@@ -77,6 +77,31 @@ def select_gpu(min_free_mib: int = 16000) -> Optional[int]:
     return best.index
 
 
+def free_gpu_indices(min_free_mib: int = 16000) -> List[int]:
+    """All GPUs with enough free VRAM, least-busy first. For 4-way job-array
+    parallelism (Boltz/DiffDock/LigandMPNN/MD on separate GPUs) - the spec's
+    recommended 'independent jobs per GPU', not model-parallel."""
+    gpus = [g for g in query_gpus() if g.mem_free_mib >= min_free_mib]
+    gpus.sort(key=lambda g: (g.util_pct, -g.mem_free_mib))
+    return [g.index for g in gpus]
+
+
+class GpuPool:
+    """Round-robin GPU assignment for independent pipeline jobs."""
+
+    def __init__(self, min_free_mib: int = 16000):
+        self._gpus = free_gpu_indices(min_free_mib) or [0]
+        self._i = 0
+
+    def next(self) -> int:
+        idx = self._gpus[self._i % len(self._gpus)]
+        self._i += 1
+        return idx
+
+    def __len__(self) -> int:
+        return len(self._gpus)
+
+
 def apply_gpu_selection(min_free_mib: int = 16000) -> Optional[int]:
     """Pin this process to a chosen GPU. Respects a pre-set
     ``CUDA_VISIBLE_DEVICES`` (e.g. when launched under a scheduler)."""

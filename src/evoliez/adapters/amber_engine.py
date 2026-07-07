@@ -1,0 +1,556 @@
+"""Amber ``pmemd.cuda`` MD backend - the s10 tier-3 confirmatory engine.
+
+Mirrors ``openmm_engine.run_md``'s contract (-> :class:`MDResult`) but runs the
+rigorous Amber path: ``tleap`` (ff14SB + GAFF2/AM1-BCC) -> ``pmemd.cuda`` (a
+staged restrained protocol: minimize -> heat 0->300K -> production) -> ``cpptraj``
+(ligand/pocket RMSD, catalytic min-distances, h-bonds). Server-only (AmberTools
++ a CUDA ``pmemd``); honest skips mirror the OpenMM path so ``md/analysis.py``
+treats both engines identically.
+
+Mechanics validated by ``scripts/smoke_amber_{param,pmemd,cpptraj}.py``.
+
+Tool discovery is PATH-based; the launcher (or ``EVOLIEZ_AMBERTOOLS_BIN`` /
+``EVOLIEZ_PMEMD_CUDA``) must put AmberTools + a CUDA ``pmemd`` on PATH. v1 is
+implicit-GB (igb8); explicit-solvent is a planned config branch.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence
+
+from evoliez.adapters.base import is_full_atom_pdb
+from evoliez.adapters.openmm_engine import (
+    MDResult,
+    _ligand_rdkit_at_pose,
+    _pdb_one_letter_seq,
+    _production_nsteps,
+    _run_mock,
+)
+from evoliez.config import MDConfig
+from evoliez.types import Complex
+
+log = logging.getLogger(__name__)
+
+_AMBER_TOOLS = ("pdb4amber", "antechamber", "parmchk2", "tleap", "cpptraj")
+
+# AM1-BCC charges at a SINGLE POINT (sqm maxcyc=0). The -3 NADP (tri-anionic,
+# phosphate-rich) does NOT converge under antechamber's default gas-phase geometry
+# optimisation (the optimiser crawls and would distort the phosphates); a single-point
+# at the docked pose converges in ~1 min and is the right treatment for a bound
+# cofactor. Passing -ek REPLACES the whole &qmmm namelist, so the default AM1 + SCF-
+# convergence settings are restated here (otherwise sqm fails SCF). Same charge METHOD
+# as the OpenMM fixed-charge template (params/nadp_3minus), so the two engines agree.
+_SQM_EK = "qm_theory='AM1', maxcyc=0, scfconv=1.d-10, ndiis_attempts=700"
+
+
+# --------------------------------------------------------------------------- #
+# Environment / tool discovery
+# --------------------------------------------------------------------------- #
+def ensure_amber_on_path() -> None:
+    """Prepend ``EVOLIEZ_AMBERTOOLS_BIN`` to PATH if AmberTools isn't already
+    found. Shared safety net: BOTH the OpenMM tier (OpenFF needs antechamber/sqm
+    for AM1-BCC charges) and this Amber tier silently skip every candidate when
+    the charge backend is missing, so a launcher that forgets to set PATH must
+    not nuke the whole MD layer."""
+    if shutil.which("antechamber"):
+        return
+    extra = os.environ.get("EVOLIEZ_AMBERTOOLS_BIN")
+    if extra and Path(extra).is_dir():
+        os.environ["PATH"] = f"{extra}:{os.environ.get('PATH', '')}"
+        lib = str(Path(extra).parent / "lib")
+        if Path(lib).is_dir():
+            os.environ["LD_LIBRARY_PATH"] = (
+                f"{lib}:{os.environ.get('LD_LIBRARY_PATH', '')}")
+        log.info("prepended EVOLIEZ_AMBERTOOLS_BIN=%s to PATH", extra)
+
+
+def _pmemd_cuda() -> Optional[str]:
+    cand = os.environ.get("EVOLIEZ_PMEMD_CUDA")
+    if cand and Path(cand).exists():
+        return cand
+    return shutil.which("pmemd.cuda_SPFP") or shutil.which("pmemd.cuda")
+
+
+def amber_available() -> bool:
+    ensure_amber_on_path()
+    return all(shutil.which(t) for t in _AMBER_TOOLS) and bool(_pmemd_cuda())
+
+
+# --------------------------------------------------------------------------- #
+# Input-deck generators (pure -> unit-testable)
+# --------------------------------------------------------------------------- #
+_BB = "@CA,C,N,O"   # backbone restraint mask (kept off the pocket refinement)
+
+
+def mdin_min(restraint_wt: float = 5.0) -> str:
+    return ("restrained minimize (implicit GB)\n&cntrl\n"
+            " imin=1, maxcyc=2000, ncyc=1000,\n igb=8, cut=999.0, ntb=0,\n"
+            f" ntr=1, restraintmask='{_BB}', restraint_wt={restraint_wt},\n"
+            " ntpr=200,\n/\n")
+
+
+def mdin_heat(nsteps: int, restraint_wt: float = 5.0) -> str:
+    return ("heat 0->300K, restrained backbone\n&cntrl\n"
+            f" imin=0, nstlim={nsteps}, dt=0.002, irest=0, ntx=1,\n"
+            " igb=8, cut=999.0, ntb=0,\n ntc=2, ntf=2,\n"
+            " ntt=3, gamma_ln=2.0, tempi=0.0, temp0=300.0, ig=-1,\n"
+            f" ntr=1, restraintmask='{_BB}', restraint_wt={restraint_wt},\n"
+            " ntpr=500, ntwx=500,\n/\n")
+
+
+def mdin_prod(nsteps: int, restraint_wt: float = 0.5, nframes: int = 50) -> str:
+    interval = max(1, nsteps // max(1, nframes))
+    return ("production 300K (weak backbone restraint)\n&cntrl\n"
+            f" imin=0, nstlim={nsteps}, dt=0.002, irest=1, ntx=5,\n"
+            " igb=8, cut=999.0, ntb=0,\n ntc=2, ntf=2,\n"
+            " ntt=3, gamma_ln=2.0, temp0=300.0, ig=-1,\n"
+            f" ntr=1, restraintmask='{_BB}', restraint_wt={restraint_wt},\n"
+            f" ntpr={interval}, ntwx={interval}, ntwr={nsteps},\n/\n")
+
+
+def mdin_min_exp(restraint_wt: float = 5.0) -> str:
+    return ("restrained minimize (explicit, PME)\n&cntrl\n"
+            " imin=1, maxcyc=2000, ncyc=1000,\n ntb=1, cut=10.0,\n"
+            f" ntr=1, restraintmask='{_BB}', restraint_wt={restraint_wt},\n ntpr=200,\n/\n")
+
+
+def mdin_heat_exp(nsteps: int, restraint_wt: float = 5.0) -> str:
+    return ("heat 0->300K NVT, restrained backbone (explicit, PME)\n&cntrl\n"
+            f" imin=0, nstlim={nsteps}, dt=0.002, irest=0, ntx=1,\n"
+            " ntb=1, cut=10.0, iwrap=1,\n ntc=2, ntf=2,\n"
+            " ntt=3, gamma_ln=2.0, tempi=0.0, temp0=300.0, ig=-1,\n"
+            f" ntr=1, restraintmask='{_BB}', restraint_wt={restraint_wt},\n"
+            " ntpr=500, ntwx=0,\n/\n")
+
+
+def mdin_npt_equil(nsteps: int, restraint_wt: float = 1.0) -> str:
+    return ("NPT density equilibration, weak restraint (explicit, PME)\n&cntrl\n"
+            f" imin=0, nstlim={nsteps}, dt=0.002, irest=1, ntx=5,\n"
+            " ntb=2, ntp=1, barostat=2, pres0=1.0, taup=2.0,\n cut=10.0, iwrap=1,\n"
+            " ntc=2, ntf=2,\n ntt=3, gamma_ln=2.0, temp0=300.0, ig=-1,\n"
+            f" ntr=1, restraintmask='{_BB}', restraint_wt={restraint_wt},\n"
+            " ntpr=500, ntwx=0,\n/\n")
+
+
+def mdin_prod_exp(nsteps: int, nframes: int = 250) -> str:
+    interval = max(1, nsteps // max(1, nframes))
+    return ("NPT production, free (explicit, PME)\n&cntrl\n"
+            f" imin=0, nstlim={nsteps}, dt=0.002, irest=1, ntx=5,\n"
+            " ntb=2, ntp=1, barostat=2, pres0=1.0, taup=2.0,\n cut=10.0, iwrap=1,\n"
+            " ntc=2, ntf=2,\n ntt=3, gamma_ln=2.0, temp0=300.0, ig=-1,\n"
+            f" ntpr={interval}, ntwx={interval}, ntwr={nsteps},\n/\n")
+
+
+def tleap_script(net_charge: int = 0, solvent: str = "implicit") -> str:
+    """tleap build. implicit = ff14SB + GB radii (tier-2-equivalent rigour).
+    explicit = ff19SB + OPC water (the FF19SB-matched model) in a truncated
+    octahedron + addIons neutralize (addIons, NOT addIonsRand: with #=0 the
+    latter rejects a second ion type). 0.15 M physiological salt is a TODO
+    refinement (needs the post-solvate water count)."""
+    if solvent == "explicit":
+        return ("source leaprc.protein.ff19SB\n"
+                "source leaprc.gaff2\n"
+                "source leaprc.water.opc\n"
+                "loadamberparams ligand.frcmod\n"
+                "LIG = loadmol2 ligand.mol2\n"
+                "prot = loadpdb protein_clean.pdb\n"
+                "comp = combine {prot LIG}\n"
+                "solvateOct comp OPCBOX 12.0\n"
+                "addIons comp Na+ 0\n"
+                "addIons comp Cl- 0\n"
+                "saveamberparm comp complex.prmtop complex.inpcrd\n"
+                "quit\n")
+    return ("source leaprc.protein.ff14SB\n"
+            "source leaprc.gaff2\n"
+            "loadamberparams ligand.frcmod\n"
+            "LIG = loadmol2 ligand.mol2\n"
+            "prot = loadpdb protein_clean.pdb\n"
+            "comp = combine {prot LIG}\n"
+            "set default PBRadii mbondi3\n"
+            "saveamberparm comp complex.prmtop complex.inpcrd\n"
+            "quit\n")
+
+
+def cpptraj_script(catalytic_positions: Sequence[int],
+                   solvent: str = "implicit",
+                   trajs: Sequence[str] = ("prod.nc",)) -> str:
+    """rms (ligand + backbone), per-catalytic-residue min-distance to the
+    ligand (nativecontacts mindist -> matches the OpenMM heavy-atom metric),
+    and ligand h-bonds, pooled over ALL replica trajectories. Explicit
+    trajectories are autoimaged (PBC) and the solvent/ions stripped so the
+    masks below act on the solute only."""
+    lines = ["parm complex.prmtop"] + [f"trajin {t}" for t in trajs]
+    if solvent == "explicit":
+        lines += ["autoimage", "strip :WAT,Na+,Cl-,K+"]
+    lines += [
+        "rms fit @CA,C,N first",                       # superpose on backbone
+        "rms ligand :LIG&!@H= first nofit out ligand_rmsd.dat",
+        "rms backbone @CA,C,N first nofit out pocket_rmsd.dat",
+    ]
+    for p in catalytic_positions:
+        lines.append(
+            f"nativecontacts :LIG :{int(p)} mindist out cat_{int(p)}.dat "
+            f"distance 12.0 first")
+    lines += [
+        "hbond HB :LIG out hbond.dat",
+        "run",
+        "quit",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------- #
+# Execution helpers
+# --------------------------------------------------------------------------- #
+def _sh(cmd: List[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess:
+    # PR_SET_PDEATHSIG: bind these children (tleap/antechamber/parmchk2/MMPBSA
+    # and, via amber_rbfe._run_window, pmemd.cuda) to the pipeline parent so a
+    # parent crash/kill cannot leave an orphaned GPU-holding pmemd or a runaway
+    # MMPBSA (subprocess_utils.run() applies the same guard; this raw path
+    # bypassed it -- a killed smoke just orphaned its MMPBSA at 0.2% CPU).
+    from evoliez.utils.subprocess_utils import _LIBC, _set_pdeathsig
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                          timeout=timeout,
+                          preexec_fn=_set_pdeathsig if _LIBC is not None else None)
+
+
+def _build_system(cx: Complex, pdb_path: Path, workdir: Path,
+                  solvent: str = "implicit") -> None:
+    """pdb4amber + antechamber(AM1-BCC) + parmchk2 + tleap -> complex.prmtop.
+    Raises _AmberParamUnsupported (-> neutral skip) when antechamber/sqm cannot
+    charge the ligand; raises RuntimeError on a real protein/tleap failure."""
+    # protein-only PDB
+    prot = [l for l in pdb_path.read_text().splitlines() if l.startswith("ATOM")]
+    (workdir / "protein_in.pdb").write_text("\n".join(prot) + "\nEND\n")
+    r = _sh(["pdb4amber", "-i", "protein_in.pdb", "-o", "protein_clean.pdb",
+             "--nohyd", "--dry"], workdir, 120)
+    if r.returncode != 0 or not (workdir / "protein_clean.pdb").exists():
+        raise RuntimeError(f"pdb4amber failed: {r.stderr[-400:]}")
+
+    # design ligand at the docked pose -> SDF -> antechamber (AM1-BCC, gaff2).
+    # Extract ONLY the design ligand from its OWN hetero group; the complex HETATM may
+    # also hold a co-substrate (formate beside NADP) and matching against the merged
+    # block fails the whole-molecule atom-count gate.
+    from evoliez.adapters.openmm_engine import _ligands_at_pose
+    _m = _ligands_at_pose(pdb_path, [(getattr(cx.ligand, "id", None) or "design",
+                                      cx.ligand.smiles)])
+    if not _m:
+        raise _AmberParamUnsupported("design ligand not matched in the complex HETATM")
+    rd = _m[0][1]
+    from rdkit import Chem
+    with Chem.SDWriter(str(workdir / "ligand.sdf")) as w:
+        w.write(rd)
+    nc = int(getattr(cx.ligand, "formal_charge", 0) or 0)
+    r = _sh(["antechamber", "-i", "ligand.sdf", "-fi", "sdf", "-o", "ligand.mol2",
+             "-fo", "mol2", "-c", "bcc", "-nc", str(nc), "-at", "gaff2",
+             "-ek", _SQM_EK, "-rn", "LIG"], workdir, 900)
+    if r.returncode != 0 or not (workdir / "ligand.mol2").exists():
+        raise _AmberParamUnsupported(
+            f"antechamber/AM1-BCC failed (large/charged cofactor?): "
+            f"{(r.stdout + r.stderr)[-400:]}")
+    r = _sh(["parmchk2", "-i", "ligand.mol2", "-f", "mol2", "-o", "ligand.frcmod"],
+            workdir, 120)
+    if r.returncode != 0:
+        raise _AmberParamUnsupported(f"parmchk2 failed: {r.stderr[-300:]}")
+
+    (workdir / "tleap.in").write_text(tleap_script(nc, solvent))
+    r = _sh(["tleap", "-s", "-f", "tleap.in"], workdir, 600)
+    if not (workdir / "complex.prmtop").exists():
+        raise RuntimeError(f"tleap failed: {r.stdout[-400:]}")
+
+
+def parameterize_ligand(cx: Complex, pdb_path: Path, workdir: Path):
+    """antechamber(AM1-BCC, gaff2) + parmchk2 on the design ligand at its docked
+    pose -> (ligand.mol2, ligand.frcmod) in ``workdir``. Standalone so the RBFE
+    complex leg can reuse the exact same ligand parameters as the binding MD.
+    Raises _AmberParamUnsupported on a charge failure (large/charged cofactor)."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    mol2, frcmod = workdir / "ligand.mol2", workdir / "ligand.frcmod"
+    if mol2.exists() and frcmod.exists():
+        return mol2, frcmod                     # cached (ligand identical per run)
+    from evoliez.adapters.openmm_engine import _ligands_at_pose
+    _m = _ligands_at_pose(Path(pdb_path), [(getattr(cx.ligand, "id", None) or "design",
+                                            cx.ligand.smiles)])
+    if not _m:
+        raise _AmberParamUnsupported("design ligand not matched in the complex HETATM")
+    rd = _m[0][1]
+    from rdkit import Chem
+    with Chem.SDWriter(str(workdir / "ligand.sdf")) as w:
+        w.write(rd)
+    nc = int(getattr(cx.ligand, "formal_charge", 0) or 0)
+    r = _sh(["antechamber", "-i", "ligand.sdf", "-fi", "sdf", "-o", "ligand.mol2",
+             "-fo", "mol2", "-c", "bcc", "-nc", str(nc), "-at", "gaff2",
+             "-ek", _SQM_EK, "-rn", "LIG"], workdir, 900)
+    if r.returncode != 0 or not mol2.exists():
+        raise _AmberParamUnsupported(
+            f"antechamber/AM1-BCC failed: {(r.stdout + r.stderr)[-400:]}")
+    r = _sh(["parmchk2", "-i", "ligand.mol2", "-f", "mol2", "-o", "ligand.frcmod"],
+            workdir, 120)
+    if r.returncode != 0 or not frcmod.exists():
+        raise _AmberParamUnsupported(f"parmchk2 failed: {r.stderr[-300:]}")
+    return mol2, frcmod
+
+
+def _run_stage(tag: str, args: List[str], workdir: Path, pmemd: str,
+               timeout: int) -> None:
+    r = _sh([pmemd] + args, workdir, timeout)
+    if r.returncode != 0:
+        raise RuntimeError(f"pmemd {tag} failed (rc={r.returncode}): "
+                           f"{r.stderr[-400:]}")
+
+
+def _run_replicas(workdir: Path, pmemd: str, prmtop: str, start_rst: str,
+                  prod_in: str, n_rep: int, timeout: int,
+                  ref: "str | None" = None) -> List[str]:
+    """Run n_rep production replicas from the SAME equilibrated restart. Each
+    re-uses the equilibrated coords/velocities/box but the mdin's ig=-1 reseeds
+    the Langevin thermostat, so the stochastic trajectories diverge -> N
+    statistically-independent replicas. Returns the trajectory filenames."""
+    trajs: List[str] = []
+    for r in range(max(1, n_rep)):
+        args = ["-O", "-i", prod_in, "-o", f"prod_{r}.out", "-p", prmtop,
+                "-c", start_rst, "-r", f"prod_{r}.rst", "-x", f"prod_{r}.nc"]
+        if ref:
+            args += ["-ref", ref]
+        _run_stage(f"prod{r}", args, workdir, pmemd, timeout)
+        trajs.append(f"prod_{r}.nc")
+    return trajs
+
+
+def _series(workdir: Path, name: str, col: int = 1) -> List[float]:
+    """Value column ``col`` (1-based after the frame index) of a cpptraj .dat.
+    nativecontacts ``out`` writes Frame|native|nonnative|mindist, so catalytic
+    min-distance is col 3 (not the native-contact COUNT in col 1)."""
+    p = workdir / name
+    if not p.exists():
+        return []
+    out: List[float] = []
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", "@")):
+            continue
+        parts = line.split()
+        if len(parts) > col:
+            try:
+                out.append(float(parts[col]))
+            except ValueError:
+                pass
+    return out
+
+
+def _analyze(workdir: Path, cfg: MDConfig, catalytic_positions: Sequence[int],
+             trajs: Sequence[str] = ("prod.nc",)) -> Dict[str, object]:
+    solvent = "explicit" if getattr(cfg, "solvent", "implicit") == "explicit" else "implicit"
+    (workdir / "analyze.in").write_text(
+        cpptraj_script(catalytic_positions, solvent, trajs))
+    _sh(["cpptraj", "-i", "analyze.in"], workdir, 900)
+
+    lig = _series(workdir, "ligand_rmsd.dat")
+    pkt = _series(workdir, "pocket_rmsd.dat")
+    key: Dict[str, List[float]] = {}
+    for p in catalytic_positions:
+        s = _series(workdir, f"cat_{int(p)}.dat", col=3)   # mindist, not count
+        if s:
+            key[f"cat_{int(p)}"] = [round(v, 3) for v in s]
+    # hbond.dat col 1 = number of ligand h-bonds per frame -> occupancy
+    hb = _series(workdir, "hbond.dat")
+    hbond_occ = round(sum(1 for v in hb if v >= 1) / len(hb), 3) if hb else 0.0
+    # energy drift from the production mdout
+    drift = 0.0
+    mdout = workdir / "prod.out"
+    if mdout.exists():
+        et = re.findall(r"Etot\s*=\s*(-?\d+\.\d+)", mdout.read_text())
+        if len(et) >= 2 and float(et[0]) != 0.0:
+            drift = abs((float(et[-1]) - float(et[0])) / float(et[0]))
+    return {
+        "ligand_rmsd_series": [round(v, 3) for v in lig] or [0.0],
+        "pocket_rmsd_series": [round(v, 3) for v in pkt] or [0.0],
+        "key_distances": key,
+        "hbond_occupancy": hbond_occ,
+        "energy_drift": round(drift, 4),
+    }
+
+
+def _mmpbsa(workdir: Path, trajs: Sequence[str],
+            total_frames: int = 200) -> Dict[str, float]:
+    """Endpoint MM-GBSA binding free energy over the replica trajectories.
+    ante-MMPBSA.py splits the solvated complex prmtop into dry
+    complex/receptor/ligand; MMPBSA.py computes dG_bind (GB igb8, 0.15 M salt).
+    PB is omitted (see mmpbsa.in note) -- it is the wall-time bottleneck under
+    shared-CPU contention. OPTIONAL: returns {} on any failure - the candidate is
+    still ranked on the MD geometry metrics. Subsample to ~100 frames."""
+    interval = max(2, total_frames // 100)
+    strip = ":WAT,Na+,Cl-,K+"
+    r = _sh(["ante-MMPBSA.py", "-p", "complex.prmtop", "-c", "com.prmtop",
+             "-r", "rec.prmtop", "-l", "lig.prmtop", "-s", strip, "-n", ":LIG",
+             "--radii", "mbondi2"], workdir, 300)
+    if not (workdir / "com.prmtop").exists():
+        log.warning("ante-MMPBSA failed: %s", (r.stderr or "")[-300:])
+        return {}
+    # GB-only (igb8) endpoint MM-GBSA. PB (&pb / 3D-FDPB) is intentionally
+    # omitted: it is the single-threaded, far-costlier term and under shared-CPU
+    # contention it dominates wall-time (it stalled the smoke at ~0.2% CPU for
+    # ~50 min). igb8 MM-GBSA is the standard fast endpoint and is what the
+    # binding_dg deliverable reports; re-add the &pb namelist when the box has
+    # spare CPU and a PB estimate is wanted.
+    (workdir / "mmpbsa.in").write_text(
+        f"MM-GBSA\n&general\n startframe=1, interval={interval}, keep_files=0,\n"
+        f" strip_mask='{strip}',\n/\n&gb\n igb=8, saltcon=0.15,\n/\n")
+    r = _sh(["MMPBSA.py", "-O", "-i", "mmpbsa.in", "-o", "mmpbsa.out",
+             "-sp", "complex.prmtop", "-cp", "com.prmtop", "-rp", "rec.prmtop",
+             "-lp", "lig.prmtop", "-y"] + list(trajs), workdir, 7200)
+    out = workdir / "mmpbsa.out"
+    if not out.exists():
+        log.warning("MMPBSA.py failed: %s", (r.stderr or "")[-300:])
+        return {}
+    txt = out.read_text()
+    dg: Dict[str, float] = {}
+    blocks = re.split(r"(GENERALIZED BORN|POISSON BOLTZMANN)", txt)
+    for i in range(1, len(blocks) - 1, 2):
+        name = "gbsa" if "BORN" in blocks[i] else "pbsa"
+        mt = re.search(r"DELTA TOTAL\s+(-?\d+\.\d+)", blocks[i + 1])
+        if mt:
+            dg[name] = round(float(mt.group(1)), 2)
+    return dg
+
+
+class _AmberParamUnsupported(Exception):
+    """Ligand the AmberTools small-molecule path cannot charge -> neutral skip."""
+
+
+def _skip(candidate_id: str, cfg: MDConfig, status: str, reason: str) -> MDResult:
+    return MDResult(candidate_id=candidate_id, status=status,
+                    protocol_level=cfg.protocol_level, solvent_mode="implicit",
+                    simulation_time_ns=0.0, failure_reason=reason)
+
+
+# --------------------------------------------------------------------------- #
+# Entry point
+# --------------------------------------------------------------------------- #
+def run_md_amber(cx: Complex, candidate_id: str, cfg: MDConfig, workdir: Path,
+                 *, catalytic_positions: Sequence[int], dry_run: bool,
+                 ligand_cache_dir: "Path | None" = None,
+                 extra_ligands: "Sequence[tuple] | None" = None) -> MDResult:
+    workdir.mkdir(parents=True, exist_ok=True)
+    # NAC (catalytic-power) is NOT yet wired on the Amber tier (it needs the
+    # cofactor + co-substrate as multi-ligand prmtop + a cpptraj reactive-
+    # geometry pass on the .nc). Surface that HONESTLY instead of silently
+    # returning a NAC-less result: a paper claiming explicit-solvent reactivity
+    # must run engine=openmm for NAC, or wait for the Amber-NAC tier.
+    nac_cfg = getattr(cfg, "reactive_geometry", None)
+    if nac_cfg and getattr(nac_cfg, "enabled", False) and (extra_ligands or []):
+        log.warning(
+            "MD engine=amber for %s with reactive_geometry.enabled: the Amber "
+            "path does NOT compute NAC yet (extra_ligands/co-substrate ignored). "
+            "Binding metrics + MM-GBSA run; for catalytic-power (NAC) occupancy "
+            "use engine=openmm. (Amber-NAC is the next rigor tier.)",
+            candidate_id,
+        )
+    if dry_run:
+        log.info("[dry-run] would run Amber pmemd.cuda L%d for %s",
+                 cfg.protocol_level, candidate_id)
+        return _run_mock(cx, candidate_id, cfg, workdir, instability=0.2,
+                         catalytic_positions=catalytic_positions)
+
+    pmemd = _pmemd_cuda()
+    if not amber_available():
+        return _skip(candidate_id, cfg, "skipped_parameterization",
+                     "AmberTools/pmemd.cuda not on PATH (set EVOLIEZ_AMBERTOOLS_BIN"
+                     " / EVOLIEZ_PMEMD_CUDA)")
+
+    # full-atom structure required (same honest skip as the OpenMM path)
+    src = getattr(cx.structure, "pdb_path", None)
+    if not (src and Path(src).exists() and is_full_atom_pdb(Path(src))):
+        return _skip(candidate_id, cfg, "skipped_no_full_atom_structure",
+                     "Amber MD requires a full-atom protein (got CA-only/mock)")
+    pdb_path = Path(src)
+    want = (cx.structure.sequence or "").upper()
+    have = _pdb_one_letter_seq(pdb_path)
+    if want and have and want != have:
+        n = sum(1 for a, b in zip(want, have) if a != b)
+        return _skip(candidate_id, cfg, "skipped_no_mutant_structure",
+                     f"{n} residue(s) differ: PDB is WT, not this mutant")
+
+    solvent = "explicit" if getattr(cfg, "solvent", "implicit") == "explicit" else "implicit"
+    try:
+        _build_system(cx, pdb_path, workdir, solvent)
+    except _AmberParamUnsupported as exc:
+        log.warning("Amber ligand param skipped for %s: %s", candidate_id, exc)
+        return _skip(candidate_id, cfg, "skipped_parameterization", str(exc))
+    except Exception as exc:  # protein / tleap assembly = real failure
+        log.warning("Amber system build failed for %s: %s", candidate_id, exc)
+        return MDResult(candidate_id=candidate_id, status="failed",
+                        protocol_level=cfg.protocol_level, solvent_mode="implicit",
+                        simulation_time_ns=0.0, integration_failed=True,
+                        failure_reason=f"amber build: {exc}")
+
+    # staged GPU protocol. implicit: min -> heat -> production. explicit (PME):
+    # min -> NVT heat -> NPT density equilibration -> NPT (free) production.
+    nsteps, actual_ns = _production_nsteps(cfg)
+    heat_steps = 10000
+    equil_steps = max(1000, int(getattr(cfg, "equilibration_ps", 100.0) * 1000
+                                / max(0.1, cfg.timestep_fs)))
+    n_rep = max(1, int(getattr(cfg, "replicas", 1) or 1))
+    # frames saved per replica: few for a tiny smoke, ~250 for a real ns run.
+    prod_frames = min(250, max(10, nsteps // 50))
+    P = "complex.prmtop"
+    try:
+        if solvent == "explicit":
+            (workdir / "min.in").write_text(mdin_min_exp())
+            (workdir / "heat.in").write_text(mdin_heat_exp(heat_steps))
+            (workdir / "equil.in").write_text(mdin_npt_equil(equil_steps))
+            (workdir / "prod.in").write_text(mdin_prod_exp(nsteps, prod_frames))
+            _run_stage("min", ["-O", "-i", "min.in", "-o", "min.out", "-p", P,
+                               "-c", "complex.inpcrd", "-r", "min.rst",
+                               "-ref", "complex.inpcrd"], workdir, pmemd, 1800)
+            _run_stage("heat", ["-O", "-i", "heat.in", "-o", "heat.out", "-p", P,
+                                "-c", "min.rst", "-r", "heat.rst",
+                                "-ref", "min.rst"], workdir, pmemd, 3600)
+            _run_stage("equil", ["-O", "-i", "equil.in", "-o", "equil.out", "-p", P,
+                                 "-c", "heat.rst", "-r", "equil.rst",
+                                 "-ref", "heat.rst"], workdir, pmemd, 21600)
+            trajs = _run_replicas(workdir, pmemd, P, "equil.rst", "prod.in",
+                                  n_rep, 172800)
+        else:
+            (workdir / "min.in").write_text(mdin_min())
+            (workdir / "heat.in").write_text(mdin_heat(heat_steps))
+            (workdir / "prod.in").write_text(mdin_prod(nsteps, nframes=prod_frames))
+            _run_stage("min", ["-O", "-i", "min.in", "-o", "min.out", "-p", P,
+                               "-c", "complex.inpcrd", "-r", "min.rst",
+                               "-ref", "complex.inpcrd"], workdir, pmemd, 600)
+            _run_stage("heat", ["-O", "-i", "heat.in", "-o", "heat.out", "-p", P,
+                                "-c", "min.rst", "-r", "heat.rst",
+                                "-ref", "min.rst", "-x", "heat.nc"], workdir, pmemd, 1200)
+            trajs = _run_replicas(workdir, pmemd, P, "heat.rst", "prod.in",
+                                  n_rep, 3600, ref="heat.rst")
+    except Exception as exc:
+        log.warning("Amber pmemd run failed for %s: %s", candidate_id, exc)
+        return MDResult(candidate_id=candidate_id, status="failed",
+                        protocol_level=cfg.protocol_level, solvent_mode="implicit",
+                        simulation_time_ns=0.0, integration_failed=True,
+                        failure_reason=f"amber pmemd: {exc}")
+
+    m = _analyze(workdir, cfg, catalytic_positions, trajs)
+    binding = (_mmpbsa(workdir, trajs, prod_frames * n_rep)
+               if solvent == "explicit" else {})
+    lig = m["ligand_rmsd_series"]
+    status = "unstable" if (lig and lig[-1] > 5.0) else "ok"
+    return MDResult(
+        candidate_id=candidate_id, status=status,
+        protocol_level=cfg.protocol_level, solvent_mode=solvent,
+        simulation_time_ns=round(actual_ns, 6),
+        minimized_pdb=str(workdir / "min.rst"),
+        trajectory_path=str(workdir / trajs[0]) if trajs else None,
+        ligand_rmsd_series=m["ligand_rmsd_series"],
+        pocket_rmsd_series=m["pocket_rmsd_series"],
+        key_distances=m["key_distances"],
+        contact_occupancy={},
+        hbond_occupancy=m["hbond_occupancy"],
+        energy_drift=m["energy_drift"],
+        binding_dg=binding,
+    )

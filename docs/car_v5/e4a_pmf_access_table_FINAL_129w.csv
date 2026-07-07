@@ -1,0 +1,4 @@
+candidate,n_windows,access_cost_kcal,near_attack_angle_occ,overlap_min,converged,claim_ceiling
+_wt_reference,53,5.532769487562729,0.6204081632653061,0.0,False,screening-level reaction-geometry access evidence (NOT activity/kcat)
+mut_00000,38,2.904320310635242,0.7964285714285714,0.0,False,screening-level reaction-geometry access evidence (NOT activity/kcat)
+mut_00001,38,10.21995670192599,0.2196078431372549,0.0,False,screening-level reaction-geometry access evidence (NOT activity/kcat)

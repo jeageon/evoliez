@@ -1,0 +1,28 @@
+# Non-FDH benchmark smoke config: glycosidase (ROADMAP_V4 §7.11)
+#
+# Second non-dehydrogenase mechanism class. The glycosidic_bond_cleavage template now
+# ships with default Koshland double-displacement geometry (nucleophile Asp Oδ -> anomeric
+# C1, in-line attack), so this smoke exercises the template load, the reaction-state hard
+# gate, AND real (per-target-overridable) geometry terms.
+benchmark:
+  target_id: glycosidase
+  mechanism_template: glycosidic_bond_cleavage
+  label_primary: catalytic_activity_DMS
+  is_direct_kcat: false            # deep-mutational-scan activity, not kcat
+  assay_context: microfluidic_DMS
+  reference_tiers: [B, C]
+  prohibited_claims:
+    - direct kcat prediction
+
+mechanism:
+  schema_version: 1.0
+  mechanism_spec_id: glycosidase_double_displacement
+  reaction:
+    class: glycosidic_bond_cleavage
+  reaction_state:
+    protonation_model: acid_base_pair_standard
+    conformational_state: michaelis_complex
+    substrate_is_real: true
+  geometry_calibration:
+    source_tier: G3
+    claim_limit: screening_only

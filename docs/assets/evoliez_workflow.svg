@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">EvoLiEZ workflow diagram</title>
+  <desc id="desc">Compact workflow diagram for EvoLiEZ showing input, homolog and MSA analysis, structure prediction, docking, interaction fingerprinting, machine learning, candidate generation, validation, MD, and final library.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="10" refX="10" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#1f2937"/>
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .phase { font: 700 19px Arial, Helvetica, sans-serif; fill: #1f2937; }
+      .label { font: 700 18px Arial, Helvetica, sans-serif; fill: #111827; }
+      .small { font: 400 15px Arial, Helvetica, sans-serif; fill: #374151; }
+      .tiny { font: 400 13px Arial, Helvetica, sans-serif; fill: #4b5563; }
+      .box { fill: #ffffff; stroke-width: 2.2; rx: 8; }
+      .input { stroke: #1f5f8b; fill: #f8fafc; }
+      .evo { stroke: #007f74; fill: #eef8f6; }
+      .struct { stroke: #a15c00; fill: #fff7e6; }
+      .fp { stroke: #6d45a8; fill: #f5f1ff; }
+      .ml { stroke: #3949ab; fill: #eef2ff; }
+      .gen { stroke: #b42318; fill: #fff5f5; }
+      .val { stroke: #2f7d32; fill: #f0fdf4; }
+      .out { stroke: #111827; fill: #ffffff; }
+      .report { stroke: #6b7280; fill: #f9fafb; stroke-dasharray: 8 6; }
+      .arrow { stroke: #1f2937; stroke-width: 2.8; fill: none; marker-end: url(#arrow); stroke-linecap: round; stroke-linejoin: round; }
+      .soft { stroke: #6b7280; stroke-width: 2.0; fill: none; marker-end: url(#arrow); stroke-linecap: round; stroke-linejoin: round; }
+      .footer { font: 400 14px Arial, Helvetica, sans-serif; fill: #4b5563; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="900"/>
+
+  <!-- Column headings -->
+  <text class="phase" x="58" y="48">1. Inputs</text>
+  <text class="phase" x="366" y="48">2. Homolog / MSA</text>
+  <text class="phase" x="680" y="48">3. Structure / docking</text>
+  <text class="phase" x="1018" y="48">4-6. Evidence + model</text>
+
+  <!-- Inputs -->
+  <rect class="box input" x="46" y="74" width="254" height="92"/>
+  <text class="label" x="70" y="108">Target sequence</text>
+  <text class="small" x="70" y="134">FASTA / target id</text>
+  <text class="small" x="70" y="156">catalytic + fixed residues</text>
+
+  <rect class="box input" x="46" y="194" width="254" height="92"/>
+  <text class="label" x="70" y="228">Ligand input</text>
+  <text class="small" x="70" y="254">SMILES / SDF / MOL2</text>
+  <text class="small" x="70" y="276">charge + atom-id lock</text>
+
+  <!-- Homolog / MSA -->
+  <rect class="box evo" x="350" y="74" width="290" height="88"/>
+  <text class="label" x="376" y="108">Sequence homolog search</text>
+  <text class="small" x="376" y="134">MMseqs2 / jackhmmer / BLASTp</text>
+  <text class="tiny" x="376" y="154">raw hits, filtered hits, coverage</text>
+
+  <rect class="box evo" x="350" y="190" width="290" height="88"/>
+  <text class="label" x="376" y="224">Structure homolog search</text>
+  <text class="small" x="376" y="250">Foldseek target path</text>
+  <text class="tiny" x="376" y="270">must report on/off + hit count</text>
+
+  <rect class="box evo" x="350" y="306" width="290" height="88"/>
+  <text class="label" x="376" y="340">MSA + conservation</text>
+  <text class="small" x="376" y="366">MAFFT / remote MSA</text>
+  <text class="tiny" x="376" y="386">depth, Neff, identity, filters</text>
+
+  <!-- Structure / docking -->
+  <rect class="box struct" x="690" y="74" width="300" height="88"/>
+  <text class="label" x="718" y="108">WT complex prediction</text>
+  <text class="small" x="718" y="134">Boltz-2 + MSA / templates</text>
+  <text class="tiny" x="718" y="154">model id, confidence, ligand pose</text>
+
+  <rect class="box struct" x="690" y="190" width="300" height="88"/>
+  <text class="label" x="718" y="224">Docking / redocking</text>
+  <text class="small" x="718" y="250">Vina / GNINA / DiffDock</text>
+  <text class="tiny" x="718" y="270">pose RMSD + validity checks</text>
+
+  <rect class="box struct" x="690" y="306" width="300" height="88"/>
+  <text class="label" x="718" y="340">Pose ensemble</text>
+  <text class="small" x="718" y="366">multiple pose models required</text>
+  <text class="tiny" x="718" y="386">never reuse one WT PDB as ensemble</text>
+
+  <!-- Evidence / model -->
+  <rect class="box fp" x="1040" y="58" width="330" height="92"/>
+  <text class="label" x="1068" y="92">Homolog structure compare</text>
+  <text class="small" x="1068" y="118">representatives, RMSD, contact conservation</text>
+  <text class="tiny" x="1068" y="140">WT vs family/subfamily geometry</text>
+
+  <rect class="box fp" x="1040" y="180" width="330" height="104"/>
+  <text class="label" x="1068" y="214">Interaction fingerprint</text>
+  <text class="small" x="1068" y="240">raw atom-pair table + derived descriptor</text>
+  <text class="small" x="1068" y="262">ligand xyz to enzyme atom/centroid xyz</text>
+
+  <rect class="box ml" x="1040" y="314" width="330" height="112"/>
+  <text class="label" x="1068" y="348">Family-specific ML model</text>
+  <text class="small" x="1068" y="374">XGBoost / logistic / heuristic</text>
+  <text class="small" x="1068" y="396">optional GNN / EGNN graph model</text>
+  <text class="tiny" x="1068" y="418">consensus vs outlier pose learning</text>
+
+  <!-- Lower workflow -->
+  <text class="phase" x="368" y="524">7. Candidate generation</text>
+  <rect class="box gen" x="350" y="548" width="318" height="134"/>
+  <text class="label" x="378" y="582">Mutation candidate pools</text>
+  <text class="small" x="378" y="608">chemistry rules + MSA sampler</text>
+  <text class="small" x="378" y="630">LigandMPNN design</text>
+  <text class="small" x="378" y="652">Rosetta/FoldX validation</text>
+  <text class="tiny" x="378" y="674">optional active-site design module</text>
+
+  <text class="phase" x="718" y="524">8. Screening / validation</text>
+  <rect class="box val" x="708" y="548" width="326" height="134"/>
+  <text class="label" x="738" y="582">Model-based filtering</text>
+  <text class="small" x="738" y="608">family interaction score</text>
+  <text class="small" x="738" y="630">mutant Boltz delta: proxy or real</text>
+  <text class="small" x="738" y="652">stability + redocking + pose validity</text>
+  <text class="tiny" x="738" y="674">evidence class must reflect source quality</text>
+
+  <text class="phase" x="1114" y="524">9. Final selection</text>
+  <rect class="box val" x="1092" y="548" width="254" height="104"/>
+  <text class="label" x="1148" y="582">MD simulation</text>
+  <text class="small" x="1132" y="608">OpenMM protocol</text>
+  <text class="small" x="1116" y="630">ran / skipped / failed / passed</text>
+
+  <rect class="box out" x="1400" y="548" width="160" height="104"/>
+  <text class="label" x="1434" y="582">Final library</text>
+  <text class="small" x="1424" y="608">ranked candidates</text>
+  <text class="tiny" x="1434" y="630">in vitro / in vivo</text>
+
+  <!-- Report layer -->
+  <rect class="box report" x="80" y="742" width="1420" height="72"/>
+  <text class="label" x="112" y="780">Report provenance and honesty layer</text>
+  <text class="small" x="420" y="780">Each section shows: real / mock / proxy / fallback / skipped, plus scale, source files, model kind, and warnings.</text>
+  <text class="tiny" x="420" y="802">This layer prevents a single WT fallback, mock MSA, or proxy delta from being read as full scientific evidence.</text>
+
+  <!-- Main arrows, routed through whitespace -->
+  <path class="arrow" d="M300 180 L338 180"/>
+  <path class="arrow" d="M640 234 L678 234"/>
+  <path class="arrow" d="M990 234 L1028 234"/>
+  <path class="arrow" d="M990 350 L1028 350"/>
+  <path class="arrow" d="M640 350 L675 350"/>
+  <path class="arrow" d="M509 394 L509 536"/>
+  <path class="arrow" d="M840 394 L840 536"/>
+  <path class="arrow" d="M668 615 L696 615"/>
+  <path class="arrow" d="M1034 615 L1080 615"/>
+  <path class="arrow" d="M1346 600 L1388 600"/>
+
+  <!-- Secondary links -->
+  <path class="soft" d="M990 118 C1012 118 1014 104 1028 104"/>
+  <path class="soft" d="M1205 426 L1205 536"/>
+  <path class="soft" d="M1370 370 C1454 382 1480 452 1480 536"/>
+  <path class="soft" d="M1220 652 C1220 700 1120 724 972 742"/>
+
+  <!-- Bottom labels -->
+  <text class="footer" x="88" y="852">Input QC</text>
+  <text class="footer" x="360" y="852">Evolutionary scale</text>
+  <text class="footer" x="700" y="852">3D evidence</text>
+  <text class="footer" x="1050" y="852">Fingerprint + ML</text>
+  <text class="footer" x="1400" y="852">Wet-lab handoff</text>
+</svg>

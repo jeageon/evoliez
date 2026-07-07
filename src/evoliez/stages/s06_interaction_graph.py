@@ -11,6 +11,7 @@ from evoliez.features.evolutionary import assign_residue_classes
 from evoliez.features.geometry import (
     ligand_proximal_residues,
     residue_ligand_contacts,
+    residues_near_positions,
 )
 from evoliez.features.graph import (
     build_interaction_graph,
@@ -35,6 +36,26 @@ class InteractionGraphStage(Stage):
                 cx.structure, cx.ligand.atoms, radius=mgcfg.design_radius_angstrom
             )
         )
+        # v2 MULTI-LIGAND: include residues near EVERY co-modelled ligand (cofactor /
+        # substrate / metal / ...), not only the primary design ligand, so the design mask
+        # covers the full functional state. extra_ligand_atoms is populated by the predictor
+        # (mock) / parser; empty for single-ligand inputs or the real parser fallback (then
+        # the catalytic-neighborhood term below carries the active site).
+        if getattr(mgcfg, "design_around_extra_ligands", True):
+            for _atoms in (getattr(cx, "extra_ligand_atoms", {}) or {}).values():
+                if _atoms:
+                    proximal |= set(ligand_proximal_residues(
+                        cx.structure, _atoms, radius=mgcfg.design_radius_angstrom))
+        # v2 Phase B: the design mask follows the FUNCTIONAL STATE, not only the primary
+        # ligand. Add the neighborhood of the catalytic residues (the reaction site where the
+        # cofactor/substrate/metal act), so a generic enzyme's active site is designable even
+        # when its functional partners are extra ligands the primary-ligand sphere misses.
+        # For FDH the catalytic core sits by NADP so this barely changes the mask; for a
+        # metalloenzyme/other reaction it captures the true active site. Catalytic residues
+        # themselves stay protected below; only their NEIGHBORHOOD becomes designable.
+        if catalytic:
+            proximal |= set(residues_near_positions(
+                cx.structure, catalytic, radius=mgcfg.design_radius_angstrom))
         second_shell = set(
             ligand_proximal_residues(
                 cx.structure, cx.ligand.atoms,
@@ -85,6 +106,64 @@ class InteractionGraphStage(Stage):
         ctx.persist_meta("n_contacts", len(contacts))
         ctx.persist_meta("n_designable", len(designable))
         ctx.persist_meta("designable_positions", designable)
+
+        # --- accuracy layers (user guidance) ------------------------------ #
+        adv = ctx.config.advanced
+        if adv.mechanism:
+            from evoliez.features.mechanism import annotate
+
+            mech = annotate(
+                cx,
+                catalytic_positions=catalytic,
+                cofactor=ctx.config.input.cofactor,
+                annotation_file=adv.mechanism_annotation_file,
+            )
+            ctx.put("mechanism", mech)
+            ctx.persist_meta(
+                "mechanism",
+                {
+                    "source": mech.source,
+                    "reactive_ligand_atoms": mech.reactive_ligand_atoms,
+                    "transfer_distance": mech.transfer_distance,
+                    "ts_geometry_score": mech.ts_geometry_score,
+                },
+            )
+        else:
+            mech = None
+
+        # ROADMAP_V3 B4 — mechanism-envelope wiring. When config.mechanism is set
+        # (opt-in; hard-gate validated at config-load), publish the MechanismSpec and
+        # its runtime geometry terms into ctx so the downstream NAC / s09 / s10 layers
+        # use mechanism-configured geometry instead of only the legacy heuristic above.
+        mspec = ctx.config.mechanism
+        if mspec is not None:
+            ctx.put("mechanism_spec", mspec)
+            ctx.put("geometry_terms", mspec.to_geometry_terms())
+            ctx.persist_meta("mechanism_spec", {
+                "mechanism_spec_id": mspec.mechanism_spec_id,
+                "reaction_class": mspec.reaction.cls,
+                "n_geometry_terms": len(mspec.geometry_terms),
+                "claim_ceiling": mspec.claim_ceiling,
+            })
+
+        if adv.ligand_importance:
+            from evoliez.features.ligand_importance import ligand_atom_importance
+
+            ctx.put("ligand_importance",
+                    ligand_atom_importance(cx.ligand, mech))
+
+        if adv.interaction_fingerprint:
+            from evoliez.adapters.plip import (
+                fingerprint,
+                type_counts,
+            )
+
+            ifp = fingerprint(
+                cx.structure, cx.ligand.atoms,
+                backend=ctx.config.backend_for(self.name),
+            )
+            ctx.put("ifp_contacts", ifp)
+            ctx.persist_meta("ifp_type_counts", type_counts(ifp))
 
         (ctx.paths.interaction_graphs / "graph_features.json").write_text(
             json.dumps(

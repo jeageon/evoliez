@@ -1,24 +1,22 @@
-MIT License
+EvoLiEZ - Proprietary / All Rights Reserved
 
-Copyright (c) 2026 EvoLiEZ contributors
+Copyright (c) 2026 the EvoLiEZ authors. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This is unpublished research software. No license is granted. You may NOT
+use, copy, modify, merge, publish, distribute, sublicense, or sell any part
+of this software without prior written permission from the authors (and,
+where applicable, the authors' institution's technology-transfer office).
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Access to this private repository does not grant any license. A public
+open-source license (e.g. Apache-2.0) may be applied at publication; until
+then this notice governs.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ----------------------------------------------------------------------------
 
@@ -27,14 +25,25 @@ NOTE ON EXTERNAL TOOLS
 This repository orchestrates third-party tools that are NOT bundled and carry
 their own licenses. You must obtain and comply with each separately:
 
-  - Boltz / Boltz-2        (https://github.com/jwohlwend/boltz)
-  - LigandMPNN             (https://github.com/dauparas/LigandMPNN)
-  - DiffDock               (https://github.com/gcorso/DiffDock)
-  - GNINA                  (https://github.com/gnina/gnina)
-  - AutoDock Vina          (https://vina.scripps.edu/)
-  - OpenMM                 (https://openmm.org/)
-  - FoldX                  (https://foldxsuite.crg.eu/  - academic license)
-  - Rosetta                (https://rosettacommons.org/  - license required)
-  - MAFFT / HMMER / MMseqs2 / Foldseek (see their respective sites)
+  - Boltz / Boltz-2        MIT        (github.com/jwohlwend/boltz)
+  - LigandMPNN             MIT        (github.com/dauparas/LigandMPNN)
+  - DiffDock               MIT        (github.com/gcorso/DiffDock)
+  - AutoDock Vina          Apache-2.0 (vina.scripps.edu)
+  - OpenMM                 MIT        (openmm.org)
+  - MAFFT / HMMER          permissive (BSD-style)
+  - BLAST+                 NCBI public domain
+  - GNINA / MMseqs2 / Foldseek / OpenBabel / PLIP   GPL (2.0/3.0)
+        -> separate-process use is fine; do NOT bundle into a non-GPL
+           distribution.
+  - FoldX                  PROPRIETARY, academic-only: no commercial use,
+                           no redistribution (foldxsuite.crg.eu)
+  - Rosetta                academic/non-commercial free; commercial = paid
+                           (rosettacommons.org)
+  - IUPred2A               academic-only, not open source
+
+These do NOT affect the license of the code in this repository (they are
+invoked as external processes, never imported or bundled). All GPL/academic
+tools are optional with mock / alternative fallbacks. Full audit:
+docs/THIRD_PARTY_LICENSES.md
 
 See docs/DATA_AND_WEIGHTS.md for acquisition instructions.

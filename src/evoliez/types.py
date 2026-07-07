@@ -36,6 +36,12 @@ class Ligand:
     formal_charge: int = 0
     n_rotatable_bonds: int = 0
     source: str = "input"
+    # Charge parameterisation policy (carried from LigandInput). ``charges_mol2`` is a
+    # path to a pre-charged GAFF mol2 used as a fixed-charge template (skips on-the-fly
+    # AM1-BCC); ``allow_am1bcc`` False forbids the AM1-BCC fallback so a missing template
+    # fails loudly. See evoliez.md.charges and params/<name>/README.md.
+    charges_mol2: Optional[str] = None
+    allow_am1bcc: bool = True
 
     @property
     def n_heavy(self) -> int:
@@ -63,6 +69,17 @@ class ProteinStructure:
 
 
 @dataclass
+class BoltzSample:
+    """One diffusion sample from Boltz. Structure backbone is shared at the
+    Complex level; the ligand pose and confidence vary per sample."""
+
+    idx: int
+    ligand_atoms: List["LigandAtom"] = field(default_factory=list)
+    metrics: Dict[str, float] = field(default_factory=dict)
+    residue_plddt: List[float] = field(default_factory=list)
+
+
+@dataclass
 class Complex:
     structure: ProteinStructure
     ligand: Ligand
@@ -70,16 +87,47 @@ class Complex:
     confidence: float = 0.0
     affinity_score: Optional[float] = None
     path: Optional[str] = None
+    # Rich Boltz confidence/affinity metrics (spec: features, NOT labels):
+    # confidence_score, ptm, iptm, ligand_iptm, complex_plddt, complex_iplddt,
+    # complex_pde, complex_ipde, affinity_pred_value, affinity_probability_binary,
+    # affinity_pred_value1/2, ensemble_disagreement.
+    metrics: Dict[str, float] = field(default_factory=dict)
+    samples: List[BoltzSample] = field(default_factory=list)
+    # v2 multi-ligand: poses of the co-modelled EXTRA ligands (cofactor/substrate/metal/...)
+    # keyed by ligand id, so s06/s09/s10 can consider the FULL functional state, not only the
+    # primary design `ligand`. Populated by the predictor/parser; empty = single-ligand input.
+    extra_ligand_atoms: Dict[str, List[LigandAtom]] = field(default_factory=dict)
 
 
 @dataclass
 class Pose:
     candidate_id: str
     method: str
-    score: float
+    # ``score`` is the engine-native pose score (see ``score_type``). It is
+    # ``None`` when the engine produced a pose but NO parseable score — e.g. a
+    # DiffDock rank file with an absent/sentinel confidence token. ``None`` means
+    # "genuinely unscored": downstream must skip it from score statistics rather
+    # than inject a fabricated number that would pollute min/range (the old
+    # ``-1000.0`` / ``0.0`` sentinels did exactly that).
+    score: Optional[float]
     ligand_atoms: List[LigandAtom] = field(default_factory=list)
     rmsd_to_reference: Optional[float] = None
     cluster: int = 0
+    # --- score provenance (paper-grade audit; defaults keep old construction) ---
+    # ``rank`` is 1-based within the engine's own output ordering (gnina SDF mode
+    # order / diffdock rankN). ``score_type`` names what ``score`` IS, e.g.
+    # "minimizedAffinity" (gnina, lower=better) | "diffdock_confidence" (higher=
+    # better). ``cnn_score``/``cnn_affinity`` are gnina's CNN tags (None for
+    # diffdock/mock). ``engine_version`` / ``command_args`` record exactly how the
+    # pose was produced so a reviewer can reconstruct the run. ``note`` carries a
+    # short human-readable provenance remark (e.g. why ``score`` is None).
+    rank: int = 1
+    score_type: str = ""
+    cnn_score: Optional[float] = None
+    cnn_affinity: Optional[float] = None
+    engine_version: str = ""
+    command_args: str = ""
+    note: str = ""
 
 
 @dataclass

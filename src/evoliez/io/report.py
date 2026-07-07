@@ -37,14 +37,20 @@ def _write_candidates_csv(paths: ProjectPaths, ranked: Sequence[Candidate]) -> P
         wri = csv.writer(fh)
         wri.writerow(
             ["rank", "candidate_id", "mutations", "generator", "final_score",
-             "ml_score", "stability_ddg", "docking_score", "md_lite_score"]
+             "ml_score", "stability_ddg", "docking_score", "md_lite_score",
+             "nac_occupancy", "nac_delta_vs_wt"]
         )
         for i, c in enumerate(ranked, 1):
+            # nac_* left BLANK (not 0.0) when NAC was not run for this candidate:
+            # absent reactivity data is not the same as a zero reaction-competent
+            # fraction, and a paper table must not conflate them.
             wri.writerow(
                 [i, c.candidate_id, c.mutation_str, c.generator,
                  c.scores.get("final_score", 0.0), c.scores.get("ml_score", 0.0),
                  c.scores.get("ddg_fold", 0.0), c.scores.get("docking_score", 0.0),
-                 c.scores.get("md_lite_score", 0.0)]
+                 c.scores.get("md_lite_score", 0.0),
+                 c.scores.get("nac_occupancy", ""),
+                 c.scores.get("nac_delta_vs_wt", "")]
             )
     return p
 
@@ -85,6 +91,17 @@ def _write_markdown(
         if bd:
             for line in rationale(c, bd):
                 L.append(f"  - {line}")
+        rec = c.details.get("recommendation")
+        if rec:
+            L.append(
+                f"  - **{rec}** (uncertainty "
+                f"{c.scores.get('uncertainty', 0.0):.2f})"
+            )
+        if c.scores.get("ts_geometry_score") is not None:
+            L.append(
+                f"  - catalytic geometry score "
+                f"{c.scores.get('ts_geometry_score', 0.0):.2f}"
+            )
         md_fail = c.details.get("md_failure_reasons")
         if md_fail:
             L.append(f"  - MD note: {md_fail}")
@@ -97,8 +114,34 @@ def _write_markdown(
         "Computational predictions are testable hypotheses, not guarantees of "
         "activity."
     )
-    p.write_text("\n".join(L) + "\n")
+    # ROADMAP_V3 B3 — final_report.md is the CLI-advertised PRIMARY deliverable but it
+    # bypasses the HTML page() ClaimGuard gate, so lint it here too: warn+banner by
+    # default, hard-raise under EVOLIEZ_STRICT_CLAIMS. Keeps the top deliverable honest.
+    # encoding pinned: the report has unicode (Δ, °, Å, —) and a locale-C launch would ASCII-crash.
+    p.write_text(_claimguard_markdown("\n".join(L) + "\n", "final_report.md"), encoding="utf-8")
     return p
+
+
+def _claimguard_markdown(text: str, title: str) -> str:
+    """ClaimGuard for a markdown deliverable (no HTML stripping). Conservative floor
+    verdict (no wet-lab provenance -> no activity/kcat/stability claim permitted)."""
+    import logging
+    import os
+
+    from evoliez.ranking.claim_guard import evaluate, lint_text
+    viols = lint_text(text, allow=sorted(evaluate(None).allow()))
+    if not viols:
+        return text
+    if os.environ.get("EVOLIEZ_STRICT_CLAIMS", "").lower() in ("1", "true", "yes", "on"):
+        raise AssertionError(
+            f"ClaimGuard: prohibited claim(s) in {title}:\n  "
+            + "\n  ".join(str(v) for v in viols))
+    logging.getLogger("evoliez.claim_guard").warning(
+        "%s has %d unguarded claim(s): %s", title, len(viols),
+        "; ".join(str(v) for v in viols))
+    banner = (f"> ⚠ ClaimGuard: {len(viols)} unguarded claim(s) — tighten the copy or "
+              "supply wet-lab provenance: " + "; ".join(str(v) for v in viols) + "\n\n")
+    return banner + text
 
 
 def _write_pymol(paths: ProjectPaths, ranked: Sequence[Candidate]) -> Path:
@@ -108,5 +151,5 @@ def _write_pymol(paths: ProjectPaths, ranked: Sequence[Candidate]) -> Path:
         path = c.details.get("complex_path")
         if path:
             lines.append(f"load {path}, {c.candidate_id}")
-    p.write_text("\n".join(lines) + "\n")
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return p

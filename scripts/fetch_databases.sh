@@ -5,10 +5,12 @@
 # Usage:  bash scripts/fetch_databases.sh [uniref30|pdb70]
 set -euo pipefail
 
-DEST="${EVOLIEZ_DB_DIR:-/mnt/data2/$USER/evoliez_db}"
+EVOLIEZ_ROOT="${EVOLIEZ_ROOT:-/mnt/data2/$USER}"
+DEST="${EVOLIEZ_DB_DIR:-$EVOLIEZ_ROOT/evoliez_db}"
 case "$DEST" in
   /mnt/data2/*|/mnt/data/*) : ;;
-  *) echo "REFUSING: \$EVOLIEZ_DB_DIR ('$DEST') must be under /mnt/data2."; exit 1 ;;
+  *) echo "REFUSING: '$DEST' must be under /mnt/data2 or /mnt/data "
+     echo "(set EVOLIEZ_ROOT=/mnt/data/<you>)."; exit 1 ;;
 esac
 mkdir -p "$DEST"; cd "$DEST"
 WHAT="${1:-uniref30}"

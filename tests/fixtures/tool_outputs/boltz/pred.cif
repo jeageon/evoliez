@@ -1,0 +1,20 @@
+data_pred
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+ATOM 1 N N ALA A 1 1.000 2.000 3.000
+ATOM 2 C CA ALA A 1 1.500 2.500 3.500
+ATOM 3 C CA GLY A 2 4.000 5.000 6.000
+ATOM 4 C CA SER A 3 7.000 8.000 9.000
+HETATM 5 O O1 LIG B 1 7.200 8.100 9.050
+HETATM 6 P P1 LIG B 1 7.600 8.400 9.300
+#

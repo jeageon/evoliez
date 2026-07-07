@@ -35,6 +35,22 @@ def compute_final_score(cand: Candidate, w: ScoreWeights) -> ScoreBreakdown:
         * s.get("key_contact_preservation", 0.0),
         "stability": w.stability * s.get("stability_score", 0.0),
         "md_lite": w.md_lite * s.get("md_lite_score", 0.0),
+        "family_interaction": w.family_interaction
+        * s.get("family_interaction_score", 0.0),
+        # real per-mutant ΔBoltz: positive d_ligand_iptm = mutant binds the
+        # design-target ligand better than WT. Set by s08b for the top-N; 0 for
+        # candidates that only carry the proxy Δ -- so the expensive real Boltz
+        # re-prediction now actually moves the final ranking.
+        "mutant_boltz_gain": w.mutant_boltz_gain * s.get("d_ligand_iptm", 0.0),
+        "gnn": w.gnn * s.get("gnn_score", 0.0),
+        "catalytic_geometry_preservation": w.catalytic_geometry_preservation
+        * s.get("ts_geometry_score", 0.0),
+        "specificity_divergence": w.specificity_divergence_bonus
+        * s.get("specificity_divergence", 0.0),
+        # catalytic-power: ΔNAC vs WT (mutant - WT reaction-competent fraction).
+        # >0 = geometrically more productive active site. Weight 0.0 by default
+        # (diagnostic); set ScoreWeights.catalytic_nac > 0 to fold it in.
+        "catalytic_nac": w.catalytic_nac * s.get("nac_delta_vs_wt", 0.0),
     }
     penalties = {
         "conservation": w.conservation_penalty * s.get("conservation_penalty", 0.0),
@@ -45,6 +61,18 @@ def compute_final_score(cand: Candidate, w: ScoreWeights) -> ScoreBreakdown:
         "docking_uncertainty": w.docking_uncertainty_penalty
         * s.get("docking_uncertainty", 0.0),
         "md_instability": w.md_instability_penalty * s.get("md_instability", 0.0),
+        # negative design (user §4)
+        "neg_catalytic_mut": w.neg_catalytic_mut
+        * s.get("neg_catalytic_mut", 0.0),
+        "neg_conserved_motif": w.neg_conserved_motif
+        * s.get("neg_conserved_motif", 0.0),
+        "neg_buried_core_polar": w.neg_buried_core_polar
+        * s.get("neg_buried_core_polar", 0.0),
+        "neg_catalytic_geometry": w.neg_catalytic_geometry
+        * s.get("neg_catalytic_geometry", 0.0),
+        "neg_overbinding": w.neg_overbinding * s.get("neg_overbinding", 0.0),
+        "neg_pose_inversion": w.neg_pose_inversion
+        * s.get("neg_pose_inversion", 0.0),
     }
     total = sum(contrib.values()) - sum(penalties.values())
     return ScoreBreakdown(

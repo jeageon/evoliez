@@ -1,0 +1,133 @@
+# Server-grade config (admin1-SYS-740GP-TNRT, 4x A6000, CUDA 12.4).
+# Real backends, /mnt/data2 storage, Boltz ensemble + EvoLigand-GNN.
+#
+#   cd /mnt/data2/<you>/EvoLiEZ
+#   bash scripts/run_pipeline.sh configs/server_fdh_nadp.yaml      # build + datasets
+#   evoliez train-gnn -c configs/server_fdh_nadp.yaml              # train GNN
+#   evoliez run -c configs/server_fdh_nadp.yaml --from s08_reranker --resume
+# or drive the whole thing with workflow/Snakefile.
+
+project:
+  name: fdh_nadp_server
+  objective: cofactor_switching
+  output_dir: /mnt/data2/evoligand/runs/fdh_nadp     # NEVER root / or ~
+
+input:
+  # !!! REPLACE BEFORE ANY REAL RUN !!!
+  # examples/fdh/target.fasta is a bundled ILLUSTRATIVE placeholder and the
+  # catalytic/fixed tokens below do NOT match it. Point target_fasta at the
+  # real target FDH and set catalytic_residues / fixed_residues from the
+  # authoritative numbering (UniProt/PDB/paper). `evoliez doctor` will BLOCK
+  # a real backend until this is done.
+  target_id: fdh
+  target_fasta: examples/fdh/target.fasta
+  ligand:
+    id: NADP_cofactor
+    type: smiles
+    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2OP([O-])([O-])=O)[C@@H](O)[C@H]1O"
+  # Tokens are self-consistent with the bundled illustrative placeholder
+  # (His@154, Arg@285, Gly@15/33) - NOT a verified FDH active site. Replace the
+  # target + numbering for real work; `evoliez doctor` BLOCKs a real backend.
+  catalytic_residues: ["H154", "R285"]
+  fixed_residues: ["G15", "G33", "H154", "R285"]
+  cofactor: NADP
+  ec_number: "1.2.1.2"
+
+homologs:
+  method: mmseqs2
+  database: /mnt/data2/evoligand/db/uniref30_2302/uniref30_2302_db
+  max_sequences: 20000
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 80
+  diffusion_samples: 30                 # target enzyme ensemble
+
+interaction_model:
+  enabled: true
+  # Size the family ensemble from the MSA itself, not a magic number: take the
+  # largest subfamily clusters covering 90% of the homolog pool, clamped to
+  # [40, 100]. A more diverse MSA -> more representatives (more ML data); a
+  # narrow one -> fewer. Preview the resolved count for THIS run's homologs
+  # (read-only, no GPU) before launching:
+  #   bash scripts/preview_representatives.sh configs/server_fdh_nadp.yaml
+  # Raise representative_max for more data, lower it to cap compute. A fixed int
+  # (e.g. 80) or -1 (every cluster) still works in place of "auto".
+  representative_homologs: auto
+  representative_coverage: 0.90
+  representative_min: 40
+  representative_max: 100
+  poses_per_homolog: 15                 # Boltz samples per representative
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: true                          # EvoLigand-GNN is the primary model
+  build_dataset: true
+  checkpoint: checkpoints/evoligand_gnn.pt
+  hidden_dim: 256
+  layers: 6
+  radius_lr: 6.0
+  radius_rr: 9.0
+  lr: 0.001
+  epochs: 60
+  amp: true
+  ddp: false                             # set true when launched via torchrun
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, ligandmpnn]
+  max_candidates: 8000
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false         # set true + experimental_dataset later
+  top_for_redocking: 500
+  top_for_md: 30
+
+validation:
+  redocking:
+    methods: [gnina, diffdock]
+  stability:
+    method: foldx
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    protocol_level: 2
+    solvent: implicit
+    production_ns: 2.0
+    top_candidates: 30
+
+scoring:
+  gnn: 1.5                               # EvoLigand-GNN as a primary term
+  family_interaction: 1.0
+
+# ROADMAP_V3 B1/B2 — ML is a PRIOR, not a hard filter. ON so the s08 redock queue +
+# s08b fold queue + s09 MD shortlist are UNIONS of lanes (incl. a low_ml_control
+# false-negative probe), not a single ml_score top-N cut.
+selection_lanes:
+  enabled: true
+  from_ml_high: 25
+  from_stability_high: 12
+  from_geometry_high: 12
+  from_diversity: 8
+  low_ml_controls: 8
+
+output:
+  final_library_size: 96
+  top_single_mutants: 50
+  report_format: [markdown, csv, pymol_session]
+
+backend: real
+backends:
+  # keep MD mocked during the first server smoke if desired:
+  # s10_md: mock
+  {}
+seed: 1234

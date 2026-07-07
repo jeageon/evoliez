@@ -21,6 +21,21 @@ class Pipeline:
     def stage_names(self) -> List[str]:
         return [s.name for s in self.stages]
 
+    def _effective_stages(self, ctx: RunContext) -> List[Stage]:
+        """The stage list actually run, given the config. ROADMAP_V3 B5 — the optional
+        V4 reference-ensemble stage (s04x) is inserted right after s04 complex prediction
+        when ``config.reference_ensemble.enabled``; default off = the unchanged pipeline
+        (s04x stays out of ALL_STAGES so nothing that enumerates it is affected)."""
+        stages = list(self.stages)
+        rcfg = getattr(ctx.config, "reference_ensemble", None)
+        if rcfg is not None and getattr(rcfg, "enabled", False) and not any(
+                s.name == "s04x_reference_ensemble" for s in stages):
+            from evoliez.stages.s04x_reference_ensemble import ReferenceEnsembleStage
+            idx = next((i for i, s in enumerate(stages)
+                        if s.name == "s04_complex"), len(stages) - 1)
+            stages.insert(idx + 1, ReferenceEnsembleStage())
+        return stages
+
     def run(
         self,
         ctx: RunContext,
@@ -29,22 +44,55 @@ class Pipeline:
         from_stage: Optional[str] = None,
         to_stage: Optional[str] = None,
     ) -> RunContext:
+        prev_dry = os.environ.get("EVOLIEZ_DRY_RUN")
+        prev_amf = os.environ.get("EVOLIEZ_ALLOW_MOCK_FALLBACK")
         if ctx.dry_run:
             os.environ["EVOLIEZ_DRY_RUN"] = "1"
-        names = self.stage_names()
-        start = names.index(from_stage) if from_stage else 0
-        end = names.index(to_stage) + 1 if to_stage else len(self.stages)
+        # Whether a real-backend tool may silently degrade to mock (default no;
+        # audit P0 #3). Adapters read this via base.mock_fallback_allowed().
+        os.environ["EVOLIEZ_ALLOW_MOCK_FALLBACK"] = (
+            "1" if ctx.config.allow_mock_fallback else "0"
+        )
+        try:
+            # ROADMAP_V5 step 3 — mechanism-mode policy. Absent mechanism = legacy (banner,
+            # never hard-fail); EVOLIEZ_STRICT_MECHANISM=1 requires a declared MechanismSpec.
+            from evoliez.mechanism.mode import enforce_mechanism_policy
+            _mode, _banner = enforce_mechanism_policy(ctx.config)
+            if _banner:
+                log.info("mechanism mode: legacy — %s", _banner)
+            else:
+                log.info("mechanism mode: %s", _mode)
 
-        for stage in self.stages[start:end]:
-            t0 = time.time()
-            if resume and ctx.is_stage_done(stage.name) and stage.load(ctx):
-                log.info("[skip] %s (already complete, artifacts reloaded)", stage.name)
-                continue
-            log.info("[run ] %s", stage.name)
-            stage.run(ctx)
-            ctx.mark_stage_done(stage.name)
-            log.info("[done] %s (%.1fs)", stage.name, time.time() - t0)
-        return ctx
+            stages = self._effective_stages(ctx)
+            names = [s.name for s in stages]
+            start = names.index(from_stage) if from_stage else 0
+            end = names.index(to_stage) + 1 if to_stage else len(stages)
+
+            for stage in stages[start:end]:
+                t0 = time.time()
+                if resume and ctx.is_stage_done(stage.name) and stage.load(ctx):
+                    log.info(
+                        "[skip] %s (already complete, artifacts reloaded)",
+                        stage.name,
+                    )
+                    continue
+                log.info("[run ] %s", stage.name)
+                stage.run(ctx)
+                ctx.mark_stage_done(stage.name)
+                log.info("[done] %s (%.1fs)", stage.name, time.time() - t0)
+            return ctx
+        finally:
+            # Never leak dry-run permissiveness into a later real run in the
+            # same process: subprocess_utils.require() tolerates missing
+            # tools while EVOLIEZ_DRY_RUN is set.
+            if prev_dry is None:
+                os.environ.pop("EVOLIEZ_DRY_RUN", None)
+            else:
+                os.environ["EVOLIEZ_DRY_RUN"] = prev_dry
+            if prev_amf is None:
+                os.environ.pop("EVOLIEZ_ALLOW_MOCK_FALLBACK", None)
+            else:
+                os.environ["EVOLIEZ_ALLOW_MOCK_FALLBACK"] = prev_amf
 
 
 def run_pipeline(

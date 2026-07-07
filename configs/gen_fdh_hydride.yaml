@@ -1,0 +1,126 @@
+# GENERALITY DEMO (derived from example_fdh_nadp.yaml) — adds a V5 mechanism block; the example stays legacy.
+# Example: NAD-dependent formate dehydrogenase, cofactor-switching objective
+# (NAD -> NADP). Runs end-to-end with the mock backend on any machine:
+#
+#   evoliez run -c configs/example_fdh_nadp.yaml
+#
+# On the GPU server, set `backend: real` (and configure homologs.database)
+# to use Boltz-2 / LigandMPNN / OpenMM-CUDA for real.
+
+project:
+  name: fdh_nadp_engineering
+  objective: cofactor_switching
+  output_dir: runs/demo_fdh_nadp_gen
+
+input:
+  target_id: fdh
+  target_fasta: examples/fdh/target.fasta
+  ligand:
+    id: NADP_cofactor
+    type: smiles
+    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2OP([O-])([O-])=O)[C@@H](O)[C@H]1O"
+  # Co-substrate for the CATALYTIC-POWER (NAC) screen below: the hydride DONOR
+  # must be in the box alongside NADP for the reaction geometry to be measured.
+  # Uncomment together with validation.md.reactive_geometry to enable it.
+  # extra_ligands:
+  #   - id: formate
+  #     type: smiles
+  #     value: "[O-]C=O"
+  #     role: substrate
+  # NOTE: examples/fdh/target.fasta is an ILLUSTRATIVE placeholder. Tokens
+  # are self-consistent with that sequence (His@154, Arg@285, Gly@15/33) so
+  # the mock example is coherent - NOT a verified FDH active site. Replace
+  # the target + numbering for real work; `evoliez doctor` BLOCKs a real
+  # backend on this placeholder.
+  catalytic_residues: ["H154", "R285"]
+  fixed_residues: ["G15", "G33", "H154", "R285"]
+  cofactor: NADP
+  target_ph: 7.5
+  organism: "Cupriavidus necator"
+  ec_number: "1.2.1.2"
+
+mechanism:                       # ROADMAP_V5 generality: FDH (redox hydride) under the SAME framework as CAR
+  reaction:
+    class: hydride_transfer
+  reaction_state:
+    cofactor_redox_state: NADPH
+    conformational_state: closed_ternary
+
+homologs:
+  method: mmseqs2
+  max_sequences: 4000
+  identity_min: 0.20
+  identity_max: 0.95
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 20
+  diffusion_samples: 6
+
+interaction_model:
+  enabled: true
+  representative_homologs: 16
+  poses_per_homolog: 10
+  docking_method: vina
+  contact_cutoff: 6.0
+  k_nearest_residues: 6
+  pose_select_mad_z: 2.5
+  pose_outlier_mad_z: 4.0
+  min_decoys_per_homolog: 4
+  model: xgboost
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, ligandmpnn]
+  max_candidates: 1500
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 150
+  top_for_md: 20
+
+validation:
+  redocking:
+    methods: [vina]
+  stability:
+    method: foldx
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    protocol_level: 1
+    solvent: implicit
+    production_ns: 1.0
+    top_candidates: 20
+    # Catalytic-power (near-attack-conformation) screen. md_lite_score measures
+    # only BINDING stability; this adds REACTIVITY = the fraction of frames where
+    # the reacting atoms sit in a productive geometry (transferring atom within
+    # distance_max of the acceptor AND a donor-transfer-acceptor angle >=
+    # angle_min). A mutant beating WT (ΔNAC > 0) has a more productive active
+    # site. Needs the hydride DONOR co-modelled (input.extra_ligands: formate).
+    # Disabled here (mock backend has no real trajectory); flip enabled: true on
+    # the GPU server with backend: real. SMARTS below = FDH formate -> NADP-C4.
+    reactive_geometry:
+      enabled: false
+      donor_smarts: "[CX3H1](=O)[O-]"                  # formate C-H (hydride donor)
+      acceptor_smarts: "[cH1]([cH0]C(=O)[NX3])[cH1]"   # nicotinamide C4
+      donor_idx: 0
+      acceptor_idx: 0
+      transfer_is_h: true
+      distance_max: 3.5      # Å, transferring H -> acceptor
+      angle_min: 150.0       # deg, donor_heavy - H - acceptor (near-linear)
+      label: formate_hydride_to_NADP_C4
+
+output:
+  final_library_size: 96
+  top_single_mutants: 30
+  report_format: [markdown, csv, pymol_session]
+
+backend: mock
+seed: 1234

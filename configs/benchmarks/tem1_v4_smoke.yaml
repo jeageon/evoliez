@@ -1,0 +1,34 @@
+# Non-FDH benchmark smoke config: TEM-1 beta-lactamase (ROADMAP_V4 §7.11)
+#
+# Exercises the mechanism-generalization path config-only: the `mechanism` block loads
+# directly into MechanismSpec (reaction.class selects the nucleophilic_acyl_substitution
+# template). The `benchmark` block pins what the label MEANS and which claims are allowed
+# so cross-benchmark claim drift is impossible (antibiotic fitness is NOT kcat).
+benchmark:
+  target_id: TEM1_beta_lactamase
+  mechanism_template: nucleophilic_acyl_substitution
+  label_primary: antibiotic_fitness
+  is_direct_kcat: false            # fitness is not a kinetic constant
+  assay_context: E_coli_growth_under_antibiotic
+  reference_tiers: [A, B]
+  prohibited_claims:
+    - direct kcat prediction
+
+mechanism:
+  schema_version: 1.0
+  mechanism_spec_id: tem1_nucleophilic_acyl
+  reaction:
+    class: nucleophilic_acyl_substitution
+  reaction_state:
+    protonation_model: catalytic_dyad_glu_lys_standard
+    conformational_state: acyl_enzyme_competent
+    substrate_is_real: true
+  catalytic_residues:
+    - residue: SER70
+      role: nucleophile
+      required: true
+    - residue: LYS73
+      role: general_base
+  geometry_calibration:
+    source_tier: G2
+    claim_limit: screening_only

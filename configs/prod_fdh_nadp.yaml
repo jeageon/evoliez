@@ -1,0 +1,206 @@
+# =====================================================================
+# PRODUCTION config - real backends, REMOTE MSA, /mnt/data2 storage.
+# =====================================================================
+# Differs from server_fdh_nadp.yaml in ONE thing: homologs/MSA come from
+# Boltz's hosted MSA server (msa.remote_server: true) instead of a local
+# UniRef DB. Trade-off: the COMPLEX-prediction MSA (s04 Boltz) is REAL, but
+# the EvoLiEZ homolog stage (s02/s03) and its evolutionary/subfamily features
+# fall back to SYNTHETIC homologs (no local DB to mine). For real homolog
+# evolutionary signal, set homologs.database to a local UniRef/BFD DB instead.
+#
+# BEFORE A REAL RUN you MUST set the 3 [FILL-IN] fields below. `evoliez doctor
+# -c configs/prod_fdh_nadp.yaml` BLOCKs (exit 1) until:
+#   - input.target_fasta points at YOUR real target (not a placeholder header)
+#   - input.catalytic_residues / fixed_residues match the real sequence at
+#     those positions (doctor cross-checks every token against the fasta)
+#
+#   evoliez doctor -c configs/prod_fdh_nadp.yaml      # must be 0 blocking
+#   bash scripts/run_pipeline.sh configs/prod_fdh_nadp.yaml   # GPU auto-pinned
+# Stage-by-stage: evoliez run -c configs/prod_fdh_nadp.yaml --to <stage> [--resume]
+
+project:
+  name: fdh_nadp_prod
+  objective: cofactor_switching
+  output_dir: /mnt/data2/<you>/runs/fdh_nadp_prod     # [FILL-IN] /mnt/data2 or /mnt/data, NEVER / or ~
+
+input:
+  target_id: fdh
+  # [FILL-IN] real target FASTA on the server (single chain). doctor BLOCKs a
+  # placeholder header (illustrative/example/placeholder) and a fasta whose
+  # residues disagree with the tokens below.
+  target_fasta: /mnt/data2/<you>/targets/fdh_real.fasta
+  ligand:
+    id: NADP_cofactor
+    type: smiles
+    # NADP+ (the cofactor being engineered away from). Replace if your ligand
+    # differs; RDKit must parse it (doctor/s01 report source==rdkit, not synthetic).
+    value: "NC(=O)c1ccc[n+](c1)[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c3ncnc4N)[C@H](O)[C@@H]2OP([O-])([O-])=O)[C@@H](O)[C@H]1O"
+    # Fixed-charge cofactor template: the -3 NADP (net charge: +1 pyridinium + four -1
+    # phosphate O = -3) does NOT converge through on-the-fly AM1-BCC/sqm, so MD uses the
+    # pre-derived charges in params/nadp_3minus/ (see its README). allow_am1bcc:false
+    # makes a missing template fail loudly instead of hanging in a non-converging sqm.
+    net_charge: -3
+    charges_mol2: params/nadp_3minus/NAP.fixed.mol2
+    allow_am1bcc: false
+  # Co-substrate (hydride DONOR) co-modelled in the active site so the catalytic-
+  # power NAC screen (validation.md.reactive_geometry) can measure the formate ->
+  # NADP-C4 hydride geometry. Drop this (and disable reactive_geometry) if you
+  # only want the binding screen.
+  extra_ligands:
+    - id: formate
+      type: smiles
+      value: "[O-]C=O"
+      role: substrate
+  # [FILL-IN] from the AUTHORITATIVE numbering (UniProt/PDB/paper) FOR YOUR REAL
+  # SEQUENCE. The placeholders below are deliberately wrong so doctor BLOCKs
+  # until you set the real active-site/anchor residues.
+  catalytic_residues: ["H999", "R999"]
+  fixed_residues: ["H999", "R999"]
+  cofactor: NADP
+  ec_number: "1.2.1.2"
+
+homologs:
+  # No local DB: remote MSA (below) is used. To mine REAL homologs instead, set
+  #   database: /mnt/data2/<you>/db/uniref30_2302/uniref30_2302_db
+  # and remove msa.remote_server (or set it false).
+  method: mmseqs2
+  max_sequences: 20000
+
+msa:
+  method: mafft
+  remote_server: true                   # real structural MSA via Boltz server; synthetic homolog features
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true                  # Boltz fetches a real MSA from its hosted server
+  representative_homologs: 80
+  diffusion_samples: 40                 # production ensemble (push higher for more pose variety)
+
+interaction_model:
+  enabled: true
+  representative_homologs: 80
+  poses_per_homolog: 15
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: true                          # EvoLigand-GNN is the primary family model
+  build_dataset: true
+  checkpoint: checkpoints/evoligand_gnn.pt
+  hidden_dim: 256
+  layers: 6
+  radius_lr: 6.0
+  radius_rr: 9.0
+  rbf: 16
+  use_disorder: true
+  lr: 0.001
+  epochs: 60
+  amp: true
+  ddp: false                             # set true when launched via torchrun --nproc_per_node=4
+
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, ligandmpnn]
+  max_candidates: 10000                  # large funnel; reranked down below
+  design_radius_angstrom: 8.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false         # set true + experimental_dataset for a labelled rerank
+  top_for_redocking: 600
+  top_for_md: 40
+  mutant_boltz_enabled: true             # per-mutant real Boltz so MD runs the actual mutant
+  mutant_boltz_top_n: 40
+  mutant_boltz_diffusion_samples: 5
+
+validation:
+  redocking:
+    methods: [gnina, diffdock]
+  stability:
+    method: thermompnn                   # open-source ThermoMPNN (FoldX/Rosetta replacement, server-verified)
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    # SCREENING tier. protocol_level 1-2 CAPS production at 25,000 steps (~0.05 ns
+    # at 2 fs) regardless of production_ns -- so this is a ~50 ps implicit-solvent
+    # SCREEN, not a 2 ns run. The engine reports the ACTUAL simulated ns (honest).
+    # For a PAPER-GRADE production run set protocol_level: 3 (uses the full
+    # production_ns, no step cap), raise replicas, and consider engine: amber +
+    # solvent: explicit for the final confirmatory tier on the top candidates.
+    # PAPER-GRADE production tier (was screening level 2). OpenMM implicit at the FULL
+    # production_ns + the catalytic-power NAC screen + alchemical RBFE ΔΔG on the top
+    # candidates. require_real_structure (default true) sends ONLY real-Boltz mutant
+    # structures to MD. For the explicit-solvent / multi-replica / MM-GBSA confirmatory
+    # pass on the very top picks, re-run --to s10_md with engine: amber + solvent:
+    # explicit (the Amber tier runs `replicas` independent trajectories + MM-GB/PBSA).
+    engine: openmm                       # openmm (NAC-capable screen) | amber (explicit+replicas+MM-GBSA)
+    protocol_level: 3                    # FULL production_ns (no ~50 ps step cap)
+    solvent: implicit                    # implicit GBSA (openmm); set `explicit` with engine: amber
+    production_ns: 2.0                   # real 2 ns / candidate (raise for longer sampling)
+    replicas: 3                          # independent trajectories — used by the amber tier
+    top_candidates: 40
+    require_real_structure: true         # MD only real-Boltz mutant structures (no WT-coords proxy)
+    rbfe:                                # alchemical ΔΔG_bind (mutant vs WT, NADP) via softcore TI
+      enabled: true                      #   Amber pmemd.cuda — the launcher sets EVOLIEZ_PMEMD_CUDA
+      top_n: 3                           #   only the top-3 MD candidates by md_lite_score (expensive)
+      n_lambda: 9                        #   Gauss-Legendre λ windows / leg
+      prod_steps: 50000                  #   50 ps / window
+      multipoint: additive               #   sum per-residue cycles for multi-point candidates
+    binding_dg:                          # endpoint MM-PB/GBSA confirmation via Amber MMPBSA.py
+      enabled: true                      #   OpenMM keeps binding_dg null; Amber fills top-N only
+      top_n: 3
+    # Catalytic-power (near-attack-conformation) screen: REACTIVITY on top of the
+    # binding-stability md_lite_score. Reports per-candidate NAC occupancy and
+    # ΔNAC vs WT (mutant > WT == geometrically more productive active site).
+    # Requires the hydride donor co-modelled (input.extra_ligands: formate).
+    reactive_geometry:
+      # Retention restraint (NAC-3): keep the free formate in the pocket so NAC
+      # measures active-site geometry, not implicit-solvent diffusion (distance-only).
+      restrain_cosubstrate: true
+      # NAC-4: start the formate in the constructed near-attack pose (off the catalytic
+      # face) instead of the predictor's random one, so a mis-placed formate is not
+      # wrongly skipped; the restraint + MD then test if the site MAINTAINS it.
+      template_cosubstrate_placement: true
+      restraint_radius_A: 5.0
+      # k=20 (not 2): a k=2 flat-bottom held the formate at 50 ps (smoke) but was
+      # too weak over the 2 ns production -- ~half of the mutant co-substrates
+      # diffused out (retention <0.8 -> NAC invalid_cosubstrate_diffused). k=20
+      # holds it inside the 5 A pocket over 2 ns while staying FREE within r0
+      # (distance-only; it never restrains the angle, so it can't manufacture NAC).
+      restraint_k: 20.0
+      enabled: true
+      donor_smarts: "[CX3H1](=O)[O-]"                  # formate C-H (hydride donor)
+      acceptor_smarts: "[cH1]([cH0]C(=O)[NX3])[cH1]"   # nicotinamide C4
+      donor_idx: 0
+      acceptor_idx: 0
+      transfer_is_h: true
+      distance_max: 3.5      # Å, transferring H -> acceptor (hydride ~2.7-3.5)
+      angle_min: 150.0       # deg, donor_heavy - H - acceptor (near-linear)
+      label: formate_hydride_to_NADP_C4
+
+scoring:
+  gnn: 1.5                                # EvoLigand-GNN as a primary term
+  family_interaction: 1.0
+
+# ROADMAP_V3 B1/B2 — ML is a PRIOR, not a hard filter. ON for production so the s08
+# redock queue + s08b fold queue + s09 MD shortlist are UNIONS of lanes (incl. a
+# low_ml_control false-negative probe), not a single ml_score top-N cut. Sizes are
+# generous for a real run; scale with the plate budget below.
+selection_lanes:
+  enabled: true
+  from_ml_high: 25
+  from_stability_high: 12
+  from_geometry_high: 12
+  from_diversity: 8
+  low_ml_controls: 8
+
+output:
+  final_library_size: 192                # production plate (2x96); raise as needed
+  top_single_mutants: 80
+  report_format: [markdown, csv, pymol_session]
+
+backend: real
+backends: {}                             # e.g. {s10_md: mock} to defer MD during early stages
+seed: 1234

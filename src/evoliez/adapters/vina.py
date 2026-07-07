@@ -9,7 +9,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
-from evoliez.adapters.base import mock_redock, write_min_pdb
+from evoliez.adapters.base import (
+    fail_unless_mock_allowed,
+    full_atom_receptor_pdb,
+    lock_pose_to_reference,
+    mock_redock,
+    write_min_pdb,
+)
 from evoliez.config import Backend, DockingConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import LigandAtom, Pose, ProteinStructure
@@ -29,10 +35,12 @@ def redock(
     instability: float,
     backend: Backend,
     dry_run: bool = False,
+    context_chains=None,
 ) -> Pose:
     if backend is Backend.real:
         return _redock_real(
-            candidate_id, structure, reference_atoms, cfg, workdir, dry_run=dry_run
+            candidate_id, structure, reference_atoms, cfg, workdir,
+            dry_run=dry_run, context_chains=context_chains,
         )
     return mock_redock(candidate_id, METHOD, reference_atoms, instability=instability)
 
@@ -45,36 +53,120 @@ def _redock_real(
     workdir: Path,
     *,
     dry_run: bool,
+    context_chains=None,
 ) -> Pose:
     require("vina")
     require("obabel")
     workdir.mkdir(parents=True, exist_ok=True)
     rec_pdb = workdir / f"{candidate_id}_rec.pdb"
-    write_min_pdb(rec_pdb, structure)
+    # Real docking needs the FULL-ATOM Boltz receptor (+ other co-modelled ligands
+    # as fixed context). Degrade honestly if none exists (mock upstream); in
+    # dry-run keep a CA-only placeholder just to preview the command set.
+    if not full_atom_receptor_pdb(structure, rec_pdb, keep_het_chains=context_chains):
+        if dry_run:
+            write_min_pdb(rec_pdb, structure)
+        else:
+            fail_unless_mock_allowed(
+                f"vina: no full-atom receptor for {candidate_id} "
+                "(upstream s04/s08b emitted a CA-only/mock structure)")
+            log.warning(
+                "vina: no full-atom receptor for %s; mock fallback "
+                "(NOT a real dock)", candidate_id,
+            )
+            return mock_redock(candidate_id, METHOD, reference_atoms,
+                               instability=0.2)
     rec_q = workdir / f"{candidate_id}_rec.pdbqt"
+    lig_pdb = workdir / f"{candidate_id}_lig.pdb"
     lig_q = workdir / f"{candidate_id}_lig.pdbqt"
     out = workdir / f"{candidate_id}_vina_out.pdbqt"
+    # receptor prep
     run(["obabel", str(rec_pdb), "-O", str(rec_q), "-xr"], dry_run=dry_run)
+    # ligand prep (was MISSING -> vina got a non-existent --ligand file):
+    # write the reference ligand atoms, add H + Gasteiger charges, -> pdbqt
+    write_min_pdb(lig_pdb, ProteinStructure(sequence="", residues=[]),
+                  reference_atoms)
+    run(["obabel", str(lig_pdb), "-O", str(lig_q),
+         "-h", "--partialcharge", "gasteiger"], dry_run=dry_run)
     cx = [sum(a.coord[i] for a in reference_atoms) / max(1, len(reference_atoms))
           for i in range(3)]
-    run(
-        ["vina", "--receptor", str(rec_q), "--ligand", str(lig_q),
-         "--center_x", f"{cx[0]:.2f}", "--center_y", f"{cx[1]:.2f}",
-         "--center_z", f"{cx[2]:.2f}", "--size_x", "22", "--size_y", "22",
-         "--size_z", "22", "--num_modes", str(cfg.poses_per_candidate),
-         "--out", str(out)],
-        dry_run=dry_run,
-    )
-    if dry_run or not out.exists():
+    vina_cmd = [
+        "vina", "--receptor", str(rec_q), "--ligand", str(lig_q),
+        "--center_x", f"{cx[0]:.2f}", "--center_y", f"{cx[1]:.2f}",
+        "--center_z", f"{cx[2]:.2f}", "--size_x", "22", "--size_y", "22",
+        "--size_z", "22", "--num_modes", str(cfg.poses_per_candidate),
+        "--exhaustiveness", str(getattr(cfg, "exhaustiveness", 8)),
+        "--out", str(out),
+    ]
+    cpu = getattr(cfg, "cpu", 0)
+    if cpu and cpu > 0:
+        vina_cmd += ["--cpu", str(cpu)]
+    # Hard wall: a runaway NADP-scale dock fails loudly instead of hanging
+    # forever with hidden (captured) stdout.
+    run(vina_cmd, dry_run=dry_run, timeout=getattr(cfg, "timeout_s", 1800))
+    if dry_run:
+        return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
+    if not out.exists():
+        fail_unless_mock_allowed(
+            f"vina produced no output for {candidate_id} ({out})")
+        log.warning(
+            "vina produced no output for %s (%s); using mock fallback "
+            "(NOT a real dock)", candidate_id, out,
+        )
         return mock_redock(candidate_id, METHOD, reference_atoms, instability=0.2)
     return _parse_vina(candidate_id, out, reference_atoms)
 
 
 def _parse_vina(candidate_id: str, out: Path, ref: Sequence[LigandAtom]) -> Pose:
+    """Parse the BEST (first) Vina pose: affinity + the docked ligand
+    coordinates. Coordinates are locked onto the canonical reference atom
+    list (ids/chemistry kept, Vina xyz adopted) via the shared
+    lock_pose_to_reference helper so RMSD-to-reference and pose-escape are
+    computable downstream (the same helper now also backs gnina/diffdock)."""
     score = 0.0
+    got_score = False
+    parsed: list[LigandAtom] = []
     for line in out.read_text().splitlines():
-        if line.startswith("REMARK VINA RESULT"):
-            score = float(line.split()[3])
-            break
+        if line.startswith("REMARK VINA RESULT") and not got_score:
+            try:
+                score = float(line.split()[3])
+                got_score = True
+            except (ValueError, IndexError):
+                score = 0.0
+        elif line.startswith("ENDMDL"):
+            if parsed:  # keep only the first (best) model
+                break
+        elif line.startswith(("ATOM", "HETATM")):
+            try:
+                x, y, z = (float(line[30:38]), float(line[38:46]),
+                           float(line[46:54]))
+            except ValueError:
+                continue
+            tok = line.split()
+            elem = _ad_element(tok[-1]) if tok else "C"
+            parsed.append(LigandAtom(id=f"{elem}{len(parsed)}",
+                                     element=elem, coord=(x, y, z)))
+
+    # Vina pdbqt = heavy + polar H (e.g. 54), canonical = heavy + all RDKit H
+    # (e.g. 70): the heavy-atom-aware atom-index lock survives the H asymmetry.
+    locked, rmsd = lock_pose_to_reference(
+        parsed, ref, candidate_id=candidate_id, method=METHOD, logger=log,
+    )
     return Pose(candidate_id=candidate_id, method=METHOD, score=score,
-                ligand_atoms=list(ref), rmsd_to_reference=None, cluster=0)
+                ligand_atoms=locked, rmsd_to_reference=rmsd, cluster=0)
+
+
+# AutoDock atom type -> element (pdbqt last column). Only the H vs non-H
+# distinction must be exact (drives the heavy-atom lock); HD/HS are polar H.
+_AD2ELEM = {
+    "A": "C", "C": "C", "N": "N", "NA": "N", "NS": "N", "O": "O", "OA": "O",
+    "OS": "O", "S": "S", "SA": "S", "P": "P", "H": "H", "HD": "H", "HS": "H",
+    "F": "F", "CL": "Cl", "BR": "Br", "I": "I", "MG": "Mg", "MN": "Mn",
+    "ZN": "Zn", "CA": "Ca", "FE": "Fe",
+}
+
+
+def _ad_element(adtype: str) -> str:
+    t = (adtype or "").strip().upper()
+    if t in _AD2ELEM:
+        return _AD2ELEM[t]
+    return "H" if t[:1] == "H" else (t[:1].title() or "C")

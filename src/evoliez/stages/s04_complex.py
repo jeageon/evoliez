@@ -14,45 +14,137 @@ class ComplexPredictionStage(Stage):
     def run(self, ctx: RunContext) -> None:
         seq = ctx.require("target_sequence")
         ligand = ctx.require("ligand")
+        extra_ligands = ctx.get("extra_ligands", [])
         msa_path = ctx.paths.msa / "alignment.fasta"
 
-        cx = predict_complex(
-            "wt",
-            seq,
-            ligand,
-            ctx.config.complex_prediction,
-            ctx.paths.complexes / "boltz",
-            backend=self.backend(ctx),
-            dry_run=ctx.dry_run,
-            msa_path=msa_path if msa_path.exists() else None,
-        )
+        # ROADMAP_V2 Phase A: a CURATED reference structure (input.target_structure) is the
+        # functional reference state when provided AND it passes the hard gates (residue
+        # numbering / ligand atom map / role-chain map / charge provenance). Otherwise the
+        # computed Boltz complex is the reference (the previous behaviour). A curated reference
+        # that FAILS the gates aborts a real run (a wrong mapping would silently corrupt every
+        # downstream stage) unless allow_mock_fallback is set.
+        cx = None
+        ref_pdb = getattr(ctx.config.input, "target_structure", None)
+        if ref_pdb:
+            from pathlib import Path as _P
+
+            if _P(ref_pdb).exists():
+                from evoliez.reference_state import load_reference_complex
+                _cx, gates = load_reference_complex(
+                    ref_pdb, target_sequence=seq, ligand=ligand,
+                    extra_ligands=extra_ligands,
+                    catalytic_positions=ctx.get("catalytic_positions", []))
+                ctx.persist_meta("reference_gates", gates.to_json())
+                if gates.passed:
+                    cx = _cx
+                    self.log.info(
+                        "s04: CURATED reference %s (hard gates passed)", ref_pdb)
+                else:
+                    msg = (f"curated reference {ref_pdb} FAILED hard gates: "
+                           f"{gates.reasons}")
+                    if (self.backend(ctx).value == "real"
+                            and not ctx.config.allow_mock_fallback):
+                        raise RuntimeError(
+                            msg + " — fix the structure/numbering or set "
+                            "allow_mock_fallback to fall back to Boltz")
+                    self.log.warning("%s; falling back to Boltz", msg)
+            else:
+                self.log.warning(
+                    "s04: target_structure %s not found; using Boltz", ref_pdb)
+
+        if cx is None:
+            from evoliez.mechanism.spec import metal_ion_ccd
+            metal_ccd = metal_ion_ccd(getattr(ctx.config, "mechanism", None))
+            if metal_ccd:
+                self.log.info(
+                    "s04: co-folding metal ion %s (mechanism.reaction_state.metal_state) "
+                    "to pre-organize the anionic substrate/cofactor", metal_ccd)
+            cx = predict_complex(
+                "wt",
+                seq,
+                ligand,
+                ctx.config.complex_prediction,
+                ctx.paths.complexes / "boltz",
+                backend=self.backend(ctx),
+                dry_run=ctx.dry_run,
+                msa_path=msa_path if msa_path.exists() else None,
+                seed=ctx.config.seed,
+                extra_ligands=extra_ligands,
+                metal_ccd=metal_ccd,
+            )
         ctx.put("wt_complex", cx)
         ctx.persist_meta("complex_confidence", cx.confidence)
         ctx.persist_meta("complex_affinity", cx.affinity_score)
 
         assert ctx.store is not None
         with ctx.store.session() as s:
-            st = Structure(
-                project_id=ctx.project_id,
-                method=cx.method,
-                confidence_score=cx.confidence,
-                pdb_path=cx.path or "",
-                pocket_confidence=cx.confidence,
-            )
-            s.add(st)
-            s.flush()
-            s.add(
-                ComplexPrediction(
+            # idempotent: a --resume re-run must not duplicate WT complex rows
+            if (
+                s.query(ComplexPrediction)
+                .filter_by(project_id=ctx.project_id, method=cx.method)
+                .first()
+                is None
+            ):
+                st = Structure(
                     project_id=ctx.project_id,
-                    structure_id=st.structure_id,
-                    ligand_id=ligand.id,
                     method=cx.method,
-                    confidence=cx.confidence,
-                    affinity_score=cx.affinity_score,
-                    complex_path=cx.path or "",
+                    confidence_score=cx.confidence,
+                    pdb_path=cx.path or "",
+                    pocket_confidence=cx.confidence,
                 )
-            )
+                s.add(st)
+                s.flush()
+                s.add(
+                    ComplexPrediction(
+                        project_id=ctx.project_id,
+                        structure_id=st.structure_id,
+                        ligand_id=ligand.id,
+                        method=cx.method,
+                        confidence=cx.confidence,
+                        affinity_score=cx.affinity_score,
+                        complex_path=cx.path or "",
+                    )
+                )
         self.log.info(
             "WT complex: method=%s confidence=%.3f affinity=%s",
             cx.method, cx.confidence, cx.affinity_score,
         )
+
+        # s04 complex-prediction report (interactive 3D viewer + pLDDT / PAE /
+        # ipTM / affinity / diffusion-ensemble) — only when a REAL Boltz run
+        # left per-model confidence outputs (mock / dry-run produce none).
+        try:
+            import glob
+            from datetime import datetime
+
+            from evoliez.io._provenance import stamp
+            from evoliez.io.complex_report import (compute_complex_stats,
+                                                   write_complex_report)
+            preds = [p for p in glob.glob(str(
+                ctx.paths.complexes / "boltz" / "boltz_results_*"
+                / "predictions" / "*"))
+                if glob.glob(p + "/confidence_*model_*.json")]
+            if preds:
+                cp = ctx.config.complex_prediction
+                write_complex_report(
+                    ctx.paths.reports / "complex_report.html",
+                    target_id=ctx.config.input.target_id,
+                    stats=compute_complex_stats(preds[0]),
+                    ligand_names=[ligand.id] + [e.id for e in extra_ligands],
+                    generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    provenance=stamp(ctx),
+                    conditions=[
+                        ("model", f"{cp.primary_method}, "
+                                  f"{cp.diffusion_samples} diffusion samples"),
+                        ("ligands", ", ".join(
+                            [ligand.id] + [e.id for e in extra_ligands])),
+                        ("selected", "model_0 (top confidence_score)"),
+                        ("affinity",
+                         "Boltz-2 head: log10(IC50/uM) + P(binder)"),
+                        ("backend", self.backend(ctx).value),
+                    ],
+                )
+                self.log.info("complex prediction report: %s",
+                              ctx.paths.reports / "complex_report.html")
+        except Exception as exc:  # report is secondary — never fail the stage
+            self.log.warning("complex report failed: %s", exc)

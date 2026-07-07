@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "EvoLigand-Enzyme Engineer: ligand-aware, enzyme-family-specific protein engineering pipeline with MD validation"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = { text = "Proprietary - All Rights Reserved (unpublished research)" }
 authors = [{ name = "EvoLiEZ" }]
 keywords = ["enzyme-engineering", "protein-ligand", "molecular-dynamics", "boltz", "ligandmpnn"]
 
@@ -32,12 +32,20 @@ science = [
     "scikit-learn>=1.2",
     "xgboost>=1.7",
 ]
-# Molecular dynamics (OpenMM is conda-first; pip wheels exist for some platforms).
+# Molecular dynamics (OpenMM is conda-first; pip wheels exist for some
+# platforms). NOTE: MD metrics are computed with numpy in-process; we do
+# NOT import MDAnalysis (GPL-2.0) or MDTraj (LGPL-2.1), so the dependency
+# closure stays permissive. See docs/THIRD_PARTY_LICENSES.md.
 md = [
     "openmm>=8.0",
-    "mdanalysis>=2.4",
-    "mdtraj>=1.9",
     "openff-toolkit>=0.14",
+    # GAFF small-molecule template generator for real MD ligand params -
+    # without it every real candidate hits skipped_parameterization.
+    # (conda env also needs ambertools for antechamber/parmchk2.)
+    "openmmforcefields>=0.11",
+    # Adds missing terminal/heavy atoms (OXT) so Amber accepts Boltz's
+    # predicted chain termini ("No template for residue N").
+    "pdbfixer>=1.9",
 ]
 # GPU / deep-learning tools that only run on the CUDA server.
 gpu = [

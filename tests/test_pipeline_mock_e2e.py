@@ -60,6 +60,55 @@ def test_full_mock_pipeline(tmp_path):
     assert (paths.reports / "focused_library.csv").exists()
     assert (paths.reports / "session.pml").exists()
 
+    # ROADMAP_V3 B8: EvidenceCard (D4) is now a CANONICAL s11 output, not an offline CLI
+    import json as _jb8
+    assert (paths.reports / "triage_v3.json").exists()
+    assert (paths.reports / "provenance" / "evidence_cards.json").exists()
+    _cards = _jb8.loads(
+        (paths.reports / "provenance" / "evidence_cards.json").read_text())
+    assert isinstance(_cards, list) and len(_cards) >= 1
+    assert "axes" in _cards[0] or "variant_id" in _cards[0]  # a real EvidenceCard dump
+
+    # s06b family interaction-geometry model trained + persisted
+    assert (paths.interaction_graphs / "interaction_model.json").exists()
+    imeta = ctx.meta("interaction_model")
+    assert imeta and imeta["train_rows"] > 0 and imeta["n_consensus"] > 0
+    assert "n_alternative" in imeta and "n_hard_decoy" in imeta
+    assert "subfamily_holdout_auroc" in imeta
+    assert ctx.get("interaction_model") is not None
+
+    # multi-level ML datasets + data-role policy (Boltz != label)
+    dsd = paths.root / "ml_datasets"
+    for name in ("pose_level", "edge_level", "residue_level",
+                 "mutation_level", "variant_level"):
+        assert (dsd / f"{name}.csv").exists(), f"missing dataset {name}"
+    import csv as _csv
+    import json as _json
+    with (dsd / "edge_level.csv").open() as fh:
+        cols = next(_csv.reader(fh))
+    assert "contact_frequency" in cols  # priority-1 feature present
+    # server-grade relative-vector graph dataset exported for GNN training
+    gdir = paths.root / "datasets" / "graph_pt"
+    assert (gdir / "index.txt").exists()
+    assert ctx.meta("graph_dataset_samples") >= 1
+
+    # accuracy / paper-readiness layers
+    assert (paths.reports / "provenance.json").exists()
+    import csv as _csvp
+    with (paths.reports / "focused_library.csv").open() as fh:
+        libcols = next(_csvp.reader(fh))
+    assert "recommendation" in libcols and "acquisition_score" in libcols
+    assert ctx.meta("mechanism") and ctx.meta("mechanism")["reactive_ligand_atoms"]
+
+    roles = _json.loads((dsd / "roles.json").read_text())
+    # the ONLY supervised-label column is the experimental one
+    for tbl, colroles in roles["column_roles"].items():
+        for col, role in colroles.items():
+            if "supervised_label" in role:
+                assert col == "experimental_label", (
+                    f"{tbl}.{col} must not be a supervised label"
+                )
+
     ranked = ctx.get("ranked_candidates")
     assert ranked and len(ranked) >= 1
     # scores are monotonically non-increasing (sorted)
@@ -68,8 +117,21 @@ def test_full_mock_pipeline(tmp_path):
     # every ranked candidate has the full score decomposition
     for c in ranked:
         assert "score_breakdown" in c.details
-        for k in ("ml_score", "md_lite_score", "final_score"):
+        for k in ("ml_score", "md_lite_score", "final_score",
+                  "family_interaction_score"):
             assert k in c.scores
+        assert 0.0 <= c.scores["family_interaction_score"] <= 1.0
+        assert "family_interaction" in c.details["score_breakdown"]["contributions"]
+        # accuracy / paper-readiness layers
+        assert "recommendation" in c.details
+        assert "provenance_id" in c.details
+        assert c.details.get("boltz_delta_source") in (
+            "proxy", "mock", "real"
+        )
+        assert "neg_catalytic_mut" in c.scores
+        bd = c.details["score_breakdown"]
+        assert "neg_catalytic_mut" in bd["penalties"]
+        assert "catalytic_geometry_preservation" in bd["contributions"]
 
     # spec 17.1 DB populated
     store = Store(paths.db_path)

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Sequence
 
-from evoliez.adapters.base import write_min_pdb
+from evoliez.adapters.base import full_atom_receptor_pdb, write_min_pdb
 from evoliez.config import Backend, StabilityConfig
 from evoliez.logging_utils import get_logger
 from evoliez.types import Mutation, ProteinStructure
@@ -62,7 +62,19 @@ def _foldx_real(
     require("foldx")
     workdir.mkdir(parents=True, exist_ok=True)
     pdb = workdir / f"{candidate_id}.pdb"
-    write_min_pdb(pdb, structure)
+    # FoldX BuildModel builds the mutant from the WT structure + mutation list,
+    # so it needs the FULL-ATOM WT (sidechains), not a CA-only trace. No
+    # full-atom structure -> ddG genuinely unavailable (honest neutral, routed
+    # to MD by s09), never a fabricated 0.0. Dry-run keeps a placeholder.
+    if not full_atom_receptor_pdb(structure, pdb):
+        if dry_run:
+            write_min_pdb(pdb, structure)
+        else:
+            log.warning(
+                "foldx: no full-atom structure for %s (upstream CA-only/mock); "
+                "ddG unavailable", candidate_id,
+            )
+            return {"ddg_fold": None, "clash_score": 0.0}
     mut_file = workdir / "individual_list.txt"
     mut_file.write_text(
         ",".join(f"{m.wt}A{m.position}{m.mut}" for m in mutations) + ";\n"
@@ -72,18 +84,46 @@ def _foldx_real(
          f"--mutant-file={mut_file.name}", "--output-dir", str(workdir)],
         cwd=workdir, dry_run=dry_run,
     )
-    ddg = 0.0
-    for f in workdir.glob("Dif_*.fxout"):
-        for line in f.read_text().splitlines():
-            parts = line.split("\t")
-            if len(parts) > 1:
-                try:
-                    ddg = float(parts[1])
-                except ValueError:
-                    continue
     if dry_run:
         return _mock(candidate_id, structure, mutations)
+    ddg = _parse_foldx(workdir)
+    if ddg is None:                       # honest failure, not a fake 0.0
+        return {"ddg_fold": None, "clash_score": 0.0}
     return {"ddg_fold": round(ddg, 3), "clash_score": 0.0}
+
+
+def _parse_foldx(workdir):
+    """FoldX BuildModel `Dif_*.fxout`: read the 'total energy' column (located
+    from the header row) of the first data row = total ΔΔG (kcal/mol). Locating
+    the column by NAME is robust to FoldX reordering columns or emitting a
+    numeric first column, which the old 'first numeric column' heuristic was
+    not.
+
+    Returns None (not 0.0) when no Dif file / no numeric row is found, so a
+    failed FoldX run is recorded as 'stability unavailable' rather than the BEST
+    possible ddG=0.0 (zero penalty, stability_score 1.0, passes the filter)."""
+    from pathlib import Path
+
+    for f in sorted(Path(workdir).glob("Dif_*.fxout")):
+        lines = f.read_text().splitlines()
+        col = 1  # FoldX Dif convention: col 0 = pdb name, col 1 = total energy
+        for line in lines:
+            low = [p.strip().lower() for p in line.split("\t")]
+            if "total energy" in low:
+                col = low.index("total energy")
+                break
+        for line in lines:
+            parts = line.split("\t")
+            if len(parts) > col:
+                try:
+                    return float(parts[col])
+                except ValueError:
+                    continue
+    log.warning(
+        "FoldX produced no parseable Dif_*.fxout ddG in %s; "
+        "stability unavailable (not scored as max-stable)", workdir,
+    )
+    return None
 
 
 def _mock(
