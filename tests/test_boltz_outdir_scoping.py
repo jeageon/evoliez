@@ -133,7 +133,7 @@ def test_pdb_parser_keeps_only_primary_ligand_chain(tmp_path):
     ]
     p = tmp_path / "multilig.pdb"
     p.write_text("\n".join(lines) + "\n")
-    residues, lig = _parse_pdb_atoms(p)
+    residues, lig, _extra = _parse_pdb_atoms(p)   # 3-tuple: (+ per-chain extra ligand atoms)
     assert len(residues) == 1
     assert len(lig) == 3                              # chain B only, formate dropped
     assert [a.element for a in lig] == ["P", "O", "N"]
