@@ -1,0 +1,120 @@
+{
+  "schema": "amber_system_manifest/v1",
+  "fingerprint": "7f8e7306d4d9edd5",
+  "protein": {
+    "n_residues": 720,
+    "seq_sha1": "562afcb9baaef4ad6d207512f67d1f6679d815e3"
+  },
+  "force_field": {
+    "protein": "ff14SB",
+    "ligand": "gaff2",
+    "water": "tip3p",
+    "solvent": "explicit",
+    "box_buffer_A": 12.0
+  },
+  "ligands": [
+    {
+      "id": "LIG",
+      "role": "design_ligand",
+      "net_charge": -1,
+      "param_source": "am1bcc_gaff2",
+      "allow_am1bcc": true
+    },
+    {
+      "id": "ATP",
+      "role": "cofactor",
+      "net_charge": -4,
+      "param_source": "curated:ATP.fixed.mol2",
+      "allow_am1bcc": false
+    }
+  ],
+  "metal": {
+    "ion": "MG",
+    "charge": 2,
+    "ion_frcmod": "frcmod.ions234lm_1264_tip3p",
+    "lj_model": "12-6-4"
+  },
+  "system": {
+    "n_atoms": 72783,
+    "net_charge": -0.001
+  },
+  "reactive_atoms": [
+    {
+      "role": "O_nuc",
+      "residue": "LIG",
+      "resid": 722,
+      "orig_resid": null,
+      "atom_name": "O2",
+      "amber_index": 10958,
+      "mask": ":LIG@O2",
+      "status": "ok"
+    },
+    {
+      "role": "P_alpha",
+      "residue": "ATP",
+      "resid": 723,
+      "orig_resid": null,
+      "atom_name": "P1",
+      "amber_index": 10982,
+      "mask": ":ATP@P1",
+      "status": "ok"
+    },
+    {
+      "role": "O_leaving",
+      "residue": "ATP",
+      "resid": 723,
+      "orig_resid": null,
+      "atom_name": "O5",
+      "amber_index": 10985,
+      "mask": ":ATP@O5",
+      "status": "ok"
+    },
+    {
+      "role": "metal",
+      "residue": "MG",
+      "resid": 721,
+      "orig_resid": null,
+      "atom_name": "MG",
+      "amber_index": 10955,
+      "mask": ":MG@MG",
+      "status": "ok"
+    },
+    {
+      "role": "catalytic",
+      "residue": "SER",
+      "resid": 268,
+      "orig_resid": 268,
+      "atom_name": "CA",
+      "amber_index": 3996,
+      "mask": ":268",
+      "status": "ok"
+    },
+    {
+      "role": "catalytic",
+      "residue": "THR",
+      "resid": 269,
+      "orig_resid": 269,
+      "atom_name": "CA",
+      "amber_index": 4007,
+      "mask": ":269",
+      "status": "ok"
+    },
+    {
+      "role": "catalytic",
+      "residue": "LYS",
+      "resid": 273,
+      "orig_resid": 273,
+      "atom_name": "CA",
+      "amber_index": 4056,
+      "mask": ":273",
+      "status": "ok"
+    }
+  ],
+  "reactive_spec": {
+    "label": "3HP_carboxylate_to_ATP_alphaP",
+    "donor_smarts": "[OX1-]",
+    "acceptor_smarts": "[PX4]([OX2][CX4])",
+    "donor_protein": null,
+    "transfer_is_h": false
+  }
+}
