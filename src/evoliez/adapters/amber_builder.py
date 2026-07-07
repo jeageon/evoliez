@@ -257,55 +257,69 @@ def validate_mol2_net_charge(mol2_text: str, expected: int, ligand_id: str,
 def transplant_pose_coords(curated_mol2_text: str, ref_sdf: Path,
                            pose_mol, ligand_id: str) -> str:
     """Return a new mol2 == the curated template (types/charges/names/order) but with
-    heavy-atom coordinates taken from ``pose_mol`` via graph isomorphism. Hydrogen
-    coords are left at their template positions (relaxed by the downstream restrained
-    minimization); the reactive atoms are heavy atoms, mapped exactly. Fail-loud on an
-    incomplete heavy-atom match."""
+    ALL atom coordinates taken from ``pose_mol`` via graph isomorphism. Hydrogens are
+    (re)placed with ``AddHs(addCoords=True)`` so they are geometrically consistent with
+    the transplanted heavy-atom pose — leaving the template H at their reference
+    positions produces H↔pocket clashes that blow up minimization. Fail-loud on an
+    incomplete match."""
     from rdkit import Chem
 
     ref = Chem.SDMolSupplier(str(ref_sdf), removeHs=False, sanitize=True)[0]
     if ref is None:
         raise AmberBuildError("parameterization", f"{ligand_id}: unreadable ref sdf {ref_sdf}")
-    ref_heavy = Chem.RemoveHs(ref)
-    pose_heavy = Chem.RemoveHs(pose_mol)
+    # rebuild H on the pose heavy-atom frame so every atom has a pose-consistent xyz
+    pose_full = Chem.AddHs(Chem.RemoveHs(pose_mol), addCoords=True)
     qp = Chem.AdjustQueryParameters.NoAdjustments()
     qp.makeBondsGeneric = True
-    query = Chem.AdjustQueryProperties(ref_heavy, qp)
-    match = pose_heavy.GetSubstructMatch(query)     # match[ref_heavy_i] = pose_heavy_i
-    if len(match) != ref_heavy.GetNumAtoms():
-        raise AmberBuildError(
-            "parameterization",
-            f"{ligand_id}: pose graph-match incomplete "
-            f"({len(match)}/{ref_heavy.GetNumAtoms()} heavy atoms) — pose is not the "
-            "curated molecule; refusing to transplant coordinates")
-    pose_conf = pose_heavy.GetConformer()
-    # map ref-heavy atom index -> pose xyz, keyed by element for a safety assert
-    ref_heavy_coords = {}
+    query = Chem.AdjustQueryProperties(ref, qp)
+    match = pose_full.GetSubstructMatch(query)      # match[ref_i] = pose_i (all atoms)
+    if len(match) != ref.GetNumAtoms():
+        # fall back to a heavy-only match if H perception differs; H then keep template
+        # positions (still better than a wrong heavy pose, and flagged by min later)
+        ref_heavy = Chem.RemoveHs(ref)
+        pose_heavy = Chem.RemoveHs(pose_mol)
+        hmatch = pose_heavy.GetSubstructMatch(Chem.AdjustQueryProperties(ref_heavy, qp))
+        if len(hmatch) != ref_heavy.GetNumAtoms():
+            raise AmberBuildError(
+                "parameterization",
+                f"{ligand_id}: pose graph-match incomplete "
+                f"(full {len(match)}/{ref.GetNumAtoms()}, heavy "
+                f"{len(hmatch)}/{ref_heavy.GetNumAtoms()}) — pose is not the curated "
+                "molecule; refusing to transplant coordinates")
+        conf = pose_heavy.GetConformer()
+        heavy_order = [a.GetIdx() for a in ref.GetAtoms() if a.GetAtomicNum() > 1]
+        curated_to_xyz = {}
+        for hi, ref_full_i in enumerate(heavy_order):
+            p = conf.GetAtomPosition(hmatch[hi])
+            curated_to_xyz[ref_full_i] = (p.x, p.y, p.z)
+        return _rewrite_mol2_coords(curated_mol2_text, curated_to_xyz, heavy_only=True)
+
+    conf = pose_full.GetConformer()
+    curated_to_xyz: Dict[int, Tuple[float, float, float]] = {}
     for ref_i, pose_i in enumerate(match):
-        if ref_heavy.GetAtomWithIdx(ref_i).GetAtomicNum() != \
-                pose_heavy.GetAtomWithIdx(pose_i).GetAtomicNum():
+        if ref.GetAtomWithIdx(ref_i).GetAtomicNum() != \
+                pose_full.GetAtomWithIdx(pose_i).GetAtomicNum():
             raise AmberBuildError("parameterization",
                                   f"{ligand_id}: element mismatch in pose match")
-        p = pose_conf.GetAtomPosition(pose_i)
-        ref_heavy_coords[ref_i] = (p.x, p.y, p.z)
-    # walk the FULL ref (with H) to align curated-order heavy atoms; H keep template xyz
-    heavy_order = [a.GetIdx() for a in ref.GetAtoms() if a.GetAtomicNum() > 1]
-    curated_to_xyz: Dict[int, Tuple[float, float, float]] = {}
-    for ref_heavy_i, ref_full_i in enumerate(heavy_order):
-        curated_to_xyz[ref_full_i] = ref_heavy_coords[ref_heavy_i]
+        p = conf.GetAtomPosition(pose_i)
+        curated_to_xyz[ref_i] = (p.x, p.y, p.z)
+    return _rewrite_mol2_coords(curated_mol2_text, curated_to_xyz, heavy_only=False)
 
-    # rewrite the mol2 ATOM block coords (col 3-5) for heavy atoms in file order
-    lines = curated_mol2_text.splitlines()
+
+def _rewrite_mol2_coords(mol2_text: str, idx_to_xyz: Dict[int, Tuple[float, float, float]],
+                         heavy_only: bool) -> str:
+    """Rewrite the @<TRIPOS>ATOM block xyz (cols 3-5) from ``idx_to_xyz`` keyed by the
+    0-based atom-row index. When ``heavy_only``, H rows are left untouched."""
+    lines = mol2_text.splitlines()
     i = lines.index("@<TRIPOS>ATOM")
-    out = lines[:i + 1]
     atom_row = 0
     j = i + 1
     while j < len(lines) and not lines[j].startswith("@<TRIPOS>"):
         f = lines[j].split()
         if len(f) >= 9:
-            elem = f[5][0].upper()
-            if elem != "H" and atom_row in curated_to_xyz:
-                x, y, z = curated_to_xyz[atom_row]
+            is_h = f[5][0].upper() == "H"
+            if (not heavy_only or not is_h) and atom_row in idx_to_xyz:
+                x, y, z = idx_to_xyz[atom_row]
                 f[2], f[3], f[4] = f"{x:.4f}", f"{y:.4f}", f"{z:.4f}"
                 lines[j] = ("{:>7} {:<8} {:>9} {:>9} {:>9} {:<6} {:>3} {:<8} {:>9}"
                             .format(f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8]))
