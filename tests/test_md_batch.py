@@ -46,3 +46,27 @@ def test_worker_failsafe_per_candidate(monkeypatch):
 def test_empty_chunk():
     from evoliez.adapters.md_batch import _md_chunk_worker
     assert _md_chunk_worker((0, [], _MDCFG, None, [], [], False, False)) == {}
+
+
+def test_worker_threads_umbrella_for_e4a(monkeypatch):
+    """E4a PMF fan-out: a 5-tuple task carries umbrella=(window_A, k); the worker must pass it to
+    run_md and key the result by WORKDIR (so many windows of the SAME candidate don't collide).
+    A plain 4-tuple task stays unbiased (umbrella=None) and keyed by candidate_id (unchanged)."""
+    kw = []
+
+    def fake(mc, cid, mdcfg, wd, **k):
+        kw.append((cid, k.get("umbrella")))
+        return MDResult(candidate_id=cid, status="ok", protocol_level=0,
+                        solvent_mode="explicit", simulation_time_ns=0.04)
+
+    monkeypatch.setattr("evoliez.adapters.openmm_engine.run_md", fake)
+    from evoliez.adapters.md_batch import _md_chunk_worker
+    tasks = [("mut_00000", object(), "/run/mut_00000/e4a/window_2.80", 0.0, (2.80, 250.0)),
+             ("mut_00000", object(), "/run/mut_00000/e4a/window_3.40", 0.0, (3.40, 250.0)),
+             ("c_plain", object(), "/run/c_plain", 0.3)]   # legacy 4-tuple (unbiased)
+    out = _md_chunk_worker((None, tasks, _MDCFG, None, [], [10], False, True))
+    # umbrella flowed through per window; both same-cid windows kept (keyed by workdir)
+    assert ("mut_00000", (2.80, 250.0)) in kw and ("mut_00000", (3.40, 250.0)) in kw
+    assert "/run/mut_00000/e4a/window_2.80" in out and "/run/mut_00000/e4a/window_3.40" in out
+    # the legacy 4-tuple stays keyed by candidate_id with umbrella=None
+    assert ("c_plain", None) in kw and "c_plain" in out

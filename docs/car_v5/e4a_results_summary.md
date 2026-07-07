@@ -28,10 +28,22 @@ distance), so the bias cannot manufacture the in-line NAC.
 | k=60 / 24w | 60 | 72 | ✅ monotonic, std ~0.09 Å | one, ≈4.0 Å | not converged |
 | k=60 + infill (3.6–4.6) | 60 | 114 | ✅ | one, **moved to ≈4.7 Å** | not converged |
 | k=60 combined (canonical) | 60 | 129 | ✅ | one, ≈4.7 Å | not converged |
+| k=250 restricted 2.8–4.6 | 250 | 102 (34×3, calibrate-on-WT-then-lock; 3-GPU fan-out) | ✅✅ very stiff, std ~0.05 Å | none *in-range* (guard passes) | not converged\* |
 
 Each infill demonstrably closes its own region — and the last unbridged transition simply shifts. That
 "whack-a-mole" behavior is the diagnostic: it is *not* random noise (all three candidates show the gap at
 the **same** distance), so it reflects a real coordinate-coupling / equilibration limit, not under-tuning.
+
+\* **The k=250 restricted run is the sharpest confirmation, not a refutation.** Following the
+calibrate-on-WT-then-lock method, a very stiff restraint over the near-attack range **passes the overlap
+guard for all three** (overlap_min 0.17–0.52). But it converges only by (a) excluding the true ~5 Å basin
+and the 4.7 Å gap, and (b) re-referencing to the ~4.3 Å resting state — so the access cost is a *different
+observable*, not the same one made trustworthy. The tell: the lead's access cost is now **0.00**
+(supposedly sits *at* near-attack with no barrier — flatly contradicting E1/E2, where no candidate occupies
+the productive window), and across the five attempts the lead reads **7.71 → 0.14 → 2.90 → 0.00** (WT
+**8.45 → 5.53 → 1.90**). Passing a *local* 1D overlap metric is necessary but **not sufficient**: the
+numbers remain protocol-dependent, which is the definition of non-convergence. `mut_00000=0.00` is a
+range-restriction artifact (the true relaxed basin was cut out).
 
 ## Final numbers (canonical 129-window set) — reported, NOT interpreted
 `docs/car_v5/e4a_pmf_access_table_FINAL_129w.csv`

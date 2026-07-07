@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 # one MD unit: (candidate_id, mutant Complex, workdir, instability)
+# optional 5th element: umbrella=(window_A, k_kcal) for the E4a PMF sweep (else unbiased)
 MDTask = Tuple[str, object, str, float]
 
 
@@ -34,15 +35,18 @@ def _md_chunk_worker(payload):
 
     lcd = Path(ligand_cache_dir) if ligand_cache_dir else None
     out: Dict[str, object] = {}
-    for cid, mc, wd, inst in tasks:
+    for t in tasks:
+        cid, mc, wd, inst = t[0], t[1], t[2], t[3]
+        umbrella = t[4] if len(t) > 4 else None    # E4a PMF: (window_A, k) biases this window
         try:
-            out[cid] = run_md(
+            out[wd if umbrella is not None else cid] = run_md(
                 mc, cid, mdcfg, Path(wd), instability=inst,
                 catalytic_positions=catalytic, backend=Backend.real,
                 dry_run=False, ligand_cache_dir=lcd, extra_ligands=extra_specs,
-                fail_loud_on_cpu=fail_loud, metal_requested=metal_requested)
-        except Exception as exc:  # noqa: BLE001 — one candidate must not kill the chunk
-            out[cid] = MDResult(
+                fail_loud_on_cpu=fail_loud, metal_requested=metal_requested,
+                umbrella=umbrella)
+        except Exception as exc:  # noqa: BLE001 — one task must not kill the chunk
+            out[wd if umbrella is not None else cid] = MDResult(
                 candidate_id=cid, status="failed",
                 protocol_level=getattr(mdcfg, "protocol_level", 0),
                 solvent_mode=getattr(mdcfg, "solvent", "implicit"),
