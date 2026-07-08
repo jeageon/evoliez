@@ -72,10 +72,17 @@ screening-level reaction-geometry evidence* — **not** a validated activity-imp
 
 ## 6. Next research tiers (NOT V6 completion gates)
 
-1. Repeat QM/MM-lite on 3–5 representative frames for WT / lead / P438N to test
-   in-line-angle signal stability (single-frame artifact check).
-2. Converged access-cost: 2-D or better-coordinate PMF before any candidate ranking.
-3. Only then: wet-lab assay of the deconvolution panel (with controls) — the only
+1. **✅ Done** — QM/MM-lite frame-stability check (3 frames × WT/P438N/lead): the
+   in-line-angle ordering is **stable** (WT 91.1±4.2°, P438N 123.0±3.1°, lead
+   166.5±2.7°; every mutant frame > every WT frame), **not a single-frame artifact**.
+   Caveat: unbiased-ensemble angles (O→P ~6–9 Å), and the mutants sit at *larger*
+   distance — angle and distance still disagree, so this strengthens the mechanism
+   hypothesis but does not establish superiority. See
+   [`../car_v6/qmmm_frame_stability.md`](../car_v6/qmmm_frame_stability.md).
+2. Near-attack (O→P ~3.2 Å) in-line-angle stability: needs matched near-attack frames
+   for the mutants (restrained-pull/umbrella) — deferred.
+3. Converged access-cost: 2-D or better-coordinate PMF before any candidate ranking.
+4. Only then: wet-lab assay of the deconvolution panel (with controls) — the only
    thing that can unlock activity-level claims.
 
 ## 7. Live-verification fixes folded in (2026-07-08)
