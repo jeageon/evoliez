@@ -72,17 +72,18 @@ screening-level reaction-geometry evidence* — **not** a validated activity-imp
 
 ## 6. Next research tiers (NOT V6 completion gates)
 
-1. **✅ Done** — QM/MM-lite frame-stability check (3 frames × WT/P438N/lead): the
-   in-line-angle ordering is **stable** (WT 91.1±4.2°, P438N 123.0±3.1°, lead
-   166.5±2.7°; every mutant frame > every WT frame), **not a single-frame artifact**.
-   Caveat: unbiased-ensemble angles (O→P ~6–9 Å), and the mutants sit at *larger*
-   distance — angle and distance still disagree, so this strengthens the mechanism
-   hypothesis but does not establish superiority. See
+1. **✅ Done — with a cautionary result.** QM/MM-lite frame-stability check (3 frames
+   × WT/P438N/lead, at two geometries). At a **non-reactive** distance (O→P ~6–9 Å)
+   the variants separate cleanly (WT 91°, P438N 123°, lead 167°). At the
+   **near-attack** reaction geometry (~3.2 Å) the separation **largely dissolves**:
+   WT 142.7±8.1°, lead 156.0±2.3° (overlapping), P438N 109.1±6.5° (*below* WT) — and
+   the earlier single-frame WT ≈ 69° does not reproduce (WT is not robustly bent). So
+   the apparent in-line-angle advantage was substantially a frame/geometry artifact. The multi-frame check
+   **weakened** the computational case for differentiating the CAR variants; it
+   reinforces that ranking needs wet-lab data. See
    [`../car_v6/qmmm_frame_stability.md`](../car_v6/qmmm_frame_stability.md).
-2. Near-attack (O→P ~3.2 Å) in-line-angle stability: needs matched near-attack frames
-   for the mutants (restrained-pull/umbrella) — deferred.
-3. Converged access-cost: 2-D or better-coordinate PMF before any candidate ranking.
-4. Only then: wet-lab assay of the deconvolution panel (with controls) — the only
+2. Converged access-cost: 2-D or better-coordinate PMF before any candidate ranking.
+3. Only then: wet-lab assay of the deconvolution panel (with controls) — the only
    thing that can unlock activity-level claims.
 
 ## 7. Live-verification fixes folded in (2026-07-08)
