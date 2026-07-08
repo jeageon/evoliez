@@ -1,7 +1,8 @@
 # V6-4 — CAR Candidate Portfolio (claim-safe mechanism-probe panel)
 
 **Phase:** V6-4 · **Status:** ✅ PASS · **Generator:** [`scripts/build_car_v6_portfolio.py`](../../scripts/build_car_v6_portfolio.py)
-**Deliverables:** [`outputs/car_v6/wetlab_plate_24.csv`](../../outputs/car_v6/wetlab_plate_24.csv) · [`outputs/car_v6/evidence_cards.json`](../../outputs/car_v6/evidence_cards.json)
+**Deliverables:** [`outputs/car_v6/mechanism_probe_plate.csv`](../../outputs/car_v6/mechanism_probe_plate.csv) · [`outputs/car_v6/evidence_cards.json`](../../outputs/car_v6/evidence_cards.json)
+> Renamed from `wetlab_plate_24.csv` (the ROADMAP_V6 V6-4 deliverable slot) for claim-safety: a file named "wetlab_plate" reads as a validated experimental recommendation, which this hypothesis-grade panel is not. The CSV carries the same caveat as a leading comment line.
 
 ## What this is — and what it is not
 

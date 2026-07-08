@@ -13,7 +13,7 @@ Composes existing infra: build_evidence_card_v4, write_candidate_cards, claim_gu
 Draws the variant set from configs/car_v5_focused_candidates.csv and attaches the
 V6-2 MD (wt / G430R;S433F;G407K / P438N were run) + V6-3 PMF diagnosis as evidence.
 
-Outputs: outputs/car_v6/{wetlab_plate_24.csv, evidence_cards.json},
+Outputs: outputs/car_v6/{mechanism_probe_plate.csv, evidence_cards.json},
 docs/car_v6/car_candidate_portfolio.md
 """
 from __future__ import annotations
@@ -202,17 +202,28 @@ def main() -> int:
     write_candidate_cards(cards, out_dir / "_cards.md", out_dir / "evidence_cards.json")
     (out_dir / "_cards.md").unlink(missing_ok=True)
 
-    # wetlab plate CSV (library_plan schema)
+    # mechanism-probe plate CSV (library_plan schema). NOT named "wetlab_plate":
+    # a file literally called that reads as a validated experimental recommendation,
+    # which this panel is not (reviewer claim-safety note). A leading caveat comment
+    # states the claim boundary in the artifact itself.
     fields = ["plate", "well", "variant_id", "candidate_id", "mutation", "lane",
               "all_lanes", "why_include", "risk", "expected_information_gain",
               "assay_priority", "codon_design_note"]
-    with (out_dir / "wetlab_plate_24.csv").open("w", newline="") as fh:
+    caveat = ("# hypothesis-grade mechanism-probe panel; screening-level "
+              "reaction-geometry evidence only. Assay deconvolution variants + "
+              "controls together. Purpose is mechanism hypothesis-probing, not lead "
+              "validation. Fulfils the ROADMAP_V6 V6-4 plate deliverable "
+              "(renamed from wetlab_plate_24.csv for claim-safety). "
+              "See docs/car_v6/car_candidate_portfolio.md")
+    plate_path = out_dir / "mechanism_probe_plate.csv"
+    with plate_path.open("w", newline="") as fh:
+        fh.write(caveat + "\n")
         w = csv.DictWriter(fh, fieldnames=fields)
         w.writeheader()
         w.writerows(plate_rows)
 
-    # final ClaimGuard gate on the CSV content as a whole
-    cg.assert_report_clean((out_dir / "wetlab_plate_24.csv").read_text(), prov)
+    # final ClaimGuard gate on the CSV content as a whole (caveat line included)
+    cg.assert_report_clean(plate_path.read_text(), prov)
 
     n_A = sum(1 for r in plate_rows if r["assay_priority"] == "A")
     n_ctrl = sum(1 for r in plate_rows if r["assay_priority"] == "control")
@@ -221,7 +232,7 @@ def main() -> int:
           f"{len(plate_rows)-n_A-n_ctrl} probes)")
     print(f"cards: {len(cards)} (all L0_uncalibrated); "
           f"PMF verdict={pmf.get('verdict')}; ClaimGuard: clean")
-    print(f"wrote {out_dir}/wetlab_plate_24.csv + evidence_cards.json")
+    print(f"wrote {out_dir}/mechanism_probe_plate.csv + evidence_cards.json")
     return 0
 
 
