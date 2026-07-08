@@ -16,6 +16,41 @@ def test_negated_safe_english():
     assert cg.lint_text("This workflow does not predict kcat or kcat/KM.") == []
 
 
+def test_roadmap_v6_section13_all_forbidden_caught():
+    """Gate 4 (no overclaim possible): EVERY phrase in ROADMAP_V6 §13's forbidden
+    list must be rejected with no wet-lab evidence. Regression guard for a real hole
+    found in live V6 verification (only 2 of 6 were caught)."""
+    from evoliez.ranking.claim_guard import ClaimProvenance
+    prov = ClaimProvenance()  # no wet-lab -> nothing unlocked
+    forbidden = [
+        "activity improved", "kcat improved", "catalytically validated",
+        "validated lead", "reduced activation barrier", "experimentally active",
+    ]
+    for phrase in forbidden:
+        with pytest.raises(AssertionError):
+            cg.assert_report_clean(f"The lead shows {phrase} in the assay.", prov)
+
+
+def test_roadmap_v6_section13_allowed_language_passes():
+    """The roadmap's *allowed* language must NOT be flagged (no false positives)."""
+    from evoliez.ranking.claim_guard import ClaimProvenance
+    prov = ClaimProvenance()
+    for phrase in ["screening-level reaction-geometry evidence", "near-attack access cost",
+                   "mechanism-probe candidate panel", "hypothesis-grade candidate",
+                   "higher-cost validation recommended"]:
+        cg.assert_report_clean(f"This is {phrase}.", prov)  # must not raise
+
+
+def test_v6_wetlab_unlocks_validation_and_barrier():
+    """The new categories unlock ONLY with replicated wet-lab evidence."""
+    from evoliez.ranking.claim_guard import ClaimProvenance, evaluate, lint_text
+    allow = evaluate(ClaimProvenance(wetlab_replicated=True)).allow()
+    assert cg.CATALYTIC_VALIDATION in allow and cg.ACTIVATION_BARRIER in allow
+    assert lint_text("A validated lead with reduced activation barrier.", allow=allow) == []
+    # without wet-lab, both are forbidden again
+    assert lint_text("A validated lead with reduced activation barrier.") != []
+
+
 def test_synonym_without_banned_token():
     # over-claim with no 'kcat' token
     v = cg.lint_text("The variant is catalytically superior to the wild type.")

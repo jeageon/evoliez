@@ -25,10 +25,13 @@ SHORT_MD_OVERCLAIM = "short_md_interpretation"
 INACTIVE_CLASSIFICATION = "inactive_classification"
 LONG_TERM_STABILITY = "long_term_stability"
 UNQUALIFIED_STRENGTH = "unqualified_strength"   # V5-5: catalysis-implying label words
+CATALYTIC_VALIDATION = "catalytic_validation"   # V6: "validated lead", "experimentally active"
+ACTIVATION_BARRIER = "activation_barrier"       # V6: "reduced activation barrier"
 
 ALL_CATEGORIES = (
     ACTIVITY_IMPROVEMENT, KINETIC_PARAMETER_PREDICTION, SHORT_MD_OVERCLAIM,
     INACTIVE_CLASSIFICATION, LONG_TERM_STABILITY, UNQUALIFIED_STRENGTH,
+    CATALYTIC_VALIDATION, ACTIVATION_BARRIER,
 )
 
 # category -> prohibited-claim regexes (lowercased English; Korean kept literal).
@@ -88,6 +91,23 @@ _PATTERNS = {
         r"\bcatalytic\s+lead\b",
         r"paper[-\s]grade",
         r"\bconfirmed\s+productive\b",
+    ],
+    # V6 roadmap §13 forbidden-before-wet-lab claims the linter previously missed:
+    # "catalytically validated", "validated lead", "experimentally active".
+    CATALYTIC_VALIDATION: [
+        r"catalytically validated",
+        r"\bvalidated\s+(lead|hit|candidate|variant|mutant)\b",
+        r"experimentally (active|validated|confirmed)",
+        r"검증된\s*(리드|후보|변이)",
+        r"실험적으로\s*(활성|검증)",
+    ],
+    # "reduced activation barrier" and paraphrases. The roadmap allows "near-attack
+    # access COST" but NOT any activation-barrier lowering claim before wet-lab.
+    ACTIVATION_BARRIER: [
+        r"(reduce[sd]?|lower(s|ed)?|decrease[sd]?) (the )?activation (barrier|energy)",
+        r"activation (barrier|energy) (is |was |being )?(reduced|lowered|decreased)",
+        r"lower(s|ed)? (the )?(reaction )?barrier",
+        r"활성화\s*(에너지|장벽)\s*(을|이|가)?\s*(낮|감소|저하)",
     ],
 }
 
@@ -254,6 +274,8 @@ def evaluate(provenance) -> ClaimVerdict:
         allowed.add(ACTIVITY_IMPROVEMENT)
         allowed.add(KINETIC_PARAMETER_PREDICTION)
         allowed.add(INACTIVE_CLASSIFICATION)
+        allowed.add(CATALYTIC_VALIDATION)   # "validated lead" is true ONLY with wet-lab
+        allowed.add(ACTIVATION_BARRIER)     # barrier-lowering needs experimental kinetics
     # short-MD / long-term-stability claims need sampling beyond short MD
     if p.enhanced_sampling_or_qmmm or not p.only_short_md:
         allowed.add(SHORT_MD_OVERCLAIM)
