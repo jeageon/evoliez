@@ -98,11 +98,25 @@ def histogram(values, bins: int = 20, lo=None, hi=None) -> dict:
 
 
 def _strip_tags(html_str: str) -> str:
-    """Lightweight HTML -> text for ClaimGuard linting (drops <script>/<style> and tags)."""
+    """Lightweight HTML -> text for ClaimGuard linting. Drops <script>/<style> and tags, but
+    FIRST harvests the human-visible ATTRIBUTE surface (title / alt / aria-label / placeholder /
+    data-* tooltips) and CSS ``content:`` strings and appends them to the linted text — otherwise
+    an over-claim placed in an attribute renders to users (and screen readers) yet never reaches
+    the linter (Fable safety review)."""
     import re as _re
+    # human-visible / assistive attribute names, harvested with quoted AND unquoted values (an
+    # unquoted single-token value like `title=paper-grade` would otherwise stay inside the tag
+    # and be deleted by the tag strip — Fable verification).
+    _a = (r"(?:title|alt|aria-label|aria-description|aria-roledescription|placeholder|"
+          r"value|content|data-[\w-]+)")
+    attrs = _re.findall(rf'(?is)\b{_a}\s*=\s*"([^"]*)"', html_str)
+    attrs += _re.findall(rf"(?is)\b{_a}\s*=\s*'([^']*)'", html_str)
+    attrs += _re.findall(rf"(?is)\b{_a}\s*=\s*([^\s\"'>]+)", html_str)   # unquoted values
+    attrs += _re.findall(r'(?is)content\s*:\s*"([^"]*)"', html_str)      # CSS content: strings
+    attrs += _re.findall(r"(?is)content\s*:\s*'([^']*)'", html_str)
     text = _re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", html_str)
     text = _re.sub(r"(?s)<[^>]+>", " ", text)
-    return _html.unescape(text)
+    return _html.unescape(text + " . " + " . ".join(attrs))
 
 
 def _claimguard_gate(body: str, provenance, strict, allow, title: str) -> str:
@@ -121,10 +135,26 @@ def _claimguard_gate(body: str, provenance, strict, allow, title: str) -> str:
     import logging
     import os
 
-    from evoliez.ranking.claim_guard import evaluate, lint_text
+    from evoliez.ranking.claim_guard import (
+        ACTIVATION_BARRIER, ACTIVITY_IMPROVEMENT, CATALYTIC_VALIDATION, INACTIVE_CLASSIFICATION,
+        KINETIC_PARAMETER_PREDICTION, evaluate, lint_text,
+    )
 
     verdict_allow = set(evaluate(provenance).allow())
-    verdict_allow |= set(allow or ())
+    extra_allow = set(allow or ())
+    verdict_allow |= extra_allow
+    # ``claim_allow`` is a provenance-FREE widening of the verdict (used by doc reports that
+    # QUOTE forbidden phrases as examples). It stays available, but opting out of an activity /
+    # kcat / validated-lead / barrier / inactive category is now logged LOUDLY so the escape
+    # hatch is auditable and never silent (Fable review: close the *silent* backdoor).
+    _sensitive = {ACTIVITY_IMPROVEMENT, KINETIC_PARAMETER_PREDICTION, CATALYTIC_VALIDATION,
+                  ACTIVATION_BARRIER, INACTIVE_CLASSIFICATION}
+    audited = extra_allow & _sensitive
+    if audited:
+        logging.getLogger("evoliez.claim_guard").warning(
+            "report %r: claim_allow provenance-free opt-out of sensitive claim categories %s "
+            "— verify this is a doc report quoting examples, not a real over-claim.",
+            title, sorted(audited))
     viols = lint_text(_strip_tags(body), allow=sorted(verdict_allow))
     if not viols:
         return ""
@@ -147,7 +177,9 @@ def _claimguard_gate(body: str, provenance, strict, allow, title: str) -> str:
 
 def page(title: str, body: str, *, scripts: str = "", claim_provenance=None,
          strict: Optional[bool] = None, claim_allow: Optional[Sequence[str]] = None) -> str:
-    body = _claimguard_gate(body, claim_provenance, strict, claim_allow, title) + body
+    # Lint the <title> TOO (it renders in the browser tab and gallery, previously unguarded):
+    # gate over title + body so a prohibited title raises/banners exactly like body text.
+    body = _claimguard_gate(f"{title}\n{body}", claim_provenance, strict, claim_allow, title) + body
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'

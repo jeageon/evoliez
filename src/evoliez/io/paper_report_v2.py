@@ -29,7 +29,8 @@ def _f(x, nd=3):
     return f"{x:.{nd}f}" if isinstance(x, (int, float)) else "—"
 
 
-def build_paper_report_v2(run_dir) -> str:
+def build_paper_report_v2(run_dir, *, claim_provenance=None,
+                          strict: Optional[bool] = None) -> str:
     RD = Path(run_dir)
     PROV = RD / "reports" / "provenance"
     mc = json.loads((PROV / "md_candidates.json").read_text())
@@ -113,12 +114,17 @@ def build_paper_report_v2(run_dir) -> str:
             "complex (reference cofactor/substrate pose + only the mutation), not a fresh "
             "per-mutant pose search — separates mutation effect from pose-search noise.",
         ]))
-    return kit.page("EvoLiEZ v2 — evidence-class report", body)
+    # claim_provenance=None -> evaluate() floor verdict (nothing unlocked). strict (or the
+    # EVOLIEZ_STRICT_CLAIMS env) makes any prohibited phrasing a hard failure on this
+    # paper-grade deliverable, rather than only a warn banner (Fable review).
+    return kit.page("EvoLiEZ v2 — evidence-class report", body,
+                    claim_provenance=claim_provenance, strict=strict)
 
 
-def write_paper_report_v2(run_dir, out_name: str = "paper_report_v2.html") -> Path:
+def write_paper_report_v2(run_dir, out_name: str = "paper_report_v2.html", *,
+                          claim_provenance=None, strict: Optional[bool] = None) -> Path:
     RD = Path(run_dir)
     out = RD / "reports" / out_name
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(build_paper_report_v2(RD))
+    out.write_text(build_paper_report_v2(RD, claim_provenance=claim_provenance, strict=strict))
     return out
