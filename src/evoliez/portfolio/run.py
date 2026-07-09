@@ -144,7 +144,9 @@ class PortfolioParams:
                  significant_q: float = 0.05, consensus_q: float = 0.10,
                  min_effect_size: float = 0.5, consensus_min_axes: int = 2,
                  tier1_max: int = 80, tier2_max: int = 40, tier3_max: int = 12,
-                 gpu_pool: tuple = (), subset_level: bool = False, seed: int = 0):
+                 gpu_pool: tuple = (), subset_level: bool = False,
+                 protected_hypotheses=None, protected_deconvolution: bool = True,
+                 seed: int = 0):
         self.panel_size = panel_size
         self.strong_q = strong_q
         self.significant_q = significant_q
@@ -156,6 +158,8 @@ class PortfolioParams:
         self.tier3_max = tier3_max
         self.gpu_pool = tuple(gpu_pool)
         self.subset_level = subset_level
+        self.protected_hypotheses = list(protected_hypotheses or [])
+        self.protected_deconvolution = protected_deconvolution
         self.seed = seed
 
 
@@ -211,9 +215,12 @@ def build_portfolio_for_run(run_dir, *, params: Optional[PortfolioParams] = None
     tier_plan = allocate_tiers(bundle, budget=budget)
     _stamp_tiers(bundle, tier_plan)
 
-    # V7-6: mechanism-ranked portfolio + claim-safe report
-    portfolio = _builder.build_portfolio(bundle, panel_size=params.panel_size,
-                                         controls=ctrl, seed=params.seed)
+    # V7-6: mechanism-ranked portfolio + claim-safe report (Layer-1 protected hypotheses forced
+    # in regardless of statistical bands — reviewer breakthrough for hard targets like CAR)
+    portfolio = _builder.build_portfolio(
+        bundle, panel_size=params.panel_size, controls=ctrl,
+        protected=params.protected_hypotheses,
+        protected_deconvolution=params.protected_deconvolution, seed=params.seed)
     prov_card = _claims.ledger_claim_provenance(bundle)
     written = _report(portfolio, bundle, tier_plan, out_dir, prov_card, strict, run_dir.name)
     return {

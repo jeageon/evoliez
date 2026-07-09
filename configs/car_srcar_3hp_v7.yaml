@@ -163,6 +163,25 @@ portfolio:
   tier2_focused_md_max: 40
   tier3_reaction_core_max: 12
   subset_level: true               # expensive reaction-geometry evidence is subset-only
+  # Layer-1 mechanism-protected hypotheses (reviewer breakthrough): CAR's dynamic O->P NAC is
+  # uniformly 0 so no reaction-geometry band forms; these expert hypotheses (the V6 core lead +
+  # its deconvolution, P438/G430 pocket probes, alternative loop hypotheses) are forced into the
+  # panel regardless of statistical bands so the first wet-lab round tests what we actually care
+  # about. protected_deconvolution auto-injects each multipoint's single/pairwise components.
+  protected_deconvolution: true
+  protected_hypotheses:
+    - "G430R;S433F;G407K"          # V6 core multipoint hypothesis (+ auto single/pairwise probes)
+    - "P438N"
+    - "P438R"
+    - "P438K"
+    - "P438Q"
+    - "P438S"
+    - "P438T"
+    - "G430K"
+    - "G430H"
+    - "P438R;G407H"
+    - "Y264F;T265S;G274A"
+    - "T265S;G274A;A275V"
 
 output:
   final_library_size: 96

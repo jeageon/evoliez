@@ -110,15 +110,43 @@ Full pipeline s01→s11 completed on the server (s01–s06b reused from v5; s07�
   does **not** band; a short docking/MD distance is never promoted to a productive NAC on its
   own (§3 Axis 4). The reaction-geometry axis is present-but-uninformative for 19 MD
   candidates (subset-level) and deferred for the rest.
-- **The panel (48 variants, ClaimGuard-clean, `claim_ceiling: L0_hypothesis`):** WT (1),
-  deconvolution of 2 multipoint hypotheses (9), single-site + exploratory probes (32),
-  uncertainty probes (4), design/scalar controls (2). Every variant has a lane + a claim-safe
-  reason-to-test; the tier plan (`v7_tier_plan.json`) records why each expensive calculation
-  ran.
+### Two-layer panel (reviewer breakthrough)
 
-**Interpretation (claim-safe):** V7 correctly refuses to manufacture a "strong lead" from
-uniform/uninformative computational evidence. The deliverable is a mechanism-stratified,
-calibration-ready panel: testing it lets the first wet-lab round estimate which evidence axes
-enrich hits and whether the reaction-geometry signal needs a higher-fidelity tier (enhanced
-sampling / QM-MM) to become discriminating for CAR. Artifacts:
-`runs/srcar_3hp_v7/reports/v7_portfolio.{html,json,csv}` (pulled to `outputs/car_v7/`).
+Because CAR produced **no statistical evidence band**, the panel is emitted in two explicit
+layers (the CSV `panel_layer` column + separate report tables; a `#`-comment caveat is stamped
+into the CSV itself so it can never be mistaken for a lead set):
+
+- **Layer A — statistical evidence-band candidates: EMPTY.** No candidate cleared a strong /
+  significant / consensus band. This is stated, not hidden.
+- **Layer B — mechanism-protected + exploratory (48 variants, ClaimGuard-clean,
+  `claim_ceiling: L0_hypothesis`):**
+  - **Mechanism-protected (28)** — expert hypotheses forced in *regardless of bands*
+    (`portfolio.protected_hypotheses`): the V6 core lead `G430R;S433F;G407K` **and its full
+    single/pairwise deconvolution**, the `P438{N,R,K,Q,S,T}` and `G430{K,H}` pocket probes, and
+    the alternative loop hypotheses `P438R;G407H`, `Y264F;T265S;G274A`, `T265S;G274A;A275V` (+
+    their deconvolution). The un-generated multipoints are synthesised as deferred probes (no
+    fabricated evidence); the generated singles reuse their real ledger.
+  - Deconvolution (9), single-site (5), uncertainty probes (3), design/scalar controls (2), WT (1).
+
+Every variant has a lane + a claim-safe reason-to-test; the tier plan (`v7_tier_plan.json`)
+records why each expensive calculation ran.
+
+**Interpretation (claim-safe):** V7 refuses to manufacture a "strong lead" from
+uniform/uninformative computational evidence — *and* it still delivers the curated mechanism
+hypotheses we want to test. This is a **calibration / mechanism-probe panel, not a
+computationally selected lead set**.
+
+**Round-1 objective = axis calibration, not hit-finding.** Test this panel to learn which
+evidence axes / lanes enrich measured activity, estimate the false-negative rate, and
+deconvolute `G430R / S433F / G407K`. Analyse hit-rate by lane, by tier reached, by deconvolution
+family, and control false-positive rate. Use a **A-domain adenylation assay** (ATP consumption /
+AMP-PPi / 3HP-AMP) *separately* from the full 3-HP→3-HPA reduction assay, so an A-domain
+improvement masked by an R-domain bottleneck is not a false negative. Round-2 then reweights the
+V7 axes by the observed evidence-axis performance (`portfolio.calibration`).
+
+**Next compute (do NOT recompute all candidates):** limit to (A) QM/MM-lite multi-frame stability
+on the protected hypotheses (is the in-line signal a single-frame artifact?), or (B) a 2-D PMF
+(O→Pα distance × Mg-coordination / leaving-group angle) as a Round-2 diagnostic — the 1-D O→Pα
+PMF did not converge. Not more 1-D MD/PMF.
+
+Artifacts: `runs/srcar_3hp_v7/reports/v7_portfolio.{html,json,csv}` (pulled to `outputs/car_v7/`).

@@ -131,9 +131,35 @@ LANE_SINGLE_SITE = "single_site_probe"
 LANE_CONTROL = "control"
 LANE_UNCERTAINTY = "uncertainty_probe"
 LANE_WT = "wt_parental"
+# expert mechanism hypotheses forced into the panel REGARDLESS of statistical bands (Layer 1):
+# when computational evidence produces no significant band, the panel must still carry the
+# curated hypotheses we actually want to deconvolute (e.g. a known multipoint lead + its
+# single/pairwise probes) — they are hypothesis-grade probes, never activity claims.
+LANE_PROTECTED = "mechanism_protected"
 
-ALL_LANES = (LANE_STRONG, LANE_CONSENSUS, LANE_DECONVOLUTION, LANE_SINGLE_SITE,
+ALL_LANES = (LANE_PROTECTED, LANE_STRONG, LANE_CONSENSUS, LANE_DECONVOLUTION, LANE_SINGLE_SITE,
              LANE_CONTROL, LANE_UNCERTAINTY, LANE_WT)
+
+# the two-layer split (ROADMAP_V7 breakthrough / reviewer): statistical-evidence-band panel vs
+# the mechanism-protected + exploratory panel. Used by the report to label each variant's layer.
+PANEL_LAYER_STATISTICAL = "statistical_evidence_band"
+PANEL_LAYER_PROTECTED = "mechanism_protected"
+PANEL_LAYER_EXPLORATORY = "exploratory_probe"
+PANEL_LAYER_CONTROL = "control"
+
+_LANE_TO_LAYER = {
+    LANE_STRONG: PANEL_LAYER_STATISTICAL, LANE_CONSENSUS: PANEL_LAYER_STATISTICAL,
+    LANE_PROTECTED: PANEL_LAYER_PROTECTED,
+    LANE_DECONVOLUTION: PANEL_LAYER_EXPLORATORY, LANE_SINGLE_SITE: PANEL_LAYER_EXPLORATORY,
+    LANE_UNCERTAINTY: PANEL_LAYER_EXPLORATORY,
+    LANE_CONTROL: PANEL_LAYER_CONTROL, LANE_WT: PANEL_LAYER_CONTROL,
+}
+
+
+def panel_layer(lane: str) -> str:
+    """The two-layer classification of a lane (statistical band vs protected vs exploratory vs
+    control) — so a reader (and the CSV) can tell a calibrated candidate from a probe."""
+    return _LANE_TO_LAYER.get(lane, PANEL_LAYER_EXPLORATORY)
 
 
 class _Base(BaseModel):

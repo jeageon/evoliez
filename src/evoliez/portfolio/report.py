@@ -37,7 +37,8 @@ from typing import Any, Dict, List, Optional
 from evoliez.io import _report_kit as kit
 from evoliez.portfolio.ledger import (
     ALL_BANDS, BAND_CONSENSUS, BAND_CONTROL, BAND_DEFERRED, BAND_EXPLORATORY,
-    BAND_SIGNIFICANT, BAND_STRONG, BAND_UNRESOLVED, SEVEN_AXES, ceiling_to_claim_strength,
+    BAND_SIGNIFICANT, BAND_STRONG, BAND_UNRESOLVED, PANEL_LAYER_STATISTICAL, SEVEN_AXES,
+    ceiling_to_claim_strength, panel_layer,
 )
 
 # band -> pill colour (strong warm-through-cool = stronger evidence; deferred = grey).
@@ -54,8 +55,8 @@ _BAND_COLOR = {
 # stable CSV column order (shared PortfolioVariant contract). Any extra key an ``as_rows``
 # implementation emits is appended (sorted) so nothing is silently dropped.
 _CSV_HEADER = [
-    "variant_id", "mutation", "lane", "overall_band", "significant_axes", "tier_reached",
-    "is_control", "control_role", "deconvolution_of", "reason_to_test",
+    "variant_id", "mutation", "lane", "panel_layer", "overall_band", "significant_axes",
+    "tier_reached", "is_control", "control_role", "deconvolution_of", "reason_to_test",
 ]
 
 # allowed, pre-wet-lab phrasing (ROADMAP_V7 §11) — used verbatim so the copy is claim-clean.
@@ -171,31 +172,54 @@ def _band_legend() -> str:
     return kit.legend([(b, _band_color(b)) for b in ALL_BANDS])
 
 
-def _lane_table(portfolio) -> str:
-    variants = list(_get(portfolio, "variants", []) or [])
+def _variant_row(v) -> str:
+    sig = _get(v, "significant_axes", []) or []
+    sig_txt = ", ".join(_pretty_axis(a) for a in sig) if sig else "—"
+    ctl = " <span class=\"cap\">(control)</span>" if _get(v, "is_control", False) else ""
+    deconv = _get(v, "deconvolution_of", None)
+    deconv_txt = (f' <span class="cap">↳ {kit.esc(deconv)}</span>' if deconv else "")
+    return (
+        "<tr>"
+        f"<td>{kit.esc(_get(v, 'variant_id', ''))}{ctl}</td>"
+        f"<td>{kit.esc(_get(v, 'mutation', '') or '—')}</td>"
+        f"<td>{kit.esc(_get(v, 'lane', ''))}{deconv_txt}</td>"
+        f"<td>{_band_pill(_get(v, 'overall_band', BAND_UNRESOLVED))}</td>"
+        f"<td>{kit.esc(sig_txt)}</td>"
+        f"<td>{kit.esc(_get(v, 'tier_reached', ''))}</td>"
+        f"<td>{kit.esc(_get(v, 'reason_to_test', '') or '—')}</td>"
+        "</tr>")
+
+
+def _subtable(title: str, intro: str, variants) -> str:
     head = ("<tr><th>Variant</th><th>Mutation</th><th>Lane</th><th>Overall band</th>"
             "<th>Significant axes</th><th>Tier reached</th><th>Reason to test</th></tr>")
-    rows = []
-    for v in variants:
-        sig = _get(v, "significant_axes", []) or []
-        sig_txt = ", ".join(_pretty_axis(a) for a in sig) if sig else "—"
-        ctl = " <span class=\"cap\">(control)</span>" if _get(v, "is_control", False) else ""
-        deconv = _get(v, "deconvolution_of", None)
-        deconv_txt = (f' <span class="cap">↳ {kit.esc(deconv)}</span>' if deconv else "")
-        rows.append(
-            "<tr>"
-            f"<td>{kit.esc(_get(v, 'variant_id', ''))}{ctl}</td>"
-            f"<td>{kit.esc(_get(v, 'mutation', '') or '—')}</td>"
-            f"<td>{kit.esc(_get(v, 'lane', ''))}{deconv_txt}</td>"
-            f"<td>{_band_pill(_get(v, 'overall_band', BAND_UNRESOLVED))}</td>"
-            f"<td>{kit.esc(sig_txt)}</td>"
-            f"<td>{kit.esc(_get(v, 'tier_reached', ''))}</td>"
-            f"<td>{kit.esc(_get(v, 'reason_to_test', '') or '—')}</td>"
-            "</tr>")
-    body = "".join(rows) or ('<tr><td colspan="7">No variants in panel.</td></tr>')
-    return ('<h2>Experimental panel — lanes</h2>' + _band_legend()
-            + '<div class="scroll"><table>' + head + '<tbody>' + body
-            + '</tbody></table></div>')
+    body = "".join(_variant_row(v) for v in variants) or (
+        '<tr><td colspan="7"><em>— none in this layer —</em></td></tr>')
+    return (f'<h3>{title}</h3><p class="cap">{intro}</p>'
+            '<div class="scroll"><table>' + head + '<tbody>' + body + '</tbody></table></div>')
+
+
+def _lane_table(portfolio) -> str:
+    """Two-layer view (reviewer breakthrough): Layer A = statistically supported evidence-band
+    candidates; Layer B = mechanism-protected hypotheses + exploratory / control probes. On a
+    hard target Layer A can be empty — that is stated explicitly rather than hidden."""
+    variants = list(_get(portfolio, "variants", []) or [])
+    layer_a = [v for v in variants if panel_layer(_get(v, "lane", "")) == PANEL_LAYER_STATISTICAL]
+    layer_b = [v for v in variants if v not in layer_a]
+    a_intro = ("Candidates that cleared a calibrated statistical evidence band (strong / "
+               "significant / consensus q against the axis null). These are prioritized on the "
+               "strength of computational evidence.")
+    if not layer_a:
+        a_intro = ("No candidate cleared a strong / significant / consensus statistical evidence "
+                   "band in this run — this layer is empty. The panel below is a calibration / "
+                   "mechanism-probe panel, not a set of computationally selected leads.")
+    b_intro = ("Expert mechanism-protected hypotheses (forced in regardless of bands), their "
+               "deconvolution probes, clean single-site probes, uncertainty probes, and "
+               "controls — the calibration layer that lets the first wet-lab round estimate "
+               "which evidence axes enrich hits.")
+    return ('<h2>Experimental panel — two layers</h2>' + _band_legend()
+            + _subtable("Layer A — statistical evidence-band candidates", a_intro, layer_a)
+            + _subtable("Layer B — mechanism-protected &amp; exploratory panel", b_intro, layer_b))
 
 
 def _per_axis_table(bundle) -> str:
@@ -277,7 +301,7 @@ def _csv_cell(value: Any) -> str:
     return str(value)
 
 
-def _write_csv(portfolio, path: Path) -> None:
+def _write_csv(portfolio, path: Path, *, caveat: Optional[str] = None) -> None:
     rows: List[Dict[str, Any]] = []
     as_rows = _get(portfolio, "as_rows", None)
     raw = as_rows() if callable(as_rows) else []
@@ -292,6 +316,12 @@ def _write_csv(portfolio, path: Path) -> None:
                 extra.append(k)
     header = _CSV_HEADER + sorted(extra)   # sorted -> deterministic column order
     with path.open("w", newline="", encoding="utf-8") as fh:
+        # a leading #-comment carries the mandatory no-band caveat INTO the CSV itself (reviewer
+        # directive), so an experimenter reading only the CSV cannot mistake it for a lead set.
+        # Standard readers skip #-lines (pandas comment='#'); the per-row `panel_layer` column
+        # is the parseable, per-candidate version of the same distinction.
+        if caveat:
+            fh.write(f"# {caveat}\n")
         writer = csv.writer(fh)
         writer.writerow(header)
         for r in rows:
@@ -343,7 +373,17 @@ def write_portfolio_report(portfolio, bundle, out_dir, *, claim_provenance=None,
     json_path = out / _JSON_FILE
     json_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
+    # surface the no-band caveat (set by the builder when 0 statistical bands) into the CSV
+    lane_counts = _get(portfolio, "lane_counts", {}) or {}
+    n_statistical = int(lane_counts.get("strong_significant", 0)) + int(
+        lane_counts.get("cross_axis_consensus", 0))
+    caveat = None
+    if n_statistical == 0:
+        notes = _get(portfolio, "notes", []) or []
+        caveat = next((n for n in notes if "lead set" in n),
+                      "No statistically significant evidence band in this run; calibration / "
+                      "mechanism-probe panel, not a computationally selected lead set.")
     csv_path = out / _CSV_FILE
-    _write_csv(portfolio, csv_path)
+    _write_csv(portfolio, csv_path, caveat=caveat)
 
     return {"html": str(html_path), "json": str(json_path), "csv": str(csv_path)}

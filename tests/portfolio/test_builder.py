@@ -72,9 +72,12 @@ def _controls():
 
 
 def test_default_lane_quota_sums_to_panel_size():
+    from evoliez.portfolio.ledger import LANE_PROTECTED
     for size in (24, 32, 48):
         q = default_lane_quota(size)
-        assert set(q) == set(ALL_LANES)
+        # the quota covers the standard lanes; mechanism-protected is forced in OUTSIDE the
+        # quota (never trimmed), so it is not part of the budget sum.
+        assert set(q) == set(ALL_LANES) - {LANE_PROTECTED}
         assert sum(q.values()) == size
         assert q[LANE_WT] == 1
     with pytest.raises(ValueError):
@@ -171,9 +174,9 @@ def test_as_rows_keys():
     port = build_portfolio(_bundle(), panel_size=48, controls=_controls(), seed=0)
     rows = port.as_rows()
     assert rows
-    expected = {"variant_id", "mutation", "lane", "overall_band", "reason_to_test",
-                "is_control", "control_role", "deconvolution_of", "significant_axes",
-                "tier_reached"}
+    expected = {"variant_id", "mutation", "lane", "panel_layer", "overall_band",
+                "reason_to_test", "is_control", "control_role", "deconvolution_of",
+                "significant_axes", "tier_reached"}
     for row in rows:
         assert set(row) == expected
 

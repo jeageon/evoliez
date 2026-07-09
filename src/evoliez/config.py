@@ -620,6 +620,13 @@ class PortfolioConfig(_Base):
     tier3_reaction_core_max: int = 12
     # when expensive evidence was run on a SUBSET only, q-values are subset-level (§4.2/Gate 5)
     subset_level: bool = False
+    # Layer-1 mechanism-protected hypotheses (reviewer breakthrough): expert-curated mutation
+    # strings forced into the panel EVEN WHEN no candidate reaches a statistical band — so a
+    # hard target (e.g. CAR, where the reaction-geometry axis is uninformative) still tests the
+    # hypotheses we care about. `protected_deconvolution` also injects each multipoint's
+    # single/pairwise probes. Empty (default) => behaviour unchanged.
+    protected_hypotheses: List[str] = Field(default_factory=list)
+    protected_deconvolution: bool = True
 
     @model_validator(mode="after")
     def _check_panel(self) -> "PortfolioConfig":

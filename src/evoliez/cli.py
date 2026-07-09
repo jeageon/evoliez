@@ -282,6 +282,8 @@ def portfolio(
         tier2_max=pconf.tier2_focused_md_max if pconf else 40,
         tier3_max=pconf.tier3_reaction_core_max if pconf else 12,
         subset_level=subset_level or (pconf.subset_level if pconf else False),
+        protected_hypotheses=(pconf.protected_hypotheses if pconf else []),
+        protected_deconvolution=(pconf.protected_deconvolution if pconf else True),
     )
     result = build_portfolio_for_run(
         run_dir, params=params, mechanism=mechanism, target_id=target_id,

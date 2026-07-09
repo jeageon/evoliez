@@ -42,9 +42,9 @@ from pydantic import BaseModel, Field
 from evoliez.experimental.deconvolution import deconvolution_set
 from evoliez.portfolio.ledger import (
     AXIS_UNCERTAINTY, BAND_CONSENSUS, BAND_CONTROL, BAND_SIGNIFICANT, BAND_STRONG,
-    CLAIM_L0_HYPOTHESIS, CLAIM_L1_SCREENING, LANE_CONSENSUS, LANE_CONTROL,
-    LANE_DECONVOLUTION, LANE_SINGLE_SITE, LANE_STRONG, LANE_UNCERTAINTY, LANE_WT, ALL_LANES,
-    EvidenceLedgerV7, LedgerBundle, band_rank, strongest_band,
+    BAND_UNRESOLVED, CLAIM_L0_HYPOTHESIS, CLAIM_L1_SCREENING, LANE_CONSENSUS, LANE_CONTROL,
+    LANE_DECONVOLUTION, LANE_PROTECTED, LANE_SINGLE_SITE, LANE_STRONG, LANE_UNCERTAINTY,
+    LANE_WT, ALL_LANES, EvidenceLedgerV7, LedgerBundle, band_rank, panel_layer, strongest_band,
 )
 
 if TYPE_CHECKING:                               # sibling module (portfolio.controls); the
@@ -67,8 +67,16 @@ _LANE_QUOTA = {
 }
 
 # When a custom over-subscribed quota forces a trim, cut from these lanes first (weakest
-# member first); WT / control / deconvolution are protected (ROADMAP_V7 §8).
+# member first); WT / control / deconvolution / mechanism-protected keep their reserved seats.
 _TRIM_ORDER = (LANE_UNCERTAINTY, LANE_CONSENSUS, LANE_SINGLE_SITE, LANE_STRONG)
+
+# Mandatory caveat when the run produced NO statistical evidence band (reviewer directive):
+# stated on the panel + surfaced in the CSV so an experimenter can never mistake a calibration
+# panel for a computationally selected lead set. Claim-safe (no activity/kcat/validated-lead).
+_NO_BAND_CAVEAT = (
+    "No candidate reached a strong / significant / consensus statistical evidence band in this "
+    "run; this panel is designed for calibration and mechanism probing, not as a computationally "
+    "selected lead set.")
 
 
 class _Base(BaseModel):
@@ -108,6 +116,7 @@ class Portfolio(_Base):
                 "variant_id": v.variant_id,
                 "mutation": v.mutation,
                 "lane": v.lane,
+                "panel_layer": panel_layer(v.lane),   # statistical band vs protected vs probe
                 "overall_band": v.overall_band,
                 "reason_to_test": v.reason_to_test,
                 "is_control": v.is_control,
@@ -156,6 +165,17 @@ def _significant(led: EvidenceLedgerV7) -> List[str]:
 def _reason_wt() -> str:
     return ("Wild-type parental reference: baseline calibration control for the "
             "experimental panel.")
+
+
+def _reason_protected(mutation: str, *, is_deconv: bool, parent: str = "") -> str:
+    if is_deconv:
+        return (f"Mechanism-protected deconvolution probe of the expert hypothesis {parent}: "
+                f"hypothesis-grade mechanism probe, included regardless of statistical bands to "
+                f"attribute the hypothesis to its component substitutions; prioritized for "
+                f"experimental testing.")
+    return (f"Mechanism-protected expert hypothesis: hypothesis-grade mechanism probe, forced "
+            f"into the panel independent of computational evidence bands so the curated "
+            f"hypothesis is experimentally tested; prioritized for experimental testing.")
 
 
 def _reason_strong(led: EvidenceLedgerV7) -> str:
@@ -216,9 +236,43 @@ def _cheap_composite(led: EvidenceLedgerV7) -> float:
 
 
 # --- the builder ---------------------------------------------------------------------
+def _place_protected(picks: List[PortfolioVariant], protected: List[str],
+                     do_deconv: bool, by_mutation: Dict[str, EvidenceLedgerV7],
+                     take) -> int:
+    """Place the mechanism-protected hypotheses (Layer 1). Each protected mutation uses its real
+    ledger when the universe generated it, else a SYNTHESISED deferred probe (variant_id
+    ``protected::<mut>``, all axes deferred — no fabricated evidence). With ``do_deconv`` each
+    multipoint hypothesis also injects its single/pairwise components. Returns the count placed."""
+    n = 0
+    for raw in protected:
+        parent = (raw or "").strip()
+        if not parent:
+            continue
+        members = [(parent, False, "")]
+        if do_deconv and _is_multipoint(parent):
+            members += [(s.strip(), True, parent) for s in deconvolution_set(parent)
+                        if s.strip() and s.strip() != parent]
+        for mut, is_deconv, par in members:
+            led = by_mutation.get(mut)
+            vid = led.variant_id if led is not None else f"protected::{mut}"
+            if not take(mut, vid):
+                continue
+            picks.append(PortfolioVariant(
+                variant_id=vid, mutation=mut, lane=LANE_PROTECTED,
+                overall_band=(led.overall_band if led is not None else BAND_UNRESOLVED),
+                reason_to_test=_reason_protected(mut, is_deconv=is_deconv, parent=par),
+                deconvolution_of=(par or None),
+                significant_axes=(_significant(led) if led is not None else []),
+                tier_reached=(led.tier_reached if led is not None else "tier0_cheap")))
+            n += 1
+    return n
+
+
 def build_portfolio(bundle: LedgerBundle, *, panel_size: int = 48,
                     controls: Optional[List["ControlSpec"]] = None,
                     lane_quota: Optional[Dict[str, int]] = None,
+                    protected: Optional[List[str]] = None,
+                    protected_deconvolution: bool = True,
                     seed: int = 0) -> Portfolio:
     """Assemble a mechanism-ranked, claim-safe sub-50 panel from calibrated evidence bands.
 
@@ -262,6 +316,14 @@ def build_portfolio(bundle: LedgerBundle, *, panel_size: int = 48,
         picks.append(PortfolioVariant(
             variant_id=wt_id, mutation=wt_mut, lane=LANE_WT, overall_band=BAND_CONTROL,
             reason_to_test=_reason_wt(), is_control=True, control_role=_WT_CONTROL_TYPE))
+
+    # 1.5) MECHANISM-PROTECTED hypotheses (Layer 1, reviewer breakthrough) — forced in BEFORE the
+    #      statistical lanes and never trimmed, so a hard target with 0 significant bands still
+    #      tests the curated hypotheses. Each protected mutation uses its real ledger if the
+    #      universe generated it, else a synthesised deferred probe (no fabricated evidence);
+    #      with protected_deconvolution, each multipoint's single/pairwise components are added.
+    n_protected = _place_protected(
+        picks, protected or [], protected_deconvolution, by_mutation, _take)
 
     # 2) strong / significant overall band (rank by band, then q, then id).
     strong = sorted(
@@ -394,11 +456,16 @@ def build_portfolio(bundle: LedgerBundle, *, panel_size: int = 48,
         lane_counts[v.lane] = lane_counts.get(v.lane, 0) + 1
 
     ceiling = _panel_claim_ceiling(picks)
+    n_statistical = lane_counts.get(LANE_STRONG, 0) + lane_counts.get(LANE_CONSENSUS, 0)
     notes = [
         f"panel_size={panel_size}; seed={seed}; placed={len(picks)}",
         "lane_quota=" + ", ".join(f"{k}:{quota.get(k, 0)}" for k in ALL_LANES),
         "claim ceiling never exceeds L1_screening pre-wet-lab (ROADMAP_V7 §8/§11).",
     ]
+    if n_protected:
+        notes.append(f"{n_protected} mechanism-protected hypothesis probe(s) forced in (Layer 1).")
+    if n_statistical == 0:
+        notes.insert(0, _NO_BAND_CAVEAT)
     return Portfolio(
         panel_size=panel_size, target_id=bundle.target_id,
         mechanism_class=bundle.mechanism_class, variants=picks,
