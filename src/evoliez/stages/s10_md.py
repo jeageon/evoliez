@@ -236,6 +236,76 @@ class MDStage(Stage):
             _apply_charge_policy(mc)
             _prebuilt[cand.candidate_id] = (mc, boltz_mc, anchored_used)
 
+        # ROADMAP_V5 E4a — umbrella/PMF access-barrier sweep (ENV-gated, purge-safe: NO Config field,
+        # so config_sha1 is unchanged and no existing run is purged). EVOLIEZ_E4A_UMBRELLA="dmin,dmax,n,k"
+        # runs ONE biased MD per (candidate, window) reusing the SAME anchored complexes + explicit
+        # solvent + Mg build as the normal path; each writes umbrella_samples.json (the full O_nuc->Palpha
+        # distance+angle timeseries) for the WHAM driver. The normal single-MD scoring is skipped (this is
+        # a diagnostic run; drive with `--to s10`). The angle is NEVER biased -> cannot manufacture NAC.
+        import glob as _glob
+        import os as _os
+        _e4a_env = _os.environ.get("EVOLIEZ_E4A_UMBRELLA")
+        if (_e4a_env and backend is Backend.real and not ctx.dry_run and nac_enabled):
+            from evoliez.md.umbrella import umbrella_windows
+            try:
+                _p = [float(x) for x in _e4a_env.split(",")]
+                _dmin, _dmax, _nw, _uk = _p[0], _p[1], int(_p[2]), _p[3]
+            except Exception as _pex:      # noqa: BLE001
+                raise ValueError("EVOLIEZ_E4A_UMBRELLA must be 'dmin,dmax,n,k' (A,A,int,kcal/mol/A^2), "
+                                 "got %r (%s)" % (_e4a_env, _pex))
+            _windows = umbrella_windows(_dmin, _dmax, _nw)
+            # WT-only calibration phase (EVOLIEZ_E4A_WT_ONLY=1): sample ONLY the WT reference so the
+            # protocol (k, window set) can be tuned to convergence on one candidate before it is LOCKED
+            # and applied to the mutants. WT doubles as the ΔNAC / access-cost reference baseline.
+            _sweep = [("_wt_reference", wt)]
+            if not _os.environ.get("EVOLIEZ_E4A_WT_ONLY"):
+                _sweep += [(c.candidate_id, _prebuilt[c.candidate_id][0]) for c in candidates]
+            self.log.info("s10 E4a UMBRELLA sweep: %d candidate(s) x %d windows [%.2f..%.2f A] k=%.1f "
+                          "(explicit=%s, Mg=%s)", len(_sweep), len(_windows), _dmin, _dmax, _uk,
+                          getattr(mdcfg, "solvent", "?"), _metal_requested)
+            _e4a_manifest = {"windows": _windows, "k_kcal": _uk, "candidates": [],
+                             "solvent": getattr(mdcfg, "solvent", None),
+                             "metal_requested": _metal_requested}
+            # Build the (candidate, window) task list, skipping windows already sampled (idempotent).
+            _e4a_tasks = []
+            for _cid, _mc in _sweep:
+                for _d0 in _windows:
+                    _wd = ctx.paths.md_candidate(_cid) / "e4a" / ("window_%.2f" % _d0)
+                    _wd.mkdir(parents=True, exist_ok=True)
+                    if not (_wd / "umbrella_samples.json").exists():
+                        _e4a_tasks.append((_cid, _mc, str(_wd), 0.0, (_d0, _uk)))
+            # GPU fan-out (EVOLIEZ_E4A_GPUS="0,1,2") — each window is an INDEPENDENT biased MD, so the
+            # proven spawn+CUDA-pin batch scheduler distributes them safely (disjoint window dirs, no
+            # shared state; PR_SET_PDEATHSIG kills orphans). Serial fallback otherwise. Purge-safe (ENV).
+            _e4a_gpus = [g.strip() for g in (_os.environ.get("EVOLIEZ_E4A_GPUS") or "").split(",") if g.strip()]
+            if len(_e4a_gpus) > 1 and _e4a_tasks and backend is Backend.real:
+                from evoliez.adapters.md_batch import run_md_batches
+                self.log.info("s10 E4a sweep FAN-OUT across GPUs %s (%d task(s))", _e4a_gpus, len(_e4a_tasks))
+                run_md_batches(_e4a_tasks, _e4a_gpus, mdcfg,
+                               ligand_cache_dir=str(ligand_cache_dir) if ligand_cache_dir else None,
+                               extra_specs=extra_specs, catalytic=catalytic,
+                               metal_requested=_metal_requested)
+            else:
+                for _cid, _mc, _wd, _inst, _umb in _e4a_tasks:
+                    try:
+                        run_md(_mc, _cid, mdcfg, _Path(_wd), instability=0.0,
+                               catalytic_positions=catalytic, backend=backend, dry_run=False,
+                               ligand_cache_dir=ligand_cache_dir, extra_ligands=extra_specs,
+                               metal_requested=_metal_requested, umbrella=_umb)
+                    except Exception as _mex:   # one window must never kill the sweep
+                        self.log.warning("E4a window %s for %s failed: %s", _umb[0], _cid, _mex)
+            # Count sampled windows per candidate FROM DISK (fan-out returns are irrelevant here).
+            for _cid, _mc in _sweep:
+                _got = len(_glob.glob(str(ctx.paths.md_candidate(_cid) / "e4a" / "window_*" / "umbrella_samples.json")))
+                self.log.info("s10 E4a: %s -> %d/%d windows sampled", _cid, _got, len(_windows))
+                _e4a_manifest["candidates"].append({"cid": _cid, "windows_sampled": _got})
+            _mf = ctx.paths.md / "e4a_manifest.json"
+            _mf.write_text(__import__("json").dumps(_e4a_manifest, indent=2), encoding="utf-8")
+            ctx.put("e4a_umbrella", _e4a_manifest)
+            self.log.info("s10 E4a umbrella sweep complete -> %s (analyse with "
+                          "scripts/e4a_umbrella_pmf.py)", _mf)
+            return
+
         # Phase 1: run_md — fanned across compute.gpu_pool when >1 real GPU, else serial
         # (byte-identical to the previous per-candidate loop). MDResult is picklable.
         from evoliez.utils.compute import gpu_pool_list

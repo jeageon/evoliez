@@ -43,8 +43,17 @@ HEAD_SPECS: List[HeadSpec] = [
     HeadSpec("P(reaction_geometry_nonneg)", "nac_nonneg"),
 ]
 
-# head names that would be over-claims if they ever appeared (a mechanical guard)
-FORBIDDEN_HEAD_TOKENS = ("kcat", "km", "activity", "barrier", "transition_state", "efficiency")
+# head names that would be over-claims if they ever appeared (a mechanical guard). Includes the
+# common catalysis/kinetics SYNONYMS a head could hide behind (Fable review — the denylist
+# previously missed turnover/vmax/productivity/... so an activity-implying head name slipped past).
+FORBIDDEN_HEAD_TOKENS = (
+    "kcat", "k_cat", "km", "k_m", "activity", "barrier", "transition_state", "efficiency",
+    "turnover", "vmax", "v_max", "productivity", "conversion", "reaction_rate", "rate_constant",
+    "cataly",  # covers catalytic / catalysis / catalyst / catalyze (Fable verification)
+    "selectivity", "specific_activity", "titer", "koff", "kon", "ic50", "flux",
+    "fitness", "yield", "growth", "activation", "potency", "efficacy", "kobs",
+    "product_formation", "gain_of_function",
+)
 
 
 def assert_heads_are_priors(heads: Sequence[HeadSpec] = tuple(HEAD_SPECS)) -> None:

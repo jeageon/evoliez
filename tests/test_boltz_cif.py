@@ -36,7 +36,7 @@ def test_boltz_forces_pdb_output_format():
 def test_parse_cif_atom_site_loop(tmp_path):
     f = tmp_path / "pred.cif"
     f.write_text(_CIF)
-    residues, lig = _parse_cif_atoms(f)
+    residues, lig, _extra = _parse_cif_atoms(f)   # 3-tuple: (+ per-chain extra ligand atoms)
     assert [r.index for r in residues] == [1, 2]          # CA only
     assert residues[0].ca == (1.5, 2.5, 3.5)
     assert len(lig) == 2 and lig[0].element == "O"        # HETATM ligand

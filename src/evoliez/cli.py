@@ -242,6 +242,62 @@ def doctor(
 
 
 @app.command()
+def portfolio(
+    run_dir: Path = typer.Option(..., "--run", help="a completed run directory (runs/<name>)"),
+    config: Optional[Path] = typer.Option(
+        None, "-c", "--config", help="run config (for mechanism + panel settings)"),
+    panel_size: Optional[int] = typer.Option(None, "--panel", help="24 | 32 | 48"),
+    strict: bool = typer.Option(
+        False, "--strict", help="fail (non-zero) if any report trips ClaimGuard"),
+    subset_level: bool = typer.Option(
+        False, "--subset-level",
+        help="label q-values subset-level (expensive tiers ran on a subset only)"),
+) -> None:
+    """Build the V7 mechanism-ranked portfolio from a completed run (ROADMAP_V7).
+
+    Reads the run's candidate provenance, computes the all-candidate cheap seven-axis
+    ledger, calibrates statistical evidence bands, plans the multi-fidelity compute
+    allocation, and writes a claim-safe <50-variant experimental panel + reports.
+    """
+    setup_logging()
+    from evoliez.portfolio.run import PortfolioParams, build_portfolio_for_run
+
+    mechanism = None
+    target_id = mech_class = ""
+    pconf = None
+    if config is not None:
+        cfg = load_config(config)
+        mechanism = cfg.mechanism
+        target_id = cfg.input.target_id
+        mech_class = cfg.mechanism.reaction.cls if cfg.mechanism else ""
+        pconf = cfg.portfolio
+    params = PortfolioParams(
+        panel_size=panel_size or (pconf.panel_size if pconf else 48),
+        strong_q=pconf.strong_q if pconf else 0.03,
+        significant_q=pconf.significant_q if pconf else 0.05,
+        consensus_q=pconf.consensus_q if pconf else 0.10,
+        min_effect_size=pconf.min_effect_size if pconf else 0.5,
+        consensus_min_axes=pconf.consensus_min_axes if pconf else 2,
+        tier1_max=pconf.tier1_gpu_broad_max if pconf else 80,
+        tier2_max=pconf.tier2_focused_md_max if pconf else 40,
+        tier3_max=pconf.tier3_reaction_core_max if pconf else 12,
+        subset_level=subset_level or (pconf.subset_level if pconf else False),
+        protected_hypotheses=(pconf.protected_hypotheses if pconf else []),
+        protected_deconvolution=(pconf.protected_deconvolution if pconf else True),
+    )
+    result = build_portfolio_for_run(
+        run_dir, params=params, mechanism=mechanism, target_id=target_id,
+        mechanism_class=mech_class, strict=strict or None)
+    pf = result["portfolio"]
+    typer.echo(f"V7 portfolio: {len(pf.variants)} variants over "
+               f"{result['n_candidates']} candidates (panel {pf.panel_size}).")
+    for lane, n in sorted(pf.lane_counts.items()):
+        typer.echo(f"  {lane:<22} {n}")
+    for kind, path in result["artifacts"].items():
+        typer.echo(f"  {kind:<10} {path}")
+
+
+@app.command()
 def version() -> None:
     typer.echo(__version__)
 

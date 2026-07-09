@@ -364,7 +364,15 @@ def _analyze(workdir: Path, cfg: MDConfig, catalytic_positions: Sequence[int],
     drift = 0.0
     mdout = workdir / "prod.out"
     if mdout.exists():
-        et = re.findall(r"Etot\s*=\s*(-?\d+\.\d+)", mdout.read_text())
+        txt = mdout.read_text()
+        # pmemd's trailing "A V E R A G E S" / "R M S  F L U C T U A T I O N S"
+        # blocks carry Etot lines that are NOT trajectory frames; including the
+        # RMS-fluctuation Etot as the "last" value poisons the drift (a stable run
+        # reads ~100%). Truncate before the summary.
+        cut = txt.find("A V E R A G E S")
+        if cut > 0:
+            txt = txt[:cut]
+        et = re.findall(r"Etot\s*=\s*(-?\d+\.\d+)", txt)
         if len(et) >= 2 and float(et[0]) != 0.0:
             drift = abs((float(et[-1]) - float(et[0])) / float(et[0]))
     return {

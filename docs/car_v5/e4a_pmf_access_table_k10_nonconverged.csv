@@ -1,0 +1,4 @@
+cid,access_cost_kcal,near_attack_angle_occ,n_near_attack,overlap_min,overlap_sufficient,converged,n_windows,claim_ceiling
+_wt_reference,8.453772910253361,1.0,35,0.0,False,False,9,screening-level reaction-geometry access evidence (NOT activity/kcat/activation-barrier)
+mut_00000,7.712019896086208,0.9534883720930233,43,0.0,False,False,10,screening-level reaction-geometry access evidence (NOT activity/kcat/activation-barrier)
+mut_00001,6.93568436493122,0.7424242424242424,66,0.0,False,False,10,screening-level reaction-geometry access evidence (NOT activity/kcat/activation-barrier)

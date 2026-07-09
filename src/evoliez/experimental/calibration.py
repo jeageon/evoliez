@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -14,9 +14,15 @@ from evoliez.ranking.claim_guard import ClaimProvenance
 from .assay_schema import AssayRecord, load_assay_csv
 from .metrics import hit_rate_by_lane, low_ml_false_negative_rate, replicate_variance
 
+# the ONLY claim levels a run can carry (uncalibrated / screened / calibrated). Constrained as a
+# Literal so a typo / hand-built result can never introduce an unrecognised level that a
+# downstream gate would mis-handle. CALIBRATED_LEVELS = the two that permit round-2 AL.
+_CLAIM_LEVEL = Literal["L0_uncalibrated", "L1_screened", "L2_calibrated"]
+CALIBRATED_LEVELS = frozenset({"L1_screened", "L2_calibrated"})
+
 
 class CalibrationResult(BaseModel):
-    claim_level: str = "L0_uncalibrated"
+    claim_level: _CLAIM_LEVEL = "L0_uncalibrated"
     records: List[AssayRecord] = Field(default_factory=list)
     metrics: Dict[str, object] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)

@@ -32,7 +32,7 @@ def test_boltz_pdb_and_cif():
     cx = _parse_real_structure(FX / "boltz" / "model_0.pdb", "AGS", lig)
     assert [r.index for r in cx.structure.residues] == [1, 2, 3]
     assert cx.structure.residues[0].aa == "A"
-    res, latoms = _parse_cif_atoms(FX / "boltz" / "pred.cif")
+    res, latoms, _extra = _parse_cif_atoms(FX / "boltz" / "pred.cif")   # 3-tuple API
     assert [r.index for r in res] == [1, 2, 3]
     assert len(latoms) == 2 and latoms[0].element == "O"
 

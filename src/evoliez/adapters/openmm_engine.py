@@ -1151,10 +1151,11 @@ def _run_real(
                 from evoliez.md.nac import ReactiveSpec, resolve_reactive_indices
                 _spec = ReactiveSpec(
                     donor_smarts=nac_cfg.donor_smarts, acceptor_smarts=nac_cfg.acceptor_smarts,
+                    donor_protein=getattr(nac_cfg, "donor_protein", None),
                     donor_idx=nac_cfg.donor_idx, acceptor_idx=nac_cfg.acceptor_idx,
                     transfer_is_h=nac_cfg.transfer_is_h)
                 _rdb = [(off.to_rdkit(), gidx) for off, gidx in mol_blocks]
-                _nmap = resolve_reactive_indices(_rdb, _spec)
+                _nmap = resolve_reactive_indices(_rdb, _spec, topology=modeller.topology)
                 if _nmap and "donor_heavy" in _nmap and "acceptor" in _nmap:
                     _posA = np.array(modeller.positions.value_in_unit(unit.angstrom))
                     _nuc, _pha = _posA[_nmap["donor_heavy"]], _posA[_nmap["acceptor"]]
@@ -1235,6 +1236,7 @@ def _run_real(
                 nac_spec = ReactiveSpec(
                     donor_smarts=nac_cfg.donor_smarts,
                     acceptor_smarts=nac_cfg.acceptor_smarts,
+                    donor_protein=getattr(nac_cfg, "donor_protein", None),
                     donor_idx=nac_cfg.donor_idx,
                     acceptor_idx=nac_cfg.acceptor_idx,
                     transfer_is_h=nac_cfg.transfer_is_h,
@@ -1246,7 +1248,7 @@ def _run_real(
                     retention_min_fraction=getattr(nac_cfg, "retention_min_fraction", 0.8),
                 )
                 rd_blocks = [(off.to_rdkit(), blk) for off, blk in mol_blocks]
-                nac_map = resolve_reactive_indices(rd_blocks, nac_spec)
+                nac_map = resolve_reactive_indices(rd_blocks, nac_spec, topology=modeller.topology)
                 if nac_map:
                     nac_idx = (nac_map["donor_heavy"], nac_map["transfer"],
                                nac_map["acceptor"])
@@ -1537,6 +1539,18 @@ def _run_real(
         # reactive arrangement (a diffused / mis-placed formate is NOT "low reactivity").
         nac_occupancy = nac_res.occupancy_or_none
         nac_json = nac_res.to_json()
+        # ROADMAP_V5 E4a: when an umbrella bias is active, persist the FULL per-frame O_nuc->Palpha
+        # distance + angle timeseries (to_json keeps only summaries) so the PMF driver can WHAM the
+        # per-window samples. The DISTANCE is the biased umbrella coordinate; the ANGLE is read-only.
+        if umbrella_setup is not None:
+            import json as _json
+            (workdir / "umbrella_samples.json").write_text(_json.dumps({
+                "window_A": umbrella_setup["window_A"], "k_kcal": umbrella_setup["k_kcal"],
+                "distances_A": [float(d) for d in nac_res.distances],
+                "angles_deg": [float(a) for a in nac_res.angles],
+                "atoms": nac_res.atoms, "n_frames": int(nac_res.n_frames),
+                "solvent_mode": actual_solvent,
+            }, indent=2), encoding="utf-8")
         log.info("MD NAC for %s: status=%s occupancy=%s retained=%.2f over %d frames "
                  "(d0=%.2f, d_min=%.2f Å, ang_mean=%.1f°)", candidate_id,
                  nac_res.status, nac_res.occupancy_or_none, nac_res.retention_fraction,

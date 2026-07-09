@@ -219,6 +219,12 @@ class ReactiveGeometryConfig(_Base):
     enabled: bool = False
     donor_smarts: str = ""
     acceptor_smarts: str = ""
+    # PROTEIN-nucleophile donor (serine hydrolase / protease): 'RESNAME:ATOM[:RESNUM]'
+    # (e.g. 'SER:OG:68'). When set, the nucleophile is this PROTEIN catalytic-residue atom
+    # (resolved from the MD topology) instead of a ligand ``donor_smarts`` match; the ligand
+    # then supplies only the acceptor (scissile carbonyl C). Generic serine/cysteine-hydrolase
+    # feature -- see docs/car_v5/nonredox_tem1_plan.md.
+    donor_protein: "Optional[str]" = None
     donor_idx: int = 0
     acceptor_idx: int = 0
     transfer_is_h: bool = True
@@ -595,6 +601,40 @@ class ComputeConfig(_Base):
     fail_loud_on_cpu_md: bool = True
 
 
+class PortfolioConfig(_Base):
+    """ROADMAP_V7 — the mechanism-ranked portfolio engine. Consumed by the post-run
+    ``evoliez portfolio`` command (portfolio.run), NOT by the s01-s11 stages. Bands replace
+    top-N: a candidate is selectable only when calibrated against a per-axis null. Expensive
+    tiers stay subset-only. All defaults are the ROADMAP_V7 §4.2/§8 recommendations."""
+    enabled: bool = False
+    panel_size: int = 48                  # 24 | 32 | 48
+    # statistical band thresholds (§4.2)
+    strong_q: float = 0.03
+    significant_q: float = 0.05
+    consensus_q: float = 0.10
+    consensus_min_axes: int = 2
+    min_effect_size: float = 0.5          # per-axis effect-size gate (robust z)
+    # multi-fidelity allocation caps (§5) — expensive tiers are subset-only
+    tier1_gpu_broad_max: int = 80
+    tier2_focused_md_max: int = 40
+    tier3_reaction_core_max: int = 12
+    # when expensive evidence was run on a SUBSET only, q-values are subset-level (§4.2/Gate 5)
+    subset_level: bool = False
+    # Layer-1 mechanism-protected hypotheses (reviewer breakthrough): expert-curated mutation
+    # strings forced into the panel EVEN WHEN no candidate reaches a statistical band — so a
+    # hard target (e.g. CAR, where the reaction-geometry axis is uninformative) still tests the
+    # hypotheses we care about. `protected_deconvolution` also injects each multipoint's
+    # single/pairwise probes. Empty (default) => behaviour unchanged.
+    protected_hypotheses: List[str] = Field(default_factory=list)
+    protected_deconvolution: bool = True
+
+    @model_validator(mode="after")
+    def _check_panel(self) -> "PortfolioConfig":
+        if self.panel_size not in (24, 32, 48):
+            raise ValueError(f"portfolio.panel_size must be 24|32|48, got {self.panel_size}")
+        return self
+
+
 class Config(_Base):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     input: InputConfig
@@ -618,6 +658,7 @@ class Config(_Base):
     reference_ensemble: ReferenceEnsembleConfig = Field(
         default_factory=ReferenceEnsembleConfig)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
+    portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
 
     # ROADMAP_V3 B4 — the mechanism envelope (reaction.class template + required
     # reaction_state + geometry terms). Optional and opt-in: when set, it is

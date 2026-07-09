@@ -1,0 +1,164 @@
+{
+  "schema": "amber_runtime_profile/v1",
+  "generated_at": "2026-07-07T22:00:54+09:00",
+  "host": "admin1-SYS-740GP-TNRT",
+  "platform": "Linux-5.15.0-139-generic-x86_64-with-glibc2.31",
+  "python": "3.10.20",
+  "git_commit": null,
+  "env": {
+    "AMBERHOME": "/mnt/data/jglee/envs/evoliez",
+    "EVOLIEZ_AMBERTOOLS_BIN": "/mnt/data/jglee/envs/evoliez/bin",
+    "EVOLIEZ_PMEMD_CUDA": "/mnt/data/jglee/pmemd24/bin/pmemd.cuda_SPFP",
+    "CUDA_VISIBLE_DEVICES": "0",
+    "ld_library_has_amber": false
+  },
+  "cuda": {
+    "driver_version": "550.163.01",
+    "toolkit_dirs": [
+      "/usr/local/cuda",
+      "/usr/local/cuda-12.4",
+      "/usr/local/cuda-12"
+    ],
+    "nvcc_version": null
+  },
+  "gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA RTX A6000",
+      "mem_total_mib": 49140,
+      "mem_used_mib": 11,
+      "util_pct": 0,
+      "driver_version": "550.163.01"
+    },
+    {
+      "index": 1,
+      "name": "NVIDIA RTX A6000",
+      "mem_total_mib": 49140,
+      "mem_used_mib": 11,
+      "util_pct": 0,
+      "driver_version": "550.163.01"
+    },
+    {
+      "index": 2,
+      "name": "NVIDIA RTX A6000",
+      "mem_total_mib": 49140,
+      "mem_used_mib": 11,
+      "util_pct": 0,
+      "driver_version": "550.163.01"
+    },
+    {
+      "index": 3,
+      "name": "NVIDIA RTX A6000",
+      "mem_total_mib": 49140,
+      "mem_used_mib": 11,
+      "util_pct": 0,
+      "driver_version": "550.163.01"
+    }
+  ],
+  "tools": {
+    "tleap": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/tleap",
+      "version": "-I: Adding /mnt/data/jglee/envs/evoliez/dat/leap/prep to search path."
+    },
+    "parmed": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/parmed",
+      "version": "parmed: Version 4.3.1"
+    },
+    "antechamber": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/antechamber",
+      "version": "/mnt/data/jglee/envs/evoliez/bin/wrapped_progs/antechamber: Fatal Error!"
+    },
+    "parmchk2": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/parmchk2",
+      "version": "\u001b[34m                      1:\u001b[0m for amber FF data file (the default)"
+    },
+    "pdb4amber": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/pdb4amber",
+      "version": "1.6.dev"
+    },
+    "MCPB.py": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/MCPB.py",
+      "version": "MCPB.py: error: no such option: --version"
+    },
+    "cpptraj": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/cpptraj",
+      "version": "CPPTRAJ: Version V6.24.0 (AmberTools)"
+    },
+    "sander": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/sander",
+      "version": "sander: Version 24.0"
+    },
+    "sqm": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/sqm",
+      "version": "Error unknown flag: --version"
+    },
+    "MMPBSA.py": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/MMPBSA.py",
+      "version": "MMPBSA.py 14.0"
+    },
+    "quick": {
+      "found": true,
+      "path": "/mnt/data/jglee/envs/evoliez/bin/quick",
+      "version": "| Error: Invalid input file name."
+    },
+    "pmemd.cuda": {
+      "found": true,
+      "path": "/mnt/data/jglee/pmemd24/bin/pmemd.cuda_SPFP",
+      "variant": "pmemd.cuda_SPFP",
+      "version": "pmemd.cuda_SPFP: Version 24.0"
+    }
+  },
+  "roundtrip": {
+    "implicit": {
+      "status": "ok",
+      "mode": "implicit",
+      "system": "ACE-(ALA)3-NME, implicit GB (igb=8)",
+      "n_atoms": 42,
+      "gpu_confirmed": true,
+      "gpu_device": {
+        "device_id": 0,
+        "device_name": "NVIDIA RTX A6000",
+        "global_mem_mib": 48669
+      },
+      "analysis": {
+        "n_frames": 5,
+        "final_rmsd_A": 0.5059,
+        "max_rmsd_A": 0.5059
+      },
+      "wallclock_s": 0.89,
+      "input_sha1": "6382dde1b298"
+    },
+    "explicit": {
+      "status": "ok",
+      "mode": "explicit",
+      "system": "ACE-(ALA)3-NME + TIP3P box (PME, NVT)",
+      "n_atoms": 9924,
+      "gpu_confirmed": true,
+      "gpu_device": {
+        "device_id": 0,
+        "device_name": "NVIDIA RTX A6000",
+        "global_mem_mib": 48669
+      },
+      "analysis": {
+        "n_frames": 5,
+        "final_rmsd_A": 0.2245,
+        "max_rmsd_A": 0.2336
+      },
+      "wallclock_s": 1.86,
+      "input_sha1": "be1b1c0f265f"
+    }
+  },
+  "failure": null,
+  "verdict": "PASS: GPU round-trip OK on NVIDIA RTX A6000 (implicit+explicit-PME)",
+  "work_dir": "/mnt/data/jglee/v6_audit_work"
+}

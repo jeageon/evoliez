@@ -75,8 +75,28 @@ EXPENSIVE_FIELDS = {
 }
 
 
+# markers that make a prefix-matched distance NOT cheap: a distance measured AFTER docking /
+# MD / a pose search is a label-derived quantity, not a static-geometry prior. `distance_to_`
+# was the ONE prefix that bypassed the fail-safe unknown check (Fable review), so a
+# `distance_to_catalytic_after_md`-style key could leak in as a feature.
+_EXPENSIVE_DISTANCE_MARKERS = (
+    "md", "nac", "pose", "dock", "redock", "after", "post", "dynamic",
+    "rmsf", "rmsd", "drift", "traj", "boltz", "gnina", "diffdock",
+    # trajectory / statistical aggregation suffixes — a distance summarised over an MD run is a
+    # label, not a static prior (Fable verification: distance_to_catalytic_mean slipped through).
+    "_mean", "_avg", "_median", "_min", "_max", "_std", "_var", "_final",
+    "_prod", "_ns", "_ps", "_frame", "_equilib", "_occupancy",
+)
+
+
 def is_cheap(field_name: str) -> bool:
-    return field_name in CHEAP_FEATURES or field_name.startswith(CHEAP_PREFIXES)
+    if field_name in CHEAP_FEATURES:
+        return True
+    if field_name.startswith(CHEAP_PREFIXES):
+        low = field_name.lower()
+        # a static-geometry distance is cheap; a post-pose/MD one is a label, not a prior.
+        return not any(mk in low for mk in _EXPENSIVE_DISTANCE_MARKERS)
+    return False
 
 
 def assert_no_leakage(feature_names: Sequence[str]) -> None:

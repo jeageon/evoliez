@@ -25,10 +25,13 @@ SHORT_MD_OVERCLAIM = "short_md_interpretation"
 INACTIVE_CLASSIFICATION = "inactive_classification"
 LONG_TERM_STABILITY = "long_term_stability"
 UNQUALIFIED_STRENGTH = "unqualified_strength"   # V5-5: catalysis-implying label words
+CATALYTIC_VALIDATION = "catalytic_validation"   # V6: "validated lead", "experimentally active"
+ACTIVATION_BARRIER = "activation_barrier"       # V6: "reduced activation barrier"
 
 ALL_CATEGORIES = (
     ACTIVITY_IMPROVEMENT, KINETIC_PARAMETER_PREDICTION, SHORT_MD_OVERCLAIM,
     INACTIVE_CLASSIFICATION, LONG_TERM_STABILITY, UNQUALIFIED_STRENGTH,
+    CATALYTIC_VALIDATION, ACTIVATION_BARRIER,
 )
 
 # category -> prohibited-claim regexes (lowercased English; Korean kept literal).
@@ -58,7 +61,7 @@ _PATTERNS = {
         r"(improved|increased|higher) k_?cat",
         r"k_?cat (is |was )?(improved|increased)",
         r"predicts? catalytic efficiency",
-        r"k_\{?cat\}?",                       # LaTeX k_{cat}
+        r"k_\{?(?:\\(?:text|mathrm|mathit)\{)?cat",   # LaTeX k_{cat}, k_{\text{cat}}, k_\mathrm{cat}
         r"kcat/km (improved|predicted)",
     ],
     SHORT_MD_OVERCLAIM: [
@@ -89,14 +92,44 @@ _PATTERNS = {
         r"paper[-\s]grade",
         r"\bconfirmed\s+productive\b",
     ],
+    # V6 roadmap §13 forbidden-before-wet-lab claims the linter previously missed:
+    # "catalytically validated", "validated lead", "experimentally active".
+    CATALYTIC_VALIDATION: [
+        r"catalytically validated",
+        r"\bvalidated\s+(lead|hit|candidate|variant|mutant)\b",
+        r"experimentally (active|validated|confirmed)",
+        r"검증된\s*(리드|후보|변이)",
+        r"실험적으로\s*(활성|검증)",
+    ],
+    # "reduced activation barrier" and paraphrases. The roadmap allows "near-attack
+    # access COST" but NOT any activation-barrier lowering claim before wet-lab.
+    ACTIVATION_BARRIER: [
+        r"(reduce[sd]?|lower(s|ed)?|decrease[sd]?) (the )?activation (barrier|energy)",
+        r"activation (barrier|energy) (is |was |being )?(reduced|lowered|decreased)",
+        r"lower(s|ed)? (the )?(reaction )?barrier",
+        r"활성화\s*(에너지|장벽)\s*(을|이|가)?\s*(낮|감소|저하)",
+    ],
 }
 
-# negation cues. English cues must precede the claim in the sentence; Korean negation is
-# post-verbal so a cue ANYWHERE in the sentence counts.
+# negation cues. An English cue suppresses a claim only in the SAME clause as the match (see
+# _is_negated); Korean negation attaches to the predicate, so a cue in a WINDOW around the match.
 _EN_NEG = re.compile(
     r"\b(do(es)?\s+not|don't|doesn't|did\s+not|didn't|cannot|can't|"
     r"is\s+not|are\s+not|isn't|aren't|will\s+not|won't|never|no\s+(direct\s+)?)\b")
-_KO_NEG = re.compile(r"(않|못\s|없|아니)")
+# Korean negation, split by position relative to the claim (Korean is verb-final, so negation
+# attaches AFTER the claim). POST (checked in the clause after the claim): -지 않/못 and the
+# predicate/adnominal forms 없다/없음/아니다/아니라 that negate the PRECEDING claim. This distinguishes
+# the real negation 없다 "there is none" / 아니라 "not X, but..." from the connective 없이 "without"
+# (which does NOT negate a following claim and was laundering over-claims). PRE = pre-verb 안/못.
+_KO_NEG_POST = re.compile(r"(않|못|없다|없음|없었|없앨|아니다|아니라|아니었|아닌|아냐|말아|말지)")
+_KO_NEG_PRE = re.compile(r"(안\s|못\s)")
+# a clause boundary. An English negation cue in an EARLIER clause (before one of these) must not
+# silence a later over-claim ("The fold is not compromised, activity improved over WT.").
+_CLAUSE_BREAK = re.compile(
+    r"[,;:—–]|\b(?:but|yet|however|although|though|whereas|while|nonetheless|nevertheless)\b")
+# markdown emphasis / inline code / strikethrough sitting BETWEEN the words of a claim phrase
+# ("activity **improved**") — stripped before matching so emphasis cannot bypass the linter.
+_MD_EMPHASIS = re.compile(r"[*`~]+")
 
 _SENT_SPLIT = re.compile(r"[.!?\n;]+|(?<=다)\s+")
 
@@ -115,13 +148,29 @@ def _sentences(text: str) -> List[str]:
     return [s.strip() for s in _SENT_SPLIT.split(text) if s and s.strip()]
 
 
-def _is_negated(sentence_lc: str, match_start: int, sentence_raw: str) -> bool:
-    # Korean: any negation cue in the sentence
-    if _KO_NEG.search(sentence_raw):
+_KO_CLAUSE_BREAK = re.compile(r"[,;]|고\s|며\s|지만|으나\s|나\s")
+
+
+def _is_negated(sentence_lc: str, match_start: int, match_end: int,
+                sentence_raw: str) -> bool:
+    # Korean negation is post-verbal (-지 않 / -지 못) on the CLAUSE's main verb, which follows
+    # the matched claim; scope it to the clause AFTER the match (up to the next comma / 고 / 며 /
+    # 지만 connective) so a negation in a LATER clause ("활성이 증가했고, 독성은 늘지 않았다") does
+    # not suppress THIS claim. Also a short pre-match window for the pre-verb 안/못. Bare 없/아니
+    # are not claim-negations (없이 "without" / 아니라 "not X but Y") and are excluded.
+    after = sentence_raw[match_end:]
+    brk = _KO_CLAUSE_BREAK.search(after)
+    clause_after = after[: brk.start()] if brk else after
+    if _KO_NEG_POST.search(clause_after) or _KO_NEG_PRE.search(
+            sentence_raw[max(0, match_start - 3): match_start]):
         return True
-    # English: a negation cue somewhere before the matched claim
-    before = sentence_lc[:match_start]
-    return _EN_NEG.search(before) is not None
+    # English: only a cue in the SAME CLAUSE as the match (after the last clause break before
+    # it). The window INCLUDES the match so a cue immediately before the claim ("asserts no
+    # validated lead") still anchors on \b — otherwise a trailing "no " loses its word boundary.
+    last_break = 0
+    for m in _CLAUSE_BREAK.finditer(sentence_lc[:match_start]):
+        last_break = m.end()
+    return _EN_NEG.search(sentence_lc[last_break:match_end]) is not None
 
 
 BENCHMARK_CATEGORY = "benchmark_prohibited"
@@ -141,19 +190,24 @@ def lint_text(text: str, allow: Optional[Sequence[str]] = None,
     extra = [re.escape(p.lower()) for p in (extra_forbidden or [])]
     violations: List[ClaimViolation] = []
     for sent in _sentences(text):
-        sent_lc = sent.lower()
+        # strip markdown emphasis so "activity **improved**" cannot hide from the anchored
+        # phrase regexes; keep the ORIGINAL sentence for the violation report. Stripping is
+        # length-changing, so matching + negation both run on the normalized string (consistent
+        # offsets) while the reported sentence stays the raw one.
+        sent_norm = _MD_EMPHASIS.sub("", sent)
+        sent_lc = sent_norm.lower()
         for category, patterns in _PATTERNS.items():
             if category in allowed:
                 continue
             for pat in patterns:
                 for m in re.finditer(pat, sent_lc):
-                    if _is_negated(sent_lc, m.start(), sent):
+                    if _is_negated(sent_lc, m.start(), m.end(), sent_norm):
                         continue
                     violations.append(ClaimViolation(category, m.group(0), sent))
                     break  # one violation per (category, sentence) is enough
         for pat in extra:                       # benchmark-specific phrases (never allowed)
             for m in re.finditer(pat, sent_lc):
-                if _is_negated(sent_lc, m.start(), sent):
+                if _is_negated(sent_lc, m.start(), m.end(), sent_norm):
                     continue
                 violations.append(ClaimViolation(BENCHMARK_CATEGORY, m.group(0), sent))
                 break
@@ -173,7 +227,7 @@ def assert_clean(text: str, allow: Optional[Sequence[str]] = None) -> None:
 # V3-4 — the full provenance-driven engine (claim-category + template whitelist +
 # schema-validated FAIL-SAFE). Built on top of the linter above.
 # =====================================================================================
-from pydantic import BaseModel, ValidationError  # noqa: E402
+from pydantic import BaseModel, Field, ValidationError  # noqa: E402
 
 from evoliez.mechanism.vocab import (  # noqa: E402
     HYPOTHESIS_GRADE, STRONG_SCREENING, UNCALIBRATED, weakest_claim,
@@ -190,14 +244,17 @@ class ClaimProvenance(BaseModel):
     reference_claim_strength: str = UNCALIBRATED
     geometry_claim_ceiling: str = UNCALIBRATED
     ensemble_claim_ceiling: Optional[str] = None
-    wetlab_replicated: bool = False
-    only_short_md: bool = True               # conservative: assume short MD unless told otherwise
-    enhanced_sampling_or_qmmm: bool = False
-    known_active_controls: bool = False
-    known_inactive_controls: bool = False
-    de_novo_pose_disagreement_high: bool = False
-    wt_reaction_geometry_sparse: bool = False
-    ligand_parameterization_uncertain: bool = False
+    # The unlock-gating booleans are STRICT: a fuzzy truthy value ('yes'/'1'/'y'/1) from YAML /
+    # env / CI must NOT unlock the strongest claim categories — it raises ValidationError, which
+    # `evaluate` (dict path) converts to the fail-safe floor instead of unlocking (Fable review).
+    wetlab_replicated: bool = Field(default=False, strict=True)
+    only_short_md: bool = Field(default=True, strict=True)  # conservative: short MD unless told otherwise
+    enhanced_sampling_or_qmmm: bool = Field(default=False, strict=True)
+    known_active_controls: bool = Field(default=False, strict=True)
+    known_inactive_controls: bool = Field(default=False, strict=True)
+    de_novo_pose_disagreement_high: bool = Field(default=False, strict=True)
+    wt_reaction_geometry_sparse: bool = Field(default=False, strict=True)
+    ligand_parameterization_uncertain: bool = Field(default=False, strict=True)
     ml_label_source: str = "computational_surrogate"
 
 
@@ -254,6 +311,8 @@ def evaluate(provenance) -> ClaimVerdict:
         allowed.add(ACTIVITY_IMPROVEMENT)
         allowed.add(KINETIC_PARAMETER_PREDICTION)
         allowed.add(INACTIVE_CLASSIFICATION)
+        allowed.add(CATALYTIC_VALIDATION)   # "validated lead" is true ONLY with wet-lab
+        allowed.add(ACTIVATION_BARRIER)     # barrier-lowering needs experimental kinetics
     # short-MD / long-term-stability claims need sampling beyond short MD
     if p.enhanced_sampling_or_qmmm or not p.only_short_md:
         allowed.add(SHORT_MD_OVERCLAIM)

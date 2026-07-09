@@ -17,6 +17,11 @@ from .vocab import (
 
 
 class _Base(BaseModel):
+    # NOTE: the claim-strength / ceiling clamp runs at CONSTRUCTION (the data-driven path — YAML /
+    # JSON / dict). A post-construction ``card.claim_strength = 'strong_screening'`` would bypass
+    # it, but that requires developer code (not data) and validate_assignment=True recurses
+    # against the validators' own internal field assignments, so it is deliberately NOT enabled;
+    # this residual is out of the data-driven threat model (Fable verification).
     model_config = {"extra": "forbid"}
 
 
@@ -46,6 +51,11 @@ class ReferenceConfidenceCard(_Base):
             self.claim_strength = self.grade()
         elif self.claim_strength not in CLAIM_LADDER:
             raise ValueError(f"claim_strength must be one of {CLAIM_LADDER}")
+        else:
+            # an explicitly supplied strength may only LOWER (a manual downgrade), never EXCEED
+            # the evidence-derived grade — a weak reference must not carry an inflated claim
+            # strength into downstream confidence (Fable safety review, fail-open fix).
+            self.claim_strength = weakest_claim(self.claim_strength, self.grade())
         return self
 
     def grade(self) -> str:
@@ -102,21 +112,31 @@ class ActiveStateReferenceEnsemble(_Base):
     def _derive_ceiling(self) -> "ActiveStateReferenceEnsemble":
         if not self.references:
             raise ValueError("an ensemble needs at least one reference")
+        from .vocab import HYPOTHESIS_GRADE, MODERATE_SCREENING
+        # best member tier sets the ceiling, then high disagreement caps it lower
+        best = weakest_claim(*[
+            (m.confidence_card.claim_strength if m.confidence_card
+             else TIER_CLAIM_CEILING.get(m.tier, UNCALIBRATED))
+            for m in self._best_members()])
+        # disagreement across ANY of the three axes caps the ceiling — ligand-pose and
+        # catalytic-contact variance were previously ignored, so a set that agreed on backbone
+        # geometry but disagreed wildly on the ligand pose still claimed strong (Fable review).
+        worst_var = max(self.disagreement.geometry_variance,
+                        self.disagreement.ligand_pose_variance,
+                        self.disagreement.catalytic_contact_variance)
+        penalties = [best]
+        if worst_var >= 0.25:
+            penalties.append(HYPOTHESIS_GRADE)
+        elif worst_var >= 0.1:
+            penalties.append(MODERATE_SCREENING)
+        derived = weakest_claim(*penalties)
         if self.claim_ceiling is None:
-            # best member tier sets the ceiling, then high disagreement caps it lower
-            best = weakest_claim(*[
-                (m.confidence_card.claim_strength if m.confidence_card
-                 else TIER_CLAIM_CEILING.get(m.tier, UNCALIBRATED))
-                for m in self._best_members()])
-            from .vocab import HYPOTHESIS_GRADE, MODERATE_SCREENING
-            penalties = [best]
-            if self.disagreement.geometry_variance >= 0.25:
-                penalties.append(HYPOTHESIS_GRADE)
-            elif self.disagreement.geometry_variance >= 0.1:
-                penalties.append(MODERATE_SCREENING)
-            self.claim_ceiling = weakest_claim(*penalties)
+            self.claim_ceiling = derived
         elif self.claim_ceiling not in CLAIM_LADDER:
             raise ValueError(f"claim_ceiling must be one of {CLAIM_LADDER}")
+        else:
+            # an explicit ceiling may only TIGHTEN the derived cap, never loosen it (fail-open fix).
+            self.claim_ceiling = weakest_claim(self.claim_ceiling, derived)
         return self
 
     def _best_members(self) -> List[ReferenceMember]:

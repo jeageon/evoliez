@@ -3,9 +3,10 @@
 # = nucleophilic_acyl_substitution, a genuinely NON-redox, NON-metal, NON-CAR chemistry.
 # backend: mock -> validates the framework + runs end-to-end locally. FLIP to backend: real + a
 # homolog DB on the GPU server for the real generality run (see docs/car_v5/nonredox_tem1_plan.md).
-# CAVEAT: TEM-1's nucleophile is a PROTEIN residue (Ser Ogamma), not a ligand atom as in CAR/FDH;
-# the ligand-centric reactive_geometry below is a placeholder (mock) — a real reaction-geometry run
-# needs the protein-nucleophile NAC extension (documented as the follow-up).
+# TEM-1's nucleophile is a PROTEIN residue (Ser68 Ogamma), not a ligand atom as in CAR/FDH. The
+# reactive_geometry below now uses the PROTEIN-nucleophile NAC extension (donor_protein) to resolve
+# the Ser68 Ogamma from the MD topology as the nucleophile -> a real protein-side reaction geometry,
+# no longer a ligand-internal placeholder. (Real backend + structure still gate the production run.)
 
 project:
   name: tem1_acyl_nonredox
@@ -79,15 +80,17 @@ validation:
     top_candidates: 4
     reactive_geometry:
       enabled: true
-      # PLACEHOLDER (mock): beta-lactam ring N -> its scissile carbonyl C. A real run needs the
-      # protein-Ser-Ogamma nucleophile NAC (follow-up), not this ligand-internal proxy.
-      donor_smarts: "[NX3]"
-      acceptor_smarts: "[CX3]=[OX1]"
-      donor_idx: 0
+      # PROTEIN-nucleophile NAC (serine hydrolase): the catalytic Ser68 Ogamma attacks the
+      # beta-lactam scissile carbonyl C. donor_protein resolves the nucleophile from the MD
+      # topology (not a ligand SMARTS); the ligand supplies only the acceptor carbonyl C. The
+      # angle is the Nuc--C=O (Burgi-Dunitz-like), read-only (never restrained).
+      donor_protein: "SER:OG:68"
+      acceptor_smarts: "[CX3](=[OX1])[NX3]"    # beta-lactam scissile amide carbonyl C
       acceptor_idx: 0
+      transfer_is_h: false
       distance_max: 3.5
-      angle_min: 150.0
-      label: serine_attack_on_betalactam_carbonyl
+      angle_min: 95.0                          # Burgi-Dunitz nucleophilic addition (~105 +/- 10)
+      label: ser68_ogamma_attack_on_betalactam_carbonyl
 
 selection_lanes:
   enabled: true

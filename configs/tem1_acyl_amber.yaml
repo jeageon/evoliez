@@ -1,0 +1,115 @@
+# V6-6 — NON-CAR, NON-REDOX real-backend target: TEM-1 beta-lactamase (class A serine
+# hydrolase, UniProt P62593). Reaction: catalytic Ser68 Ogamma (STFK motif; Ambler
+# Ser70) attacks the beta-lactam scissile carbonyl C = nucleophilic acyl substitution
+# — genuinely NON-redox, NON-metal, NON-CAR chemistry, run through the SAME V6 Amber
+# framework (V6-1 builder + V6-2 executor + protein-nucleophile geometry).
+#
+# The nucleophile is a PROTEIN atom (Ser68 Ogamma), resolved from the MD topology
+# (donor_protein), not a ligand SMARTS. backend: real. Structure = a Boltz-predicted
+# Michaelis complex; Amber build/MD/geometry are real (no mock). The Amber-native
+# force fields for the V6 build are ff14SB / GAFF2 / TIP3P (see scripts/run_tem1_amber.py
+# and docs/v6/nonredox_real_backend_report.md).
+
+project:
+  name: tem1_acyl_amber_nonredox
+  objective: activity_improvement
+  output_dir: runs/tem1_acyl_amber
+
+input:
+  target_id: tem1_blat
+  target_fasta: car/targets/tem1_blat.fasta
+  ligand:
+    id: LIG                                   # benzylpenicillin (penicillin G), the beta-lactam substrate
+    type: smiles
+    # Modeled NEUTRAL (protonated carboxylate) for parameterization consistency with
+    # the Boltz-predicted pose; the remote carboxylate does not affect the Ser68
+    # -> beta-lactam reaction geometry.
+    value: "CC1(C)S[C@@H]2[C@H](NC(=O)Cc3ccccc3)C(=O)N2[C@H]1C(=O)O"
+    role: design_ligand
+  catalytic_residues: ["S68", "T69", "K71"]   # STFK catalytic Ser/Thr/Lys (match the FASTA)
+  fixed_residues: ["S68", "T69", "K71"]
+  ec_number: "3.5.2.6"
+
+mechanism:
+  reaction:
+    class: nucleophilic_acyl_substitution     # NON-redox acyl class, same mechanism framework
+  reaction_state:
+    protonation_model: pH7
+    conformational_state: michaelis
+
+homologs:
+  method: mmseqs2
+  max_sequences: 500
+
+msa:
+  method: mafft
+  remote_server: false
+
+complex_prediction:
+  primary_method: boltz2                       # real structure backend (Boltz)
+  diffusion_samples: 5
+
+interaction_model:
+  enabled: true
+  representative_homologs: 3
+  poses_per_homolog: 2
+
+gnn:
+  enabled: false
+
+mutation_generation:
+  methods: [chemistry_rules]
+  max_candidates: 40
+  design_radius_angstrom: 9.0
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 12
+  top_for_md: 4
+
+validation:
+  redocking:
+    methods: [vina]
+  stability:
+    method: ml
+  md:
+    enabled: true
+    engine: amber                              # V6 Amber-native executor (pmemd.cuda)
+    solvent: explicit
+    protocol_level: 3
+    production_ns: 0.1
+    top_candidates: 3
+    reactive_geometry:
+      enabled: true
+      # PROTEIN nucleophile: catalytic Ser68 Ogamma attacks the beta-lactam scissile
+      # carbonyl C. donor_protein resolves the Ser Ogamma from the topology; the ligand
+      # supplies the acceptor. The angle (Nuc--C=O, Burgi-Dunitz-like) is READ-ONLY.
+      donor_protein: "SER:OG:68"
+      # beta-lactam-SPECIFIC: the scissile carbonyl is the one in the strained 4-membered
+      # ring (r4), NOT the acyclic side-chain amide (the generic [CX3](=O)[NX3] mis-picks
+      # benzylpenicillin's side-chain carbonyl).
+      acceptor_smarts: "[CX3;r4](=[OX1])[NX3;r4]"
+      acceptor_idx: 0
+      transfer_is_h: false
+      distance_max: 3.5
+      angle_min: 95.0                          # Burgi-Dunitz nucleophilic addition (~105 +/- 10)
+      label: ser68_ogamma_attack_on_betalactam_carbonyl
+
+selection_lanes:
+  enabled: true
+  from_ml_high: 8
+  from_diversity: 2
+  low_ml_controls: 2
+
+compute:
+  cpu_core_budget: 8
+  gpu_pool: [0]
+  fail_loud_on_cpu_md: true
+
+output:
+  final_library_size: 16
+  report_format: [markdown, csv]
+
+backend: real
+seed: 1234

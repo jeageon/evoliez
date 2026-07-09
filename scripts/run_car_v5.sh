@@ -12,7 +12,7 @@
 set -euo pipefail
 ulimit -n 65536 2>/dev/null || ulimit -n 8192 2>/dev/null || true
 
-MODE="${1:?usage: run_car_v5.sh <preflight|smoke|corrected-smoke|explicit-smoke|explicit-subset|focused> [extra cli args...]}"; shift || true
+MODE="${1:?usage: run_car_v5.sh <preflight|smoke|corrected-smoke|explicit-smoke|explicit-subset|focused|e4a> [extra cli args...]}"; shift || true
 
 CAR_ROOT="${CAR_ROOT:-/mnt/data/jglee/EvoLiEZ_car}"
 EVO_PY="${EVO_PY:-/mnt/data/jglee/envs/evoliez/bin/python}"
@@ -134,5 +134,22 @@ PY
     "$EVO_PY" -m evoliez.cli run -c "$CONFIG" --resume "$@"
     _provenance_verdict "$OUT";;
 
-  *) echo "unknown mode: $MODE (use preflight|smoke|corrected-smoke|explicit-smoke|explicit-subset|focused)"; exit 2;;
+  e4a)
+    # E4a: umbrella/PMF access-barrier sweep (WT + lead + 1 control, explicit + Mg). For each
+    # candidate x window, s10 runs a biased O_nuc->Palpha MD (EVOLIEZ_E4A_UMBRELLA) -> umbrella_
+    # samples.json; then the WHAM driver -> access-cost table. --to s10 (s10 returns early after the
+    # sweep). Windows/k overridable: EVOLIEZ_E4A_UMBRELLA="dmin,dmax,n,k". SCREENING evidence only.
+    CONFIG="${CAR_CONFIG:-configs/car_srcar_3hp_v5_e4a.yaml}"
+    OUT="/mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_v5_e4a"
+    export EVOLIEZ_SEED_CANDIDATES_CSV="${EVOLIEZ_SEED_CANDIDATES_CSV:-$CAR_ROOT/configs/car_v5_e4a_manifest.csv}"
+    export EVOLIEZ_E4A_UMBRELLA="${EVOLIEZ_E4A_UMBRELLA:-2.8,5.4,10,10}"
+    echo ">> E4a UMBRELLA/PMF  config=$CONFIG  out=$OUT"
+    echo ">> windows/k=$EVOLIEZ_E4A_UMBRELLA (dmin,dmax,n,k)   seed manifest=$EVOLIEZ_SEED_CANDIDATES_CSV"
+    "$EVO_PY" -m evoliez.cli run -c "$CONFIG" --to s10_md --resume "$@"
+    echo ">> E4a WHAM access-barrier table:"
+    "$EVO_PY" "$CAR_ROOT/scripts/e4a_umbrella_pmf.py" "$OUT" \
+      --out "$CAR_ROOT/docs/car_v5/e4a_pmf_access_table.csv" || \
+      echo "!! WHAM analysis failed (see above) — check umbrella_samples.json under $OUT/md/*/e4a/";;
+
+  *) echo "unknown mode: $MODE (use preflight|smoke|corrected-smoke|explicit-smoke|explicit-subset|focused|e4a)"; exit 2;;
 esac
