@@ -1,0 +1,175 @@
+# =====================================================================
+# SrCAR (Carboxylic Acid Reductase, UniProt E5XP76) -> 3-HP adenylation, V7.
+# =====================================================================
+# ROADMAP_V7: mechanism-ranked portfolio + statistical evidence bands.
+#
+# Derived from car_srcar_3hp_v5.yaml. The s01-s06b-determining sections (input, mechanism,
+# homologs, msa, complex_prediction, interaction_model, gnn) are kept BYTE-IDENTICAL to v5 so
+# the cached, candidate-INDEPENDENT artifacts (Boltz WT structure, MSA, family interaction
+# model) copied from runs/srcar_3hp_v5 stay valid and are reused on resume — only s07-s11
+# (candidate generation -> cheap features -> subset Boltz/MD) re-run over the FULL universe.
+#
+# The V7 difference vs V5: NO seeded candidate manifest (EVOLIEZ_SEED_CANDIDATES_CSV unset) ->
+# s07 generates the full candidate universe; every variant gets the cheap 7-axis ledger; bands
+# replace top-N; the expensive Boltz/MD tiers stay subset-only (selection_lanes + top_n caps).
+
+project:
+  name: srcar_3hp_v7
+  objective: activity_improvement
+  output_dir: /mnt/data/jglee/EvoLiEZ_car/runs/srcar_3hp_v7
+
+# ---- s01-s06b determining: IDENTICAL to v5 (do not edit or the cached reuse breaks) ----
+input:
+  target_id: srcar
+  target_fasta: car/targets/srcar_Adomain.fasta   # E5XP76 residues 1-720 (A + PCP) — A-domain PRIMARY
+  ligand:
+    id: 3HP
+    type: smiles
+    value: "OCCC(=O)[O-]"           # 3-hydroxypropanoate (CORRECTED; CSV had 2C glycolate)
+    role: design_ligand
+    net_charge: -1
+    allow_am1bcc: true
+  extra_ligands:
+    - id: ATP
+      type: smiles
+      value: "Nc1ncnc2n(cnc12)[C@@H]1O[C@H](COP(=O)([O-])OP(=O)([O-])OP(=O)([O-])[O-])[C@@H](O)[C@H]1O"
+      role: cofactor                # adenylation co-substrate; the alpha-P is the electrophile
+      net_charge: -4
+      allow_am1bcc: false
+      charges_mol2: params/atp_4minus/ATP.fixed.mol2   # pre-derived AM1-BCC (43 atoms, -4)
+  catalytic_residues: ["S268", "T269", "K273"]
+  fixed_residues: ["S268", "T269", "K273"]
+  cofactor: ATP
+  ec_number: "1.2.1.30"
+
+mechanism:
+  reaction:
+    class: adenylation_phosphoryl_transfer
+  reaction_state:
+    substrate_state: 3HP_carboxylate
+    cofactor_state: ATP
+    metal_state: Mg2+_bridged
+    conformational_state: A_domain_closed
+    protonation_model: pH7_4_manual
+
+homologs:
+  method: mmseqs2
+  database: /mnt/data/jglee/evoliez_db/uniref30_2302_seqdb
+  max_sequences: 20000
+
+msa:
+  method: mafft
+  compute_conservation: true
+  compute_pssm: true
+
+complex_prediction:
+  primary_method: boltz2
+  use_msa_server: true
+  representative_homologs: 80
+  diffusion_samples: 25
+
+interaction_model:
+  enabled: true
+  representative_homologs: auto
+  representative_coverage: 0.90
+  representative_min: 40
+  representative_max: 48
+  poses_per_homolog: 12
+  contact_cutoff: 6.0
+  k_nearest_residues: 8
+  model: xgboost
+
+gnn:
+  enabled: false
+
+# ---- s07-s11: FULL universe, bands over all, expensive tiers subset-only ----
+mutation_generation:
+  methods: [chemistry_rules, msa_sampler, ligandmpnn]
+  max_candidates: 800              # V7: a real universe for meaningful per-axis null bands
+  design_radius_angstrom: 8.0
+  multipoint: true
+  multipoint_order: 3
+
+reranking:
+  model: xgboost
+  use_experimental_labels: false
+  top_for_redocking: 64            # s09 non-MD docking subset (moderate GPU tier)
+  top_for_md: 16
+  mutant_boltz_enabled: true
+  mutant_boltz_top_n: 24           # s08b real per-mutant Boltz subset (expensive GPU tier)
+  mutant_boltz_diffusion_samples: 5
+
+validation:
+  redocking:
+    methods: [gnina, diffdock]
+  stability:
+    method: thermompnn
+    max_ddg_allowed: 2.5
+  md:
+    enabled: true
+    engine: openmm
+    protocol_level: 3
+    solvent: implicit
+    production_ns: 1.0             # V7 production but bounded: subset-only reaction-geometry MD
+    replicas: 2
+    top_candidates: 16
+    require_real_structure: true
+    rbfe:
+      enabled: false
+      top_n: 3
+    binding_dg:
+      enabled: true
+      top_n: 3
+    reactive_geometry:
+      enabled: true
+      donor_smarts: "[OX1-]"                 # 3-HP carboxylate O (nucleophile)
+      acceptor_smarts: "[PX4]([OX2][CX4])"   # ATP alpha-P only
+      donor_idx: 0
+      acceptor_idx: 0
+      transfer_is_h: false
+      distance_max: 3.6
+      angle_min: 150.0
+      label: 3HP_carboxylate_to_ATP_alphaP
+      template_cosubstrate_placement: true
+      restrain_cosubstrate: true
+      restraint_radius_A: 3.6
+
+scoring:
+  family_interaction: 1.0
+
+selection_lanes:
+  enabled: true
+  from_ml_high: 25
+  from_stability_high: 12
+  from_geometry_high: 12
+  from_diversity: 8
+  low_ml_controls: 8
+
+compute:
+  cpu_core_budget: 16
+  gpu_pool: []
+  fail_loud_on_cpu_md: true
+
+# ROADMAP_V7 — the mechanism-ranked portfolio engine (post-run `evoliez portfolio`).
+portfolio:
+  enabled: true
+  panel_size: 48
+  strong_q: 0.03
+  significant_q: 0.05
+  consensus_q: 0.10
+  consensus_min_axes: 2
+  min_effect_size: 0.5
+  tier1_gpu_broad_max: 80
+  tier2_focused_md_max: 40
+  tier3_reaction_core_max: 12
+  subset_level: true               # expensive reaction-geometry evidence is subset-only
+
+output:
+  final_library_size: 96
+  top_single_mutants: 50
+  report_format: [markdown, csv]
+
+backend: real
+backends: {}
+allow_mock_fallback: false
+seed: 1234

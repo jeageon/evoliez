@@ -601,6 +601,33 @@ class ComputeConfig(_Base):
     fail_loud_on_cpu_md: bool = True
 
 
+class PortfolioConfig(_Base):
+    """ROADMAP_V7 — the mechanism-ranked portfolio engine. Consumed by the post-run
+    ``evoliez portfolio`` command (portfolio.run), NOT by the s01-s11 stages. Bands replace
+    top-N: a candidate is selectable only when calibrated against a per-axis null. Expensive
+    tiers stay subset-only. All defaults are the ROADMAP_V7 §4.2/§8 recommendations."""
+    enabled: bool = False
+    panel_size: int = 48                  # 24 | 32 | 48
+    # statistical band thresholds (§4.2)
+    strong_q: float = 0.03
+    significant_q: float = 0.05
+    consensus_q: float = 0.10
+    consensus_min_axes: int = 2
+    min_effect_size: float = 0.5          # per-axis effect-size gate (robust z)
+    # multi-fidelity allocation caps (§5) — expensive tiers are subset-only
+    tier1_gpu_broad_max: int = 80
+    tier2_focused_md_max: int = 40
+    tier3_reaction_core_max: int = 12
+    # when expensive evidence was run on a SUBSET only, q-values are subset-level (§4.2/Gate 5)
+    subset_level: bool = False
+
+    @model_validator(mode="after")
+    def _check_panel(self) -> "PortfolioConfig":
+        if self.panel_size not in (24, 32, 48):
+            raise ValueError(f"portfolio.panel_size must be 24|32|48, got {self.panel_size}")
+        return self
+
+
 class Config(_Base):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     input: InputConfig
@@ -624,6 +651,7 @@ class Config(_Base):
     reference_ensemble: ReferenceEnsembleConfig = Field(
         default_factory=ReferenceEnsembleConfig)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
+    portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
 
     # ROADMAP_V3 B4 — the mechanism envelope (reaction.class template + required
     # reaction_state + geometry terms). Optional and opt-in: when set, it is
